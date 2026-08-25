@@ -39,6 +39,34 @@ def is_registered() -> bool:
     return config.AUTH_FILE.exists()
 
 
+def _log_cvf_page(soup: Any) -> None:
+    """Dumps what Amazon's "verify your identity" page actually offers.
+
+    `audible.login.get_inputs_from_soup` blindly sets every non-hidden input
+    (radio buttons included) to `""` regardless of which one is checked in
+    the HTML, so if this page lets you choose a delivery method (email vs.
+    phone), the submitted choice may not be the one that looks selected on
+    screen. This logs the page's visible text plus every input's name/type/
+    value/checked state so we can see what actually got sent.
+    """
+    content = soup.find(id="cvf-page-content") or soup
+    text = content.get_text(separator=" | ", strip=True)
+    logger.info("login flow: cvf page text: %s", text[:1500])
+
+    form = soup.find("form")
+    if form is None:
+        logger.info("login flow: cvf page has no <form>")
+        return
+    for field in form.find_all(["input", "select"]):
+        logger.info(
+            "login flow: cvf field name=%r type=%r value=%r checked=%r",
+            field.get("name"),
+            field.get("type"),
+            field.get("value"),
+            field.has_attr("checked"),
+        )
+
+
 @contextlib.contextmanager
 def _login_flow_diagnostics():
     """Logs which branch of Amazon's login flow fired (captcha / 2FA-method
@@ -70,6 +98,8 @@ def _login_flow_diagnostics():
                         for node in soup.select("div[data-a-input-name=otpDeviceContext]")
                     ]
                     logger.info("login flow: 2FA method options on page: %s", options)
+                if name == "check_for_cvf":
+                    _log_cvf_page(soup)
             return result
 
         return wrapper

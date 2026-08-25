@@ -9,7 +9,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Input, LoadingIndicator, Select, Static
+from textual.widgets import Button, Footer, Input, LoadingIndicator, Select, Static
 
 from audible_tui.screens.modals import MessageModal, PromptModal
 from audible_tui.services import auth
@@ -30,6 +30,8 @@ LOCALES = [
 
 class LoginScreen(Screen[None]):
     """Handles both first-run login and unlocking an existing encrypted auth file."""
+
+    BINDINGS = [("ctrl+q", "quit_app", "Quit"), ("escape", "quit_app", "Cancel / quit")]
 
     DEFAULT_CSS = """
     LoginScreen {
@@ -100,8 +102,10 @@ class LoginScreen(Screen[None]):
                 )
                 if self._unlock_only:
                     yield Button("Use a different account", id="reset")
+                yield Button("Quit", id="quit")
             yield LoadingIndicator()
             yield Static("", id="status")
+        yield Footer()
 
     @on(Button.Pressed, "#submit")
     def _submit(self) -> None:
@@ -127,6 +131,13 @@ class LoginScreen(Screen[None]):
         auth.logout()
         self.app.pop_screen()
         self.app.push_screen(LoginScreen(unlock_only=False))
+
+    @on(Button.Pressed, "#quit")
+    def _quit_pressed(self) -> None:
+        self.action_quit_app()
+
+    def action_quit_app(self) -> None:
+        self.app.exit()
 
     def _set_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
