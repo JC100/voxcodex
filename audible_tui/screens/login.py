@@ -102,6 +102,11 @@ class LoginScreen(Screen[None]):
                 )
                 if self._unlock_only:
                     yield Button("Use a different account", id="reset")
+                else:
+                    yield Button(
+                        "Sign in via browser instead (if Amazon blocks the form above)",
+                        id="external-login",
+                    )
                 yield Button("Quit", id="quit")
             yield LoadingIndicator()
             yield Static("", id="status")
@@ -125,6 +130,10 @@ class LoginScreen(Screen[None]):
             self.query_one(f"#{order[idx + 1]}", Input).focus()
         else:
             self._submit()
+
+    @on(Button.Pressed, "#external-login")
+    def _external_login_pressed(self) -> None:
+        self._start_external_login()
 
     @on(Button.Pressed, "#reset")
     def _reset(self) -> None:
@@ -201,6 +210,42 @@ class LoginScreen(Screen[None]):
             self.app.call_from_thread(self._login_failed, str(exc))
             return
         self.app.call_from_thread(self._login_succeeded, authenticator)
+
+    def _start_external_login(self) -> None:
+        locale = str(self.query_one("#locale", Select).value)
+        vault_password = self.query_one("#vault-password", Input).value or None
+        self.add_class("busy")
+        self._set_status("Starting browser login...")
+        self._do_external_login(locale, vault_password)
+
+    @work(thread=True)
+    def _do_external_login(self, locale: str, vault_password: str | None) -> None:
+        callbacks = auth.LoginCallbacks(login_url=self._external_url_prompt)
+        try:
+            authenticator = auth.login_external(locale, callbacks)
+            auth.save(authenticator, vault_password)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            self.app.call_from_thread(self._login_failed, str(exc))
+            return
+        self.app.call_from_thread(self._login_succeeded, authenticator)
+
+    def _external_url_prompt(self, url: str) -> str:
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+        message = (
+            "Open this URL in any web browser (a tab may have opened for you "
+            "already):\n\n"
+            f"{url}\n\n"
+            "Log in with your normal Amazon credentials there (you may be asked "
+            "twice, plus a captcha -- that's normal for this flow). Afterwards "
+            "the browser will land on a 'Page not found' error -- that's expected. "
+            "Copy the FULL url from the address bar at that point and paste it below."
+        )
+        return self._blocking_prompt("Browser login", message, allow_empty=False)
 
     def _blocking_prompt(self, title: str, message: str, allow_empty: bool = False) -> str:
         """Runs on the login worker thread; blocks it until the user answers in the UI."""

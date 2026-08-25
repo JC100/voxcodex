@@ -33,6 +33,7 @@ class LoginCallbacks:
     cvf: Callable[[], str] | None = None
     captcha: Callable[[str], str] | None = None
     approval: Callable[[], Any] | None = None
+    login_url: Callable[[str], str] | None = None
 
 
 def is_registered() -> bool:
@@ -130,6 +131,20 @@ def login(
             captcha_callback=callbacks.captcha,
             approval_callback=callbacks.approval,
         )
+
+
+def login_external(locale: Locale, callbacks: LoginCallbacks) -> audible.Authenticator:
+    """Logs in via a URL you open in your own browser instead of scripted HTTP requests.
+
+    Useful when Amazon's anti-automation checks reject the normal scripted
+    login (its "verify your identity" page comes back as a JS-required /
+    bot-check error instead of a real code prompt) -- a real browser session
+    doesn't trip that.
+    """
+    return audible.Authenticator.from_login_external(
+        locale=locale,
+        login_url_callback=callbacks.login_url,
+    )
 
 
 def save(auth: audible.Authenticator, vault_password: str | None) -> None:
