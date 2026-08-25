@@ -6,8 +6,6 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
 from audible_tui import config
 from audible_tui.models import Book
 from audible_tui.services.api import AudibleAPI, License
@@ -39,7 +37,14 @@ def download_book(
     audio_path = audio_path_for(book.asin)
     tmp_path = audio_path.with_suffix(".part")
 
-    with httpx.stream("GET", license_.content_url, follow_redirects=True, timeout=60) as resp:
+    # Fetched through the same authenticated session used for API calls (matching
+    # audible-cli's own downloader), not a bare unauthenticated client -- Audible's
+    # CDN has rejected the plain-httpx version of this request with a WAF "Request
+    # blocked" 403 even though the signed URL itself was valid, while this same
+    # signed-session request and mpv's own fetch (used for streaming) both work.
+    with api.client.session.stream(
+        "GET", license_.content_url, follow_redirects=True, timeout=60
+    ) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
         downloaded = 0
