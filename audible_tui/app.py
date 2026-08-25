@@ -34,8 +34,22 @@ class AudibleTUIApp(App[None]):
             self.api.close()
 
 
+def _setup_logging() -> None:
+    config.ensure_dirs()
+    handler = logging.FileHandler(config.LOG_FILE)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    root.addHandler(handler)
+    # Nothing here logs credentials in plaintext, but the login flow's HTML
+    # inspection can be verbose -- keep it out of WARNING-level noise from
+    # other libraries while still capturing it in the file.
+    for name in ("audible_tui", "audible.login", "audible.auth", "audible.client"):
+        logging.getLogger(name).setLevel(logging.DEBUG)
+
+
 def run() -> None:
-    logging.basicConfig(level=logging.WARNING)
+    _setup_logging()
     AudibleTUIApp().run()
 
 
