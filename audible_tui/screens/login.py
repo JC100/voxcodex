@@ -110,6 +110,18 @@ class LoginScreen(Screen[None]):
         else:
             self._start_login()
 
+    @on(Input.Submitted)
+    def _input_submitted(self, event: Input.Submitted) -> None:
+        """Enter in a field advances to the next one, or submits on the last."""
+        order = ["vault-password"] if self._unlock_only else ["username", "password", "vault-password"]
+        if event.input.id not in order:
+            return
+        idx = order.index(event.input.id)
+        if idx + 1 < len(order):
+            self.query_one(f"#{order[idx + 1]}", Input).focus()
+        else:
+            self._submit()
+
     @on(Button.Pressed, "#reset")
     def _reset(self) -> None:
         auth.logout()
