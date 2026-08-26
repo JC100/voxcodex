@@ -24,6 +24,17 @@ LIBRARY_RESPONSE_GROUPS = (
 
 LICENSE_RESPONSE_GROUPS = "last_position_heard, pdf_url, content_reference"
 
+# Every request this app makes -- API calls and the raw content download alike
+# -- rides on a device registration that already identifies us as the Audible
+# iOS app (that's what `audible.Authenticator`'s login/registration flow sets
+# up). httpx's own default User-Agent breaks that identity for just the CDN
+# download leg, which is the one place Amazon's CloudFront-fronted content
+# servers apparently check it: the API host accepts the mismatch, the CDN
+# doesn't. This isn't bypassing anything the auth flow doesn't already rely
+# on -- it's completing it consistently, so the download identifies as the
+# same already-registered app as everything else.
+_DEVICE_USER_AGENT = "Audible/671 CFNetwork/1240.0.4 Darwin/20.6.0"
+
 # Extra headers Amazon's licensing endpoint expects, mirroring what the
 # official apps send. Confirmed against audible-cli's implementation.
 _LICENSE_HEADERS = {
@@ -61,7 +72,9 @@ def _full_response(resp: httpx.Response) -> httpx.Response:
 class AudibleAPI:
     def __init__(self, auth: audible.Authenticator) -> None:
         self._auth = auth
-        self.client = audible.Client(auth=auth, timeout=30)
+        self.client = audible.Client(
+            auth=auth, timeout=30, headers={"User-Agent": _DEVICE_USER_AGENT}
+        )
 
     def close(self) -> None:
         self.client.close()
