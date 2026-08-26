@@ -16,6 +16,7 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 PROGRESS_CACHE_FILE = DATA_DIR / "progress_cache.json"
 LIBRARY_CACHE_FILE = DATA_DIR / "library_cache.json"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
+LOG_FILE = DATA_DIR / "audible-tui.log"
 
 
 def ensure_dirs() -> None:
