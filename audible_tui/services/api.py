@@ -64,6 +64,13 @@ class License:
     last_position_ms: int = 0
 
 
+@dataclass
+class Chapter:
+    title: str
+    start_ms: int
+    length_ms: int
+
+
 def _full_response(resp: httpx.Response) -> httpx.Response:
     raise_for_status(resp)
     return resp
@@ -152,6 +159,34 @@ class AudibleAPI:
             iv=iv,
             last_position_ms=last_position_ms,
         )
+
+    # -- chapters -----------------------------------------------------
+
+    def get_chapters(self, asin: str, quality: str = "high") -> list[Chapter]:
+        """Fetches this title's chapter list (title + timing).
+
+        Podcasts/samples and the odd older title may simply have none -- an
+        empty result here isn't an error, just "nothing to navigate by".
+        """
+        api_quality = "High" if quality != "normal" else "Normal"
+        resp = self.client.get(
+            f"content/{asin}/metadata",
+            response_groups="chapter_info",
+            quality=api_quality,
+            drm_type="Adrm",
+            chapter_titles_type="Flat",
+        )
+        content_metadata = resp.get("content_metadata") or {}
+        chapter_info = content_metadata.get("chapter_info") or {}
+        raw_chapters = chapter_info.get("chapters") or []
+        return [
+            Chapter(
+                title=c.get("title", ""),
+                start_ms=int(c.get("start_offset_ms", 0)),
+                length_ms=int(c.get("length_ms", 0)),
+            )
+            for c in raw_chapters
+        ]
 
 
 def _book_from_item(item: dict[str, Any]) -> Book:

@@ -144,6 +144,9 @@ class MpvPlayer:
     def seek_relative(self, seconds: float) -> None:
         self._command("seek", seconds, "relative")
 
+    def seek_absolute(self, seconds: float) -> None:
+        self._command("seek", seconds, "absolute")
+
     def set_speed(self, speed: float) -> None:
         self.set_property("speed", max(0.5, min(3.0, speed)))
 

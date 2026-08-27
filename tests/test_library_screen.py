@@ -15,7 +15,7 @@ from textual.widgets import DataTable
 from audible_tui.models import Book
 from audible_tui.screens import library as library_module
 from audible_tui.screens.library import LibraryScreen
-from audible_tui.services.api import License
+from audible_tui.services.api import Chapter, License
 
 
 class FakeProgressStore:
@@ -35,10 +35,13 @@ class FakeAudibleClient:
 
 
 class FakeAPI:
-    def __init__(self, books):
+    def __init__(self, books, chapters=None, chapters_exc=None):
         self._books = books
         self.client = FakeAudibleClient()
         self.license_calls = []
+        self.chapter_calls = []
+        self._chapters = chapters if chapters is not None else []
+        self._chapters_exc = chapters_exc
 
     def get_library(self):
         return list(self._books)
@@ -46,6 +49,12 @@ class FakeAPI:
     def get_license(self, asin, quality="high"):
         self.license_calls.append((asin, quality))
         return License(asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i")
+
+    def get_chapters(self, asin):
+        self.chapter_calls.append(asin)
+        if self._chapters_exc is not None:
+            raise self._chapters_exc
+        return list(self._chapters)
 
 
 class HostApp(App):
@@ -295,3 +304,65 @@ async def test_delete_confirmed_removes_download(monkeypatch):
 
         assert delete_calls == ["B1"]
         assert screen._books[0].is_downloaded is False
+
+
+# -- playback / chapters -------------------------------------------------
+
+
+class _FakeMpvPlayer:
+    """Stands in for MpvPlayer so `p` never spawns a real mpv subprocess."""
+
+    volume = 100.0
+
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self):
+        pass
+
+    @property
+    def is_running(self):
+        return True
+
+
+async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
+    from audible_tui.screens import player_screen as player_screen_module
+    from audible_tui.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    chapters = [Chapter(title="Chapter 1", start_ms=0, length_ms=60_000)]
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, chapters=chapters)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        assert api.chapter_calls == ["B1"]
+        assert app.screen._chapters == chapters
+
+
+async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
+    from audible_tui.screens import player_screen as player_screen_module
+    from audible_tui.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, chapters_exc=RuntimeError("metadata endpoint exploded"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        # Chapter navigation is degraded, not the whole play action.
+        assert app.screen._chapters == []

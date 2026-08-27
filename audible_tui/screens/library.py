@@ -12,7 +12,7 @@ from audible_tui.models import Book
 from audible_tui.screens.modals import ConfirmModal, MessageModal
 from audible_tui.screens.player_screen import PlayerScreen
 from audible_tui.services import download, progress
-from audible_tui.services.api import AudibleAPI
+from audible_tui.services.api import AudibleAPI, Chapter
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Local")
 
@@ -230,12 +230,23 @@ class LibraryScreen(Screen[None]):
         except Exception as exc:  # noqa: BLE001
             self.app.call_from_thread(self._player_open_failed, str(exc))
             return
-        self.app.call_from_thread(self._launch_player, book, source, key, iv)
+
+        try:
+            chapters = self.api.get_chapters(book.asin)
+        except Exception:  # noqa: BLE001
+            # Chapter navigation is an enhancement, not a playback requirement
+            # -- a book without (or a failed fetch of) chapter data should
+            # still play, just without next/previous-chapter navigation.
+            chapters = []
+
+        self.app.call_from_thread(self._launch_player, book, source, key, iv, chapters)
 
     def _player_open_failed(self, message: str) -> None:
         self._set_status(f"[red]Could not start playback: {message}[/red]")
 
-    def _launch_player(self, book: Book, source: str, key: str, iv: str) -> None:
+    def _launch_player(
+        self, book: Book, source: str, key: str, iv: str, chapters: list[Chapter]
+    ) -> None:
         self._set_status("")
 
         def _on_close(final_position_ms: int) -> None:
@@ -243,4 +254,4 @@ class LibraryScreen(Screen[None]):
             book.progress_ms = final_position_ms
             self._refresh_table()
 
-        self.app.push_screen(PlayerScreen(book, source, key, iv), _on_close)
+        self.app.push_screen(PlayerScreen(book, source, key, iv, chapters=chapters), _on_close)

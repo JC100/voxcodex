@@ -53,10 +53,17 @@ Player screen:
 | `↑` / `↓` | Speed up / down |
 | `]` / `[` | Volume up / down |
 | `s` | Cycle sleep timer (off → 15 → 30 → 45 → 60 min → off) |
+| `n` / `p` | Next / previous chapter |
 | `q` / `esc` | Stop and go back |
 
 The sleep timer only counts down while actually playing (pausing freezes
 it); when it hits zero it pauses playback and resets to off.
+
+Chapter navigation needs Audible's chapter metadata for that title, fetched
+alongside the license/voucher whenever you hit play; a title with no
+chapter data (podcasts, samples, some older titles) or a failed fetch just
+means no chapter row/navigation for that session -- playback itself is
+unaffected either way.
 
 ## How it works
 

@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, ProgressBar, Static
 
 from audible_tui.models import Book
+from audible_tui.services.api import Chapter
 from audible_tui.services.player import MpvNotFoundError, MpvError, MpvPlayer
 
 
@@ -35,6 +36,8 @@ class PlayerScreen(Screen[int]):
         ("]", "volume_up", "Volume +"),
         ("[", "volume_down", "Volume -"),
         ("s", "cycle_sleep_timer", "Sleep timer"),
+        ("n", "next_chapter", "Next chapter"),
+        ("p", "previous_chapter", "Prev chapter"),
         ("q", "close", "Stop & back"),
         ("escape", "close", "Stop & back"),
     ]
@@ -42,6 +45,12 @@ class PlayerScreen(Screen[int]):
     # Minutes cycled through by repeatedly pressing the sleep-timer key;
     # 0 means "off". Index into this list is tracked in _sleep_preset_index.
     _SLEEP_PRESETS_MIN = (0, 15, 30, 45, 60)
+
+    # "Previous chapter" restarts the current chapter unless already this
+    # close to its start, matching the usual podcast/audiobook-player
+    # convention -- otherwise a slightly-late press would just replay the
+    # last few seconds you already heard instead of going back a chapter.
+    _CHAPTER_RESTART_THRESHOLD_MS = 3000
 
     DEFAULT_CSS = """
     PlayerScreen {
@@ -62,12 +71,15 @@ class PlayerScreen(Screen[int]):
     }
     """
 
-    def __init__(self, book: Book, source: str, key: str, iv: str) -> None:
+    def __init__(
+        self, book: Book, source: str, key: str, iv: str, chapters: list[Chapter] | None = None
+    ) -> None:
         super().__init__()
         self.book = book
         self._source = source
         self._key = key
         self._iv = iv
+        self._chapters = chapters or []
         self._player: MpvPlayer | None = None
         self._last_position_ms = book.progress_ms
         self._speed = 1.0
@@ -82,6 +94,7 @@ class PlayerScreen(Screen[int]):
             yield Static("Starting player...", id="state")
             yield ProgressBar(id="bar", total=100, show_eta=False)
             yield Static("", id="time-row")
+            yield Static("", id="chapter-row")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -140,6 +153,49 @@ class PlayerScreen(Screen[int]):
         )
         if player.eof_reached:
             self.query_one("#state", Static).update("Finished")
+
+        chapter_row = self.query_one("#chapter-row", Static)
+        if self._chapters:
+            idx = self._current_chapter_index()
+            if idx is not None:
+                chapter_row.update(
+                    f"Chapter {idx + 1}/{len(self._chapters)}: {self._chapters[idx].title}"
+                )
+        else:
+            chapter_row.update("")
+
+    def _current_chapter_index(self) -> int | None:
+        """Index of the chapter containing `_last_position_ms`, or None if
+        there are no chapters (or the position is somehow before the first
+        one's start, which shouldn't normally happen)."""
+        index = None
+        for i, chapter in enumerate(self._chapters):
+            if chapter.start_ms <= self._last_position_ms:
+                index = i
+            else:
+                break
+        return index
+
+    def action_next_chapter(self) -> None:
+        if not self._player or not self._chapters:
+            return
+        idx = self._current_chapter_index()
+        if idx is not None and idx + 1 < len(self._chapters):
+            self._player.seek_absolute(self._chapters[idx + 1].start_ms / 1000)
+
+    def action_previous_chapter(self) -> None:
+        if not self._player or not self._chapters:
+            return
+        idx = self._current_chapter_index()
+        if idx is None:
+            return
+        chapter = self._chapters[idx]
+        into_chapter_ms = self._last_position_ms - chapter.start_ms
+        if idx > 0 and into_chapter_ms <= self._CHAPTER_RESTART_THRESHOLD_MS:
+            target = self._chapters[idx - 1]
+        else:
+            target = chapter
+        self._player.seek_absolute(target.start_ms / 1000)
 
     def action_toggle_pause(self) -> None:
         if self._player:

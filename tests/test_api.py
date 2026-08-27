@@ -264,3 +264,53 @@ def test_get_license_decrypts_voucher_when_license_response_present(monkeypatch)
     # top-level fields the decryption depends on.
     assert captured_args["auth"] is api._auth
     assert captured_args["lr"] is resp
+
+
+# -- get_chapters -------------------------------------------------------
+
+
+class FakeMetadataClient:
+    def __init__(self, response):
+        self._response = response
+        self.calls = []
+
+    def get(self, path, **kwargs):
+        self.calls.append((path, kwargs))
+        return self._response
+
+
+def test_get_chapters_parses_flat_chapter_list():
+    response = {
+        "content_metadata": {
+            "chapter_info": {
+                "chapters": [
+                    {"title": "Opening Credits", "start_offset_ms": 0, "length_ms": 5000},
+                    {"title": "Chapter 1", "start_offset_ms": 5000, "length_ms": 120000},
+                ]
+            }
+        }
+    }
+    api = _api_with_fake_client(FakeMetadataClient(response))
+
+    chapters = api.get_chapters("B001")
+
+    assert [c.title for c in chapters] == ["Opening Credits", "Chapter 1"]
+    assert [c.start_ms for c in chapters] == [0, 5000]
+    assert [c.length_ms for c in chapters] == [5000, 120000]
+
+
+def test_get_chapters_returns_empty_list_when_no_chapter_info():
+    # e.g. podcasts/samples/older titles that simply have none
+    api = _api_with_fake_client(FakeMetadataClient({"content_metadata": {}}))
+    assert api.get_chapters("B001") == []
+
+
+def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    api.get_chapters("B12345")
+
+    (path, kwargs), = client.calls
+    assert path == "content/B12345/metadata"
+    assert kwargs["response_groups"] == "chapter_info"

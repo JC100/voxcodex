@@ -95,6 +95,12 @@ def test_seek_relative_sends_relative_seek_command(monkeypatch):
     assert calls == [("seek", -10, "relative")]
 
 
+def test_seek_absolute_sends_absolute_seek_command(monkeypatch):
+    p, calls = _player_with_captured_commands(monkeypatch)
+    p.seek_absolute(123.4)
+    assert calls == [("seek", 123.4, "absolute")]
+
+
 def test_set_volume_clamps_above_max(monkeypatch):
     p, calls = _player_with_captured_commands(monkeypatch)
     p.set_volume(150)

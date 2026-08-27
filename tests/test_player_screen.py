@@ -13,6 +13,7 @@ from textual.widgets import Static
 from audible_tui.models import Book
 from audible_tui.screens import player_screen as player_screen_module
 from audible_tui.screens.player_screen import PlayerScreen
+from audible_tui.services.api import Chapter
 from audible_tui.services.player import MpvError, MpvNotFoundError
 
 
@@ -26,6 +27,7 @@ class FakePlayer:
         self.eof = False
         self.volume_ = 100.0
         self.seek_calls = []
+        self.seek_absolute_calls = []
         self.speed_calls = []
         self.volume_calls = []
         self.set_paused_calls = []
@@ -48,6 +50,10 @@ class FakePlayer:
 
     def seek_relative(self, seconds):
         self.seek_calls.append(seconds)
+
+    def seek_absolute(self, seconds):
+        self.seek_absolute_calls.append(seconds)
+        self.position = seconds
 
     def set_speed(self, speed):
         self.speed_calls.append(speed)
@@ -461,6 +467,131 @@ async def test_time_row_shows_volume_and_sleep_countdown(fake_player):
         text = str(screen.query_one("#time-row").content)
         assert "vol 65%" in text
         assert "sleep 1:30" in text
+
+
+# -- chapters -----------------------------------------------------------
+
+
+_CHAPTERS = [
+    Chapter(title="Opening Credits", start_ms=0, length_ms=5_000),
+    Chapter(title="Chapter 1", start_ms=5_000, length_ms=60_000),
+    Chapter(title="Chapter 2", start_ms=65_000, length_ms=60_000),
+]
+
+
+async def test_chapter_row_blank_when_no_chapters(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0
+        screen._tick()
+
+        assert str(screen.query_one("#chapter-row").content) == ""
+
+
+async def test_chapter_row_shows_current_chapter(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # inside "Chapter 1" (starts at 5s)
+        screen._tick()
+
+        assert (
+            str(screen.query_one("#chapter-row").content)
+            == "Chapter 2/3: Chapter 1"
+        )
+
+
+async def test_next_chapter_seeks_to_next_chapters_start(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # in "Chapter 1"
+        screen._tick()
+
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == [65.0]  # start of "Chapter 2"
+
+
+async def test_next_chapter_is_a_no_op_on_the_last_chapter(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 70.0  # in "Chapter 2", the last one
+        screen._tick()
+
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == []
+
+
+async def test_previous_chapter_restarts_current_chapter_when_well_into_it(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 30.0  # well into "Chapter 1" (starts at 5s)
+        screen._tick()
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == [5.0]  # restart "Chapter 1"
+
+
+async def test_previous_chapter_goes_back_a_chapter_when_near_the_start(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 66.0  # 1s into "Chapter 2" (starts at 65s)
+        screen._tick()
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == [5.0]  # back to "Chapter 1"
+
+
+async def test_previous_chapter_on_first_chapter_just_restarts_it(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 1.0  # in the very first chapter
+        screen._tick()
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == [0.0]
+
+
+async def test_chapter_navigation_is_a_no_op_without_chapters(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")  # no chapters
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        await pilot.press("n")
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert fake_player.seek_absolute_calls == []
 
 
 async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
