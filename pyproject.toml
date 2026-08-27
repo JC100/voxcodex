@@ -14,7 +14,7 @@ dependencies = [
 audible-tui = "audible_tui.app:run"
 
 [project.optional-dependencies]
-test = ["pytest>=8.0.0"]
+test = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -25,3 +25,4 @@ include = ["audible_tui*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
