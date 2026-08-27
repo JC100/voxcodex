@@ -32,9 +32,17 @@ class FakeProgressStore:
 class FakeSettings:
     def __init__(self, *args, **kwargs):
         self.last_played_externally_calls = []
+        self.library_sort_key = "recent"
+        self.library_filter_key = "all"
 
     def set_last_played_externally(self, asin, updated_at):
         self.last_played_externally_calls.append((asin, updated_at))
+
+    def set_library_sort_key(self, key):
+        self.library_sort_key = key
+
+    def set_library_filter_key(self, key):
+        self.library_filter_key = key
 
 
 class FakeAudibleClient:
@@ -293,6 +301,180 @@ async def test_slash_types_literal_slash_when_search_already_focused():
         from textual.widgets import Input
 
         assert screen.query_one("#search", Input).value == "/"
+
+
+# -- sort / filter -----------------------------------------------------
+
+
+def _sortable_book(asin, title, author="", series="", series_sequence="", purchase_date=""):
+    return Book(
+        asin=asin, title=title, authors=[author] if author else [],
+        series=series, series_sequence=series_sequence, purchase_date=purchase_date,
+    )
+
+
+async def test_default_sort_is_recent_by_purchase_date_descending():
+    books = [
+        _sortable_book("B1", "Old", purchase_date="2020-01-01"),
+        _sortable_book("B2", "New", purchase_date="2026-01-01"),
+        _sortable_book("B3", "Middle", purchase_date="2023-01-01"),
+    ]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 3)
+        assert [b.title for b in screen._filtered] == ["New", "Middle", "Old"]
+
+
+async def test_cycle_sort_to_title_orders_alphabetically(_fake_settings):
+    books = [
+        _sortable_book("B1", "Charlie"),
+        _sortable_book("B2", "Alpha"),
+        _sortable_book("B3", "Bravo"),
+    ]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("o")  # recent -> title
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["Alpha", "Bravo", "Charlie"]
+        assert _fake_settings.library_sort_key == "title"
+        assert "Sort: Title" in str(screen.query_one("#sort-filter").content)
+
+
+async def test_cycle_sort_wraps_all_the_way_around():
+    screen = LibraryScreen(FakeAPI([_sortable_book("B1", "One")]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        for _ in range(5):  # recent -> title -> author -> series -> progress -> recent
+            await pilot.press("o")
+        await pilot.pause()
+
+        assert screen._sort_key == "recent"
+
+
+async def test_sort_by_series_puts_unseried_books_last():
+    books = [
+        _sortable_book("B1", "No Series"),
+        _sortable_book("B2", "Second In Series", series="Zeta", series_sequence="2"),
+        _sortable_book("B3", "First In Series", series="Zeta", series_sequence="1"),
+    ]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("o")
+        await pilot.press("o")
+        await pilot.press("o")  # recent -> title -> author -> series
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == [
+            "First In Series", "Second In Series", "No Series",
+        ]
+
+
+async def test_cycle_filter_to_downloaded_only(_fake_settings, monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin == "B1")
+    books = [_sortable_book("B1", "Downloaded"), _sortable_book("B2", "Not downloaded")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 2)
+        screen.query_one(DataTable).focus()
+        await pilot.press("f")  # all -> downloaded
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["Downloaded"]
+        assert _fake_settings.library_filter_key == "downloaded"
+        label = str(screen.query_one("#sort-filter").content)
+        assert "Filter: Downloaded" in label
+        assert "(1/2 shown)" in label
+
+
+async def test_sort_filter_label_shows_plain_count_when_nothing_is_filtered_out():
+    books = [_sortable_book("B1", "One"), _sortable_book("B2", "Two")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 2)
+        label = str(screen.query_one("#sort-filter").content)
+        assert "(2 shown)" in label
+
+
+async def test_filter_in_progress_excludes_finished_and_not_started():
+    not_started = Book(asin="B1", title="Not started", progress_ms=0, duration_ms=1000)
+    in_progress = Book(asin="B2", title="In progress", progress_ms=500, duration_ms=1000)
+    finished = Book(asin="B3", title="Finished", progress_ms=1000, duration_ms=1000, is_finished=True)
+    screen = LibraryScreen(FakeAPI([not_started, in_progress, finished]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("f")
+        await pilot.press("f")  # all -> downloaded -> in_progress
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["In progress"]
+
+
+async def test_filter_and_search_combine(monkeypatch):
+    from textual.widgets import Input
+
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2"))
+    books = [
+        _sortable_book("B1", "Wanted Downloaded"),
+        _sortable_book("B2", "Other Downloaded"),
+        _sortable_book("B3", "Wanted Not Downloaded"),
+    ]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("f")  # all -> downloaded (excludes B3)
+        await pilot.pause()
+
+        screen.query_one("#search", Input).focus()
+        await pilot.press(*"wanted")  # further narrows to B1 (excludes B2)
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["Wanted Downloaded"]
+
+
+async def test_sort_and_filter_are_restored_from_settings(_fake_settings):
+    _fake_settings.library_sort_key = "title"
+    _fake_settings.library_filter_key = "finished"
+
+    screen = LibraryScreen(FakeAPI([]))
+
+    assert screen._sort_key == "title"
+    assert screen._filter_key == "finished"
+
+
+async def test_unknown_persisted_sort_and_filter_keys_fall_back_to_defaults(_fake_settings):
+    """Defensive against a future removed/renamed option in a settings.json
+    left over from an older version of the app."""
+    _fake_settings.library_sort_key = "some_removed_option"
+    _fake_settings.library_filter_key = "some_removed_option"
+
+    screen = LibraryScreen(FakeAPI([]))
+
+    assert screen._sort_key == "recent"
+    assert screen._filter_key == "all"
 
 
 # -- download ---------------------------------------------------------------

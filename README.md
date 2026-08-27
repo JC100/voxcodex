@@ -41,7 +41,16 @@ Library screen:
 | `p` | Play selected book (streams if not downloaded) |
 | `x` | Delete local download |
 | `r` | Refresh library |
+| `o` | Cycle sort (Recent → Title → Author → Series → Progress → Recent) |
+| `f` | Cycle filter (All → Downloaded → In progress → Finished → Not started → All) |
 | `q` | Quit |
+
+Sort and filter apply client-side to whatever's already loaded (including
+the offline cache), so cycling them is instant and needs no network call.
+The line above the table always shows the current sort/filter and how many
+titles that leaves (e.g. `Sort: Title   Filter: Downloaded   (3/42 shown)`)
+-- both choices persist across sessions the same way playback speed/volume
+do.
 
 Player screen:
 

@@ -91,3 +91,25 @@ def test_malformed_last_played_entry_is_ignored_not_raised(tmp_path):
     s = settings.Settings(path=path)
 
     assert s.last_played_in_app is None
+
+
+def test_library_sort_key_defaults_to_recent(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    assert s.library_sort_key == "recent"
+
+
+def test_library_sort_key_round_trips(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    s.set_library_sort_key("title")
+    assert s.library_sort_key == "title"
+
+
+def test_library_filter_key_defaults_to_all(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    assert s.library_filter_key == "all"
+
+
+def test_library_filter_key_round_trips(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    s.set_library_filter_key("downloaded")
+    assert s.library_filter_key == "downloaded"

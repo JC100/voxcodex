@@ -22,6 +22,8 @@ from audible_tui import config
 
 DEFAULT_PLAYBACK_SPEED = 1.0
 DEFAULT_PLAYBACK_VOLUME = 100.0
+DEFAULT_LIBRARY_SORT = "recent"
+DEFAULT_LIBRARY_FILTER = "all"
 
 
 class Settings:
@@ -74,6 +76,22 @@ class Settings:
             "asin": asin,
             "updated_at": updated_at.timestamp(),
         }
+        self.save()
+
+    @property
+    def library_sort_key(self) -> str:
+        return str(self._data.get("library_sort_key", DEFAULT_LIBRARY_SORT))
+
+    def set_library_sort_key(self, key: str) -> None:
+        self._data["library_sort_key"] = key
+        self.save()
+
+    @property
+    def library_filter_key(self) -> str:
+        return str(self._data.get("library_filter_key", DEFAULT_LIBRARY_FILTER))
+
+    def set_library_filter_key(self, key: str) -> None:
+        self._data["library_filter_key"] = key
         self.save()
 
     def _last_played(self, key: str) -> tuple[str, float] | None:
