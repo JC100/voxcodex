@@ -1,14 +1,21 @@
 [project]
 name = "voxcodex"
-version = "0.1.0"
+version = "0.2.0"
 description = "A terminal UI for browsing, downloading, and playing your existing Audible library."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+authors = [{ name = "JC100" }]
+keywords = ["audible", "audiobooks", "tui", "terminal", "textual"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: GNU Affero General Public License v3",
     "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "audible>=0.10.0",
@@ -16,6 +23,10 @@ dependencies = [
     "httpx>=0.27.0",
     "platformdirs>=4.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/JC100/voxcodex"
+Issues = "https://github.com/JC100/voxcodex/issues"
 
 [project.scripts]
 voxcodex = "voxcodex.app:run"
