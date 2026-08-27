@@ -32,9 +32,16 @@ class PlayerScreen(Screen[int]):
         ("shift+right", "seek_forward_long", "+60s"),
         ("up", "speed_up", "Speed +"),
         ("down", "speed_down", "Speed -"),
+        ("]", "volume_up", "Volume +"),
+        ("[", "volume_down", "Volume -"),
+        ("s", "cycle_sleep_timer", "Sleep timer"),
         ("q", "close", "Stop & back"),
         ("escape", "close", "Stop & back"),
     ]
+
+    # Minutes cycled through by repeatedly pressing the sleep-timer key;
+    # 0 means "off". Index into this list is tracked in _sleep_preset_index.
+    _SLEEP_PRESETS_MIN = (0, 15, 30, 45, 60)
 
     DEFAULT_CSS = """
     PlayerScreen {
@@ -64,6 +71,9 @@ class PlayerScreen(Screen[int]):
         self._player: MpvPlayer | None = None
         self._last_position_ms = book.progress_ms
         self._speed = 1.0
+        self._volume = 100.0
+        self._sleep_preset_index = 0
+        self._sleep_remaining_seconds: float | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -94,6 +104,7 @@ class PlayerScreen(Screen[int]):
 
     def _start_succeeded(self) -> None:
         self.query_one("#state", Static).update("Playing")
+        self._volume = self._player.volume if self._player else 100.0
         self.set_interval(1.0, self._tick)
 
     def _tick(self) -> None:
@@ -109,9 +120,23 @@ class PlayerScreen(Screen[int]):
         self._last_position_ms = int(position * 1000)
         pct = int(position / duration * 100) if duration else 0
         self.query_one("#bar", ProgressBar).update(total=100, progress=min(100, pct))
+
+        if self._sleep_remaining_seconds is not None and not paused:
+            self._sleep_remaining_seconds = max(0.0, self._sleep_remaining_seconds - 1.0)
+            if self._sleep_remaining_seconds <= 0:
+                player.set_paused(True)
+                paused = True
+                self._sleep_remaining_seconds = None
+                self._sleep_preset_index = 0
+
+        sleep_part = ""
+        if self._sleep_remaining_seconds is not None:
+            sleep_part = f"   sleep {_fmt_hms(self._sleep_remaining_seconds)}"
+
         self.query_one("#time-row", Static).update(
             f"{_fmt_hms(position)} / {_fmt_hms(duration)}   "
-            f"{'paused' if paused else 'playing'}   speed {self._speed:.1f}x"
+            f"{'paused' if paused else 'playing'}   speed {self._speed:.1f}x   "
+            f"vol {self._volume:.0f}%{sleep_part}"
         )
         if player.eof_reached:
             self.query_one("#state", Static).update("Finished")
@@ -145,6 +170,21 @@ class PlayerScreen(Screen[int]):
         if self._player:
             self._speed = max(0.5, round(self._speed - 0.1, 1))
             self._player.set_speed(self._speed)
+
+    def action_volume_up(self) -> None:
+        if self._player:
+            self._volume = min(100.0, self._volume + 5)
+            self._player.set_volume(self._volume)
+
+    def action_volume_down(self) -> None:
+        if self._player:
+            self._volume = max(0.0, self._volume - 5)
+            self._player.set_volume(self._volume)
+
+    def action_cycle_sleep_timer(self) -> None:
+        self._sleep_preset_index = (self._sleep_preset_index + 1) % len(self._SLEEP_PRESETS_MIN)
+        minutes = self._SLEEP_PRESETS_MIN[self._sleep_preset_index]
+        self._sleep_remaining_seconds = float(minutes * 60) if minutes else None
 
     def action_close(self) -> None:
         if self._player:

@@ -131,14 +131,24 @@ class MpvPlayer:
     def eof_reached(self) -> bool:
         return bool(self.get_property("eof-reached", False))
 
+    @property
+    def volume(self) -> float:
+        return float(self.get_property("volume", 100.0) or 0.0)
+
+    def set_paused(self, paused: bool) -> None:
+        self.set_property("pause", paused)
+
     def toggle_pause(self) -> None:
-        self.set_property("pause", not self.paused)
+        self.set_paused(not self.paused)
 
     def seek_relative(self, seconds: float) -> None:
         self._command("seek", seconds, "relative")
 
     def set_speed(self, speed: float) -> None:
         self.set_property("speed", max(0.5, min(3.0, speed)))
+
+    def set_volume(self, volume: float) -> None:
+        self.set_property("volume", max(0.0, min(100.0, volume)))
 
     def stop(self) -> None:
         if self._sock is not None:

@@ -36,6 +36,12 @@ def test_position_and_duration_default_to_zero_when_not_connected(monkeypatch):
     assert p.eof_reached is False
 
 
+def test_volume_defaults_to_100_when_not_connected(monkeypatch):
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    assert p.volume == 100.0
+
+
 def test_stop_before_start_does_not_raise(monkeypatch):
     monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
     p = MpvPlayer()
@@ -87,6 +93,30 @@ def test_seek_relative_sends_relative_seek_command(monkeypatch):
     p, calls = _player_with_captured_commands(monkeypatch)
     p.seek_relative(-10)
     assert calls == [("seek", -10, "relative")]
+
+
+def test_set_volume_clamps_above_max(monkeypatch):
+    p, calls = _player_with_captured_commands(monkeypatch)
+    p.set_volume(150)
+    assert calls == [("set_property", "volume", 100.0)]
+
+
+def test_set_volume_clamps_below_min(monkeypatch):
+    p, calls = _player_with_captured_commands(monkeypatch)
+    p.set_volume(-20)
+    assert calls == [("set_property", "volume", 0.0)]
+
+
+def test_set_volume_passes_through_value_in_range(monkeypatch):
+    p, calls = _player_with_captured_commands(monkeypatch)
+    p.set_volume(65)
+    assert calls == [("set_property", "volume", 65)]
+
+
+def test_set_paused_sets_pause_property_explicitly(monkeypatch):
+    p, calls = _player_with_captured_commands(monkeypatch)
+    p.set_paused(True)
+    assert calls == [("set_property", "pause", True)]
 
 
 # -- _connect --------------------------------------------------------------

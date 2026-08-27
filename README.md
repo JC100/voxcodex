@@ -51,7 +51,12 @@ Player screen:
 | `←` / `→` | Seek -10s / +30s |
 | `shift+←` / `shift+→` | Seek -60s / +60s |
 | `↑` / `↓` | Speed up / down |
+| `]` / `[` | Volume up / down |
+| `s` | Cycle sleep timer (off → 15 → 30 → 45 → 60 min → off) |
 | `q` / `esc` | Stop and go back |
+
+The sleep timer only counts down while actually playing (pausing freezes
+it); when it hits zero it pauses playback and resets to off.
 
 ## How it works
 

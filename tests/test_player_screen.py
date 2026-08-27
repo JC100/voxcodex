@@ -24,8 +24,11 @@ class FakePlayer:
         self.duration = 100.0
         self.paused_ = False
         self.eof = False
+        self.volume_ = 100.0
         self.seek_calls = []
         self.speed_calls = []
+        self.volume_calls = []
+        self.set_paused_calls = []
         self.toggle_pause_calls = 0
 
     def start(self, source, key, iv, start_seconds=0.0):
@@ -39,11 +42,19 @@ class FakePlayer:
         self.toggle_pause_calls += 1
         self.paused_ = not self.paused_
 
+    def set_paused(self, paused):
+        self.set_paused_calls.append(paused)
+        self.paused_ = paused
+
     def seek_relative(self, seconds):
         self.seek_calls.append(seconds)
 
     def set_speed(self, speed):
         self.speed_calls.append(speed)
+
+    def set_volume(self, volume):
+        self.volume_calls.append(volume)
+        self.volume_ = volume
 
     @property
     def position_seconds(self):
@@ -60,6 +71,10 @@ class FakePlayer:
     @property
     def eof_reached(self):
         return self.eof
+
+    @property
+    def volume(self):
+        return self.volume_
 
     def stop(self):
         self.stopped = True
@@ -285,6 +300,167 @@ async def test_speed_down_clamps_at_half_x(fake_player):
         await pilot.pause()
 
         assert fake_player.speed_calls[-1] == 0.5
+
+
+# -- volume -----------------------------------------------------------
+
+
+async def test_start_succeeded_reads_actual_starting_volume_from_player(monkeypatch):
+    instance = FakePlayer()
+    instance.volume_ = 82.0
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", lambda: instance)
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        assert screen._volume == 82.0
+
+
+async def test_bracket_right_increases_volume(fake_player):
+    fake_player.volume_ = 50.0  # below the ceiling, so the increment is observable
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        await pilot.press("]")
+        await pilot.pause()
+
+        assert fake_player.volume_calls == [55.0]
+
+
+async def test_bracket_left_decreases_volume(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        await pilot.press("[")
+        await pilot.pause()
+
+        assert fake_player.volume_calls == [95.0]
+
+
+async def test_volume_up_clamps_at_100(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        for _ in range(3):  # 100 + 3*5 would overshoot 100 without clamping
+            await pilot.press("]")
+        await pilot.pause()
+
+        assert fake_player.volume_calls[-1] == 100.0
+
+
+async def test_volume_down_clamps_at_0(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        for _ in range(25):  # 100 - 25*5 would go well below 0 without clamping
+            await pilot.press("[")
+        await pilot.pause()
+
+        assert fake_player.volume_calls[-1] == 0.0
+
+
+# -- sleep timer --------------------------------------------------------
+
+
+async def test_sleep_timer_starts_off():
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    assert screen._sleep_remaining_seconds is None
+
+
+async def test_cycling_sleep_timer_sets_first_preset(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        await pilot.press("s")
+        await pilot.pause()
+
+        assert screen._sleep_remaining_seconds == 15 * 60
+
+
+async def test_cycling_sleep_timer_wraps_back_to_off(fake_player):
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        for _ in range(len(screen._SLEEP_PRESETS_MIN)):
+            await pilot.press("s")
+        await pilot.pause()
+
+        assert screen._sleep_remaining_seconds is None
+
+
+async def test_tick_counts_down_sleep_timer_while_playing(fake_player):
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._sleep_remaining_seconds = 20.0
+        fake_player.paused_ = False
+
+        screen._tick()
+
+        assert screen._sleep_remaining_seconds == 19.0
+
+
+async def test_tick_does_not_count_down_sleep_timer_while_paused(fake_player):
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._sleep_remaining_seconds = 20.0
+        fake_player.paused_ = True
+
+        screen._tick()
+
+        assert screen._sleep_remaining_seconds == 20.0
+
+
+async def test_sleep_timer_auto_pauses_playback_on_expiry(fake_player):
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._sleep_remaining_seconds = 1.0
+        fake_player.paused_ = False
+
+        screen._tick()
+
+        assert fake_player.set_paused_calls == [True]
+        assert screen._sleep_remaining_seconds is None
+        assert screen._sleep_preset_index == 0
+        assert "paused" in str(screen.query_one("#time-row").content)
+
+
+async def test_time_row_shows_volume_and_sleep_countdown(fake_player):
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._volume = 65.0
+        screen._sleep_remaining_seconds = 90.0  # 1:30
+        fake_player.paused_ = True  # avoid the countdown ticking down mid-assertion
+
+        screen._tick()
+
+        text = str(screen.query_one("#time-row").content)
+        assert "vol 65%" in text
+        assert "sleep 1:30" in text
 
 
 async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
