@@ -29,15 +29,28 @@ class FakeProgressStore:
         self._data[asin] = position_ms
 
 
+class FakeSettings:
+    def __init__(self, *args, **kwargs):
+        self.last_played_externally_calls = []
+
+    def set_last_played_externally(self, asin, updated_at):
+        self.last_played_externally_calls.append((asin, updated_at))
+
+
 class FakeAudibleClient:
+    def __init__(self, annotations_response=None):
+        self._annotations_response = (
+            annotations_response if annotations_response is not None else {}
+        )
+
     def get(self, *args, **kwargs):
-        return {}  # empty best-effort remote-positions response
+        return self._annotations_response
 
 
 class FakeAPI:
-    def __init__(self, books, chapters=None, chapters_exc=None):
+    def __init__(self, books, chapters=None, chapters_exc=None, annotations_response=None):
         self._books = books
-        self.client = FakeAudibleClient()
+        self.client = FakeAudibleClient(annotations_response)
         self.license_calls = []
         self.chapter_calls = []
         self._chapters = chapters if chapters is not None else []
@@ -75,6 +88,13 @@ def _book(asin, title, authors=None, series="", runtime_min=60):
 @pytest.fixture(autouse=True)
 def _fake_progress_store(monkeypatch):
     monkeypatch.setattr(library_module.progress, "ProgressStore", FakeProgressStore)
+
+
+@pytest.fixture(autouse=True)
+def _fake_settings(monkeypatch):
+    instance = FakeSettings()
+    monkeypatch.setattr(library_module, "Settings", lambda: instance)
+    return instance
 
 
 @pytest.fixture(autouse=True)
@@ -320,9 +340,26 @@ class _FakeMpvPlayer:
     def stop(self):
         pass
 
+    def set_speed(self, speed):
+        pass
+
+    def set_volume(self, volume):
+        pass
+
     @property
     def is_running(self):
         return True
+
+
+class _FakeSettingsForLibraryTests:
+    """Stands in for services.settings.Settings inside PlayerScreen, so these
+    library-screen tests never touch the real config dir either."""
+
+    playback_speed = 1.0
+    playback_volume = 100.0
+
+    def set_last_played_in_app(self, asin):
+        pass
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
@@ -330,6 +367,7 @@ async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
     from audible_tui.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     chapters = [Chapter(title="Chapter 1", start_ms=0, length_ms=60_000)]
     books = [_book("B1", "One")]
@@ -352,6 +390,7 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
     from audible_tui.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     books = [_book("B1", "One")]
     api = FakeAPI(books, chapters_exc=RuntimeError("metadata endpoint exploded"))
@@ -366,3 +405,56 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
 
         # Chapter navigation is degraded, not the whole play action.
         assert app.screen._chapters == []
+
+
+# -- last played externally -----------------------------------------------
+
+
+def _annotations_response(records):
+    return {"asin_last_position_heard_annots": records}
+
+
+def _existing(asin, last_updated):
+    return {
+        "asin": asin,
+        "last_position_heard": {
+            "status": "Exists", "position_ms": 1000, "last_updated": last_updated,
+        },
+    }
+
+
+async def test_library_load_records_the_most_recently_played_external_title(_fake_settings):
+    response = _annotations_response(
+        [
+            _existing("B1", "2019-01-24 09:21:16.892"),
+            _existing("B2", "2026-08-27 08:56:11.849"),
+        ]
+    )
+    books = [_book("B1", "One"), _book("B2", "Two")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 2)
+
+        assert len(_fake_settings.last_played_externally_calls) == 1
+        asin, updated_at = _fake_settings.last_played_externally_calls[0]
+        assert asin == "B2"
+        assert updated_at.year == 2026
+
+
+async def test_library_load_does_not_record_anything_when_nothing_was_ever_played(
+    _fake_settings,
+):
+    response = _annotations_response(
+        [{"asin": "B1", "last_position_heard": {"status": "DoesNotExist"}}]
+    )
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert _fake_settings.last_played_externally_calls == []

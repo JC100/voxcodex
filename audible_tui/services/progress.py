@@ -1,11 +1,9 @@
 """Listening-position tracking.
 
 Audible exposes a confirmed *read* endpoint for last-listened positions
-(`GET 1.0/annotations/lastpositions`, cross-checked against the `audible`
-package, `audible-cli`, and the community `audible.cr` API reference), but
-none of those sources document any endpoint the official apps use to *write*
-a position back. Rather than guess at an unverified write call and risk it
-silently doing nothing (or something wrong), this app:
+(`GET 1.0/annotations/lastpositions`), but no endpoint the official apps use
+to *write* a position back (see docs/whispersync-research.md for the full
+investigation into why not). So this app:
 
   - reads the real position from Audible when available, and
   - always keeps its own local cache of where you left off in *this* app,
@@ -15,6 +13,17 @@ silently doing nothing (or something wrong), this app:
 So "sync" here is one-directional (Audible -> audible-tui). If you also use
 the official app, its plays will still be reflected next time this app reads
 that endpoint -- this app just can't push its own plays back to Audible.
+
+The response shape below (`asin_last_position_heard_annots`, a list of
+per-asin records each with a nested `last_position_heard` dict) is confirmed
+directly against a live account, not guessed -- an earlier version of this
+module guessed at several plausible-looking shapes none of which were the
+real one, so `fetch_remote_positions` silently returned {} for every real
+response since this app's first commit. The bulk-loaded library table still
+looked reasonable throughout because it separately falls back to the
+library API's own `percent_complete` field, which masked the bug -- but the
+more precise resume-to-the-exact-second value this was meant to provide
+never actually worked until this fix.
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -60,60 +70,91 @@ class ProgressStore:
         self.save()
 
 
-def fetch_remote_positions(api: AudibleAPI, asins: list[str]) -> dict[str, int]:
-    """Best-effort bulk read of Audible's own last-heard positions.
+def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str, Any]]:
+    """Best-effort raw fetch of Audible's own last-heard annotations.
 
-    Returns an asin -> position_ms map. Returns an empty map (never raises)
-    if the call fails or the response doesn't match any shape we recognize,
-    since this endpoint's exact response schema isn't documented anywhere
-    we could confirm -- callers should treat this purely as an enhancement
-    over the local cache, not a dependency.
+    Returns the list of per-asin records (never raises, never None) --
+    empty if there are no asins to ask about, the call fails, or the
+    response doesn't match the confirmed shape. Kept separate from parsing
+    so a single fetch can feed more than one derived view (positions,
+    most-recently-played) without a second round trip.
     """
     if not asins:
-        return {}
+        return []
     try:
         resp = api.client.get("annotations/lastpositions", asins=",".join(asins))
+        records = resp.get("asin_last_position_heard_annots") if isinstance(resp, dict) else None
+        return records if isinstance(records, list) else []
     except Exception:
         logger.debug("lastpositions fetch failed", exc_info=True)
-        return {}
+        return []
 
+
+def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
+    """asin -> position_ms for every record with an actual recorded position."""
     positions: dict[str, int] = {}
-    try:
-        records: Any = resp
-        if isinstance(resp, dict):
-            records = (
-                resp.get("asin_positions")
-                or resp.get("positions")
-                or resp.get("lastPositions")
-                or resp
-            )
-        if isinstance(records, dict):
-            for asin, value in records.items():
-                ms = _extract_position_ms(value)
-                if ms is not None:
-                    positions[asin] = ms
-        elif isinstance(records, list):
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                asin = record.get("asin")
-                ms = _extract_position_ms(record)
-                if asin and ms is not None:
-                    positions[asin] = ms
-    except Exception:
-        logger.debug("lastpositions response shape unrecognized", exc_info=True)
-        return {}
+    for record in records:
+        asin, lph = _existing_last_position_heard(record)
+        if asin is None:
+            continue
+        try:
+            positions[asin] = int(lph.get("position_ms", 0))
+        except (TypeError, ValueError):
+            continue
     return positions
 
 
-def _extract_position_ms(value: Any) -> int | None:
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, dict):
-        for key in ("position_ms", "positionMs", "lastPositionMs", "position"):
-            if key in value:
-                try:
-                    return int(value[key])
-                except (TypeError, ValueError):
-                    return None
-    return None
+def most_recent_external_play(
+    records: list[dict[str, Any]],
+) -> tuple[str, datetime] | None:
+    """Of these records, the asin Audible most recently recorded a position
+    for -- i.e. the book you most recently played somewhere other than this
+    app (this app's own plays don't reach this endpoint; see the module
+    docstring). Returns (asin, updated_at) for the newest one, or None if no
+    record has both an existing position and a parseable timestamp.
+    """
+    best: tuple[str, datetime] | None = None
+    for record in records:
+        asin, lph = _existing_last_position_heard(record)
+        if asin is None:
+            continue
+        raw_updated = lph.get("last_updated")
+        if not raw_updated:
+            continue
+        try:
+            updated_at = datetime.strptime(raw_updated, "%Y-%m-%d %H:%M:%S.%f").replace(
+                tzinfo=UTC
+            )
+        except ValueError:
+            continue
+        if best is None or updated_at > best[1]:
+            best = (asin, updated_at)
+    return best
+
+
+def _existing_last_position_heard(
+    record: Any,
+) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+    """Pulls (asin, last_position_heard) out of one annotation record, but
+    only if it actually has a recorded position -- Audible returns a record
+    with status "DoesNotExist" (no `position_ms`/`last_updated` at all) for
+    titles that have never been played anywhere, which is not an error, just
+    nothing to report.
+    """
+    if not isinstance(record, dict):
+        return None, None
+    asin = record.get("asin")
+    lph = record.get("last_position_heard")
+    if not asin or not isinstance(lph, dict) or lph.get("status") != "Exists":
+        return None, None
+    return asin, lph
+
+
+def fetch_remote_positions(api: AudibleAPI, asins: list[str]) -> dict[str, int]:
+    """Best-effort bulk read of Audible's own last-heard positions.
+
+    Returns an asin -> position_ms map, or an empty map if the call fails or
+    no title has a recorded position -- callers should treat this purely as
+    an enhancement over the local cache, not a dependency.
+    """
+    return positions_from_annotations(fetch_remote_annotations(api, asins))

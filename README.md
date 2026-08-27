@@ -65,6 +65,15 @@ chapter data (podcasts, samples, some older titles) or a failed fetch just
 means no chapter row/navigation for that session -- playback itself is
 unaffected either way.
 
+Playback speed and volume persist across sessions (`~/.config/audible-tui/settings.json`)
+-- adjust them once with `↑`/`↓`/`]`/`[` and every future play starts there.
+That file also tracks, but doesn't yet surface in the UI, which title you
+most recently played *in this app* and which one Audible's own record shows
+as most recently played *elsewhere* -- kept as two separate values rather
+than merged into one "last played" for the same reason progress sync is
+one-directional (see below): this app's plays never reach Audible's side,
+so there's no way to compare them on equal footing yet.
+
 ## How it works
 
 - Auth and all API calls go through the [`audible`](https://github.com/mkb79/Audible)
@@ -84,6 +93,10 @@ unaffected either way.
   unexamined -- see [`docs/whispersync-research.md`](docs/whispersync-research.md)
   for what was tried, what actually works, and why it doesn't reach the
   Android app or website.
+  (The *read* side of this had been silently broken since day one, returning
+  nothing on every real account despite looking like it worked -- the actual
+  response shape wasn't confirmed against a live account until this was
+  revisited; fixed in `services/progress.py`.)
 
 ## Running tests
 

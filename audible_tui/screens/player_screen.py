@@ -11,6 +11,7 @@ from textual.widgets import Footer, ProgressBar, Static
 from audible_tui.models import Book
 from audible_tui.services.api import Chapter
 from audible_tui.services.player import MpvNotFoundError, MpvError, MpvPlayer
+from audible_tui.services.settings import Settings
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -82,8 +83,9 @@ class PlayerScreen(Screen[int]):
         self._chapters = chapters or []
         self._player: MpvPlayer | None = None
         self._last_position_ms = book.progress_ms
-        self._speed = 1.0
-        self._volume = 100.0
+        self._settings = Settings()
+        self._speed = self._settings.playback_speed
+        self._volume = self._settings.playback_volume
         self._sleep_preset_index = 0
         self._sleep_remaining_seconds: float | None = None
 
@@ -117,7 +119,10 @@ class PlayerScreen(Screen[int]):
 
     def _start_succeeded(self) -> None:
         self.query_one("#state", Static).update("Playing")
-        self._volume = self._player.volume if self._player else 100.0
+        if self._player:
+            self._player.set_speed(self._speed)
+            self._player.set_volume(self._volume)
+        self._settings.set_last_played_in_app(self.book.asin)
         self.set_interval(1.0, self._tick)
 
     def _tick(self) -> None:
@@ -221,21 +226,25 @@ class PlayerScreen(Screen[int]):
         if self._player:
             self._speed = min(3.0, round(self._speed + 0.1, 1))
             self._player.set_speed(self._speed)
+            self._settings.set_playback_speed(self._speed)
 
     def action_speed_down(self) -> None:
         if self._player:
             self._speed = max(0.5, round(self._speed - 0.1, 1))
             self._player.set_speed(self._speed)
+            self._settings.set_playback_speed(self._speed)
 
     def action_volume_up(self) -> None:
         if self._player:
             self._volume = min(100.0, self._volume + 5)
             self._player.set_volume(self._volume)
+            self._settings.set_playback_volume(self._volume)
 
     def action_volume_down(self) -> None:
         if self._player:
             self._volume = max(0.0, self._volume - 5)
             self._player.set_volume(self._volume)
+            self._settings.set_playback_volume(self._volume)
 
     def action_cycle_sleep_timer(self) -> None:
         self._sleep_preset_index = (self._sleep_preset_index + 1) % len(self._SLEEP_PRESETS_MIN)

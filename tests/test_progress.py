@@ -58,71 +58,107 @@ def test_progress_store_set_position_without_duration_does_not_error(tmp_path):
     assert store.get_position_ms("B001") == 500
 
 
-# -- fetch_remote_positions ---------------------------------------------
+# -- fetch_remote_annotations / positions_from_annotations --------------
+#
+# Response shape confirmed directly against a live account (see
+# progress.py's module docstring for why that matters): a top-level
+# "asin_last_position_heard_annots" list, each entry an asin plus a nested
+# last_position_heard dict with a "status" that's "Exists" or
+# "DoesNotExist" -- titles never played anywhere have the latter, with no
+# position/timestamp fields at all.
 
 
-def test_fetch_remote_positions_empty_asins_short_circuits():
+def _annotations_response(records):
+    return {"asin_last_position_heard_annots": records, "response_groups": ["always-returned"]}
+
+
+def _existing(asin, position_ms, last_updated="2026-08-20 23:35:05.608"):
+    return {
+        "asin": asin,
+        "last_position_heard": {
+            "status": "Exists",
+            "position_ms": position_ms,
+            "last_updated": last_updated,
+        },
+    }
+
+
+def _does_not_exist(asin):
+    return {"asin": asin, "last_position_heard": {"status": "DoesNotExist"}}
+
+
+def test_fetch_remote_annotations_empty_asins_short_circuits():
     api = FakeAPI(response={"should": "not be read"})
-    result = progress.fetch_remote_positions(api, [])
-    assert result == {}
+    result = progress.fetch_remote_annotations(api, [])
+    assert result == []
     assert api.client.calls == []  # no network call should have been made
 
 
-def test_fetch_remote_positions_flat_dict_of_ints():
-    api = FakeAPI(response={"B001": 1000, "B002": 2000})
-    result = progress.fetch_remote_positions(api, ["B001", "B002"])
-    assert result == {"B001": 1000, "B002": 2000}
+def test_fetch_remote_annotations_extracts_the_records_list():
+    records = [_existing("B001", 1000)]
+    api = FakeAPI(response=_annotations_response(records))
+    assert progress.fetch_remote_annotations(api, ["B001"]) == records
 
 
-def test_fetch_remote_positions_wrapped_under_asin_positions_key():
-    api = FakeAPI(response={"asin_positions": {"B001": {"position_ms": 4242}}})
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {"B001": 4242}
-
-
-def test_fetch_remote_positions_wrapped_under_positions_key():
-    api = FakeAPI(response={"positions": {"B001": {"positionMs": 555}}})
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {"B001": 555}
-
-
-def test_fetch_remote_positions_list_of_records():
-    api = FakeAPI(
-        response=[
-            {"asin": "B001", "position_ms": 111},
-            {"asin": "B002", "lastPositionMs": 222},
-        ]
-    )
-    result = progress.fetch_remote_positions(api, ["B001", "B002"])
-    assert result == {"B001": 111, "B002": 222}
-
-
-def test_fetch_remote_positions_list_skips_records_missing_asin():
-    api = FakeAPI(response=[{"position_ms": 111}])
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {}
-
-
-def test_fetch_remote_positions_accepts_float_positions():
-    api = FakeAPI(response={"B001": 1234.0})
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {"B001": 1234}
-
-
-def test_fetch_remote_positions_returns_empty_on_unrecognized_shape():
+def test_fetch_remote_annotations_returns_empty_on_unrecognized_shape():
     api = FakeAPI(response="totally unexpected string response")
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {}
+    assert progress.fetch_remote_annotations(api, ["B001"]) == []
 
 
-def test_fetch_remote_positions_returns_empty_when_client_raises():
+def test_fetch_remote_annotations_returns_empty_when_client_raises():
     api = FakeAPI(exc=RuntimeError("network exploded"))
-    result = progress.fetch_remote_positions(api, ["B001"])
-    assert result == {}
+    assert progress.fetch_remote_annotations(api, ["B001"]) == []
 
 
-def test_fetch_remote_positions_passes_comma_joined_asins():
-    api = FakeAPI(response={})
-    progress.fetch_remote_positions(api, ["B001", "B002"])
+def test_fetch_remote_annotations_passes_comma_joined_asins():
+    api = FakeAPI(response=_annotations_response([]))
+    progress.fetch_remote_annotations(api, ["B001", "B002"])
     (_path, kwargs), = api.client.calls
     assert kwargs["asins"] == "B001,B002"
+
+
+def test_positions_from_annotations_includes_only_existing_positions():
+    records = [_existing("B001", 1000), _does_not_exist("B002")]
+    assert progress.positions_from_annotations(records) == {"B001": 1000}
+
+
+def test_positions_from_annotations_empty_when_nothing_exists():
+    assert progress.positions_from_annotations([_does_not_exist("B001")]) == {}
+
+
+def test_fetch_remote_positions_end_to_end():
+    records = [_existing("B001", 4242), _does_not_exist("B002")]
+    api = FakeAPI(response=_annotations_response(records))
+    assert progress.fetch_remote_positions(api, ["B001", "B002"]) == {"B001": 4242}
+
+
+# -- most_recent_external_play -------------------------------------------
+
+
+def test_most_recent_external_play_picks_the_newest_timestamp():
+    records = [
+        _existing("B001", 100, last_updated="2019-01-24 09:21:16.892"),
+        _existing("B002", 200, last_updated="2026-08-27 08:56:11.849"),
+        _existing("B003", 300, last_updated="2026-08-10 22:17:44.988"),
+    ]
+    result = progress.most_recent_external_play(records)
+    assert result is not None
+    asin, updated_at = result
+    assert asin == "B002"
+    assert updated_at.year == 2026
+    assert updated_at.month == 8
+    assert updated_at.day == 27
+
+
+def test_most_recent_external_play_ignores_titles_never_played():
+    records = [_does_not_exist("B001")]
+    assert progress.most_recent_external_play(records) is None
+
+
+def test_most_recent_external_play_none_when_no_records():
+    assert progress.most_recent_external_play([]) is None
+
+
+def test_most_recent_external_play_skips_unparseable_timestamps():
+    records = [_existing("B001", 100, last_updated="not-a-real-timestamp")]
+    assert progress.most_recent_external_play(records) is None

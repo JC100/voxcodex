@@ -94,6 +94,29 @@ class FailingPlayer:
         raise self._exc
 
 
+class FakeSettings:
+    """Stands in for services.settings.Settings -- avoids ever touching the
+    real config dir, and lets tests assert on what got persisted."""
+
+    def __init__(self, playback_speed=1.0, playback_volume=100.0):
+        self.playback_speed = playback_speed
+        self.playback_volume = playback_volume
+        self.speed_calls = []
+        self.volume_calls = []
+        self.last_played_in_app_calls = []
+
+    def set_playback_speed(self, speed):
+        self.speed_calls.append(speed)
+        self.playback_speed = speed
+
+    def set_playback_volume(self, volume):
+        self.volume_calls.append(volume)
+        self.playback_volume = volume
+
+    def set_last_played_in_app(self, asin):
+        self.last_played_in_app_calls.append(asin)
+
+
 class HostApp(App):
     def __init__(self, screen, callback=None):
         super().__init__()
@@ -125,6 +148,13 @@ async def _wait_until(condition, timeout=2.0, step=0.02):
 def fake_player(monkeypatch):
     instance = FakePlayer()
     monkeypatch.setattr(player_screen_module, "MpvPlayer", lambda: instance)
+    return instance
+
+
+@pytest.fixture(autouse=True)
+def fake_settings(monkeypatch):
+    instance = FakeSettings()
+    monkeypatch.setattr(player_screen_module, "Settings", lambda: instance)
     return instance
 
 
@@ -267,7 +297,7 @@ async def test_up_increases_speed(fake_player):
         await pilot.press("up")
         await pilot.pause()
 
-        assert fake_player.speed_calls == [1.1]
+        assert fake_player.speed_calls[-1] == 1.1
 
 
 async def test_down_decreases_speed(fake_player):
@@ -279,7 +309,7 @@ async def test_down_decreases_speed(fake_player):
         await pilot.press("down")
         await pilot.pause()
 
-        assert fake_player.speed_calls == [0.9]
+        assert fake_player.speed_calls[-1] == 0.9
 
 
 async def test_speed_up_clamps_at_3x(fake_player):
@@ -311,20 +341,34 @@ async def test_speed_down_clamps_at_half_x(fake_player):
 # -- volume -----------------------------------------------------------
 
 
-async def test_start_succeeded_reads_actual_starting_volume_from_player(monkeypatch):
-    instance = FakePlayer()
-    instance.volume_ = 82.0
-    monkeypatch.setattr(player_screen_module, "MpvPlayer", lambda: instance)
+async def test_starts_at_persisted_speed_and_volume(fake_player, fake_settings):
+    fake_settings.playback_speed = 1.3
+    fake_settings.playback_volume = 82.0
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
     app = HostApp(screen)
 
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
+
+        assert screen._speed == 1.3
         assert screen._volume == 82.0
+        assert fake_player.speed_calls == [1.3]
+        assert fake_player.volume_calls == [82.0]
 
 
-async def test_bracket_right_increases_volume(fake_player):
-    fake_player.volume_ = 50.0  # below the ceiling, so the increment is observable
+async def test_starting_playback_records_last_played_in_app(fake_player, fake_settings):
+    book = _book()
+    book.asin = "B42"
+    screen = PlayerScreen(book, "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        assert fake_settings.last_played_in_app_calls == ["B42"]
+
+
+async def test_bracket_right_increases_volume(fake_player, fake_settings):
+    fake_settings.playback_volume = 50.0  # below the ceiling, so the increment is observable
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
     app = HostApp(screen)
 
@@ -333,7 +377,7 @@ async def test_bracket_right_increases_volume(fake_player):
         await pilot.press("]")
         await pilot.pause()
 
-        assert fake_player.volume_calls == [55.0]
+        assert fake_player.volume_calls[-1] == 55.0
 
 
 async def test_bracket_left_decreases_volume(fake_player):
@@ -345,7 +389,7 @@ async def test_bracket_left_decreases_volume(fake_player):
         await pilot.press("[")
         await pilot.pause()
 
-        assert fake_player.volume_calls == [95.0]
+        assert fake_player.volume_calls[-1] == 95.0
 
 
 async def test_volume_up_clamps_at_100(fake_player):

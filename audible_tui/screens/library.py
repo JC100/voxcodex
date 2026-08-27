@@ -13,6 +13,7 @@ from audible_tui.screens.modals import ConfirmModal, MessageModal
 from audible_tui.screens.player_screen import PlayerScreen
 from audible_tui.services import download, progress
 from audible_tui.services.api import AudibleAPI, Chapter
+from audible_tui.services.settings import Settings
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Local")
 
@@ -31,6 +32,7 @@ class LibraryScreen(Screen[None]):
         super().__init__()
         self.api = api
         self.progress_store = progress.ProgressStore()
+        self.settings = Settings()
         self._books: list[Book] = []
         self._filtered: list[Book] = []
 
@@ -68,12 +70,13 @@ class LibraryScreen(Screen[None]):
             self.app.call_from_thread(self._set_status, f"[red]Failed to load library: {exc}[/red]")
             return
 
-        try:
-            remote_positions = progress.fetch_remote_positions(
-                self.api, [b.asin for b in books]
-            )
-        except Exception:  # noqa: BLE001
-            remote_positions = {}
+        annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
+        remote_positions = progress.positions_from_annotations(annotations)
+
+        most_recent = progress.most_recent_external_play(annotations)
+        if most_recent is not None:
+            asin, updated_at = most_recent
+            self.settings.set_last_played_externally(asin, updated_at)
 
         for book in books:
             book.is_downloaded = download.is_downloaded(book.asin)
