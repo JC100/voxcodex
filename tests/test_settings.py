@@ -113,3 +113,25 @@ def test_library_filter_key_round_trips(tmp_path):
     s = settings.Settings(path=tmp_path / "settings.json")
     s.set_library_filter_key("downloaded")
     assert s.library_filter_key == "downloaded"
+
+
+def test_progress_display_mode_defaults_to_percent(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    assert s.progress_display_mode == "percent"
+
+
+def test_progress_display_mode_round_trips(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    s.set_progress_display_mode("both")
+    assert s.progress_display_mode == "both"
+
+
+def test_theme_defaults_to_textual_dark(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    assert s.theme == "textual-dark"
+
+
+def test_theme_round_trips(tmp_path):
+    s = settings.Settings(path=tmp_path / "settings.json")
+    s.set_theme("nord")
+    assert s.theme == "nord"

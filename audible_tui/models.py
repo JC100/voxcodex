@@ -23,6 +23,12 @@ class Book:
     progress_ms: int = 0
     duration_ms: int = 0
     is_finished: bool = False
+    # Filled in lazily (library table only, fetched in the background after
+    # the table itself is already showing) -- None means "not fetched yet
+    # this session"; chapter_total == 0 means "fetched, this title genuinely
+    # has none" (podcasts, samples, some older titles). Both render blank.
+    chapter_current: int | None = None
+    chapter_total: int | None = None
 
     @property
     def author_display(self) -> str:
@@ -50,3 +56,23 @@ class Book:
         if not self.duration_ms:
             return 0
         return min(100, round(self.progress_ms / self.duration_ms * 100))
+
+    @property
+    def time_left_display(self) -> str:
+        if not self.duration_ms:
+            return ""
+        remaining_min = round(max(0, self.duration_ms - self.progress_ms) / 60_000)
+        if remaining_min <= 0:
+            return "done"
+        h, m = divmod(remaining_min, 60)
+        if h and m:
+            return f"{h}h {m}m left"
+        if h:
+            return f"{h}h left"
+        return f"{m}m left"
+
+    @property
+    def chapter_display(self) -> str:
+        if not self.chapter_total:
+            return ""
+        return f"{self.chapter_current or 1}/{self.chapter_total}"

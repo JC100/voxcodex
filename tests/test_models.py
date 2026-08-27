@@ -67,3 +67,53 @@ def test_progress_pct_clamped_at_100_even_if_progress_exceeds_duration():
     # (e.g. duration estimate is stale); the UI should never show over 100%.
     book = Book(asin="A1", title="T", progress_ms=150_000, duration_ms=100_000)
     assert book.progress_pct == 100
+
+
+def test_time_left_display_empty_when_no_duration_known():
+    book = Book(asin="A1", title="T", progress_ms=1000, duration_ms=0)
+    assert book.time_left_display == ""
+
+
+def test_time_left_display_hours_and_minutes():
+    book = Book(asin="A1", title="T", progress_ms=0, duration_ms=(7 * 3600 + 15 * 60) * 1000)
+    assert book.time_left_display == "7h 15m left"
+
+
+def test_time_left_display_whole_hours_only():
+    book = Book(asin="A1", title="T", progress_ms=0, duration_ms=5 * 3600 * 1000)
+    assert book.time_left_display == "5h left"
+
+
+def test_time_left_display_minutes_only():
+    book = Book(asin="A1", title="T", progress_ms=0, duration_ms=45 * 60 * 1000)
+    assert book.time_left_display == "45m left"
+
+
+def test_time_left_display_done_when_finished():
+    book = Book(asin="A1", title="T", progress_ms=100_000, duration_ms=100_000)
+    assert book.time_left_display == "done"
+
+
+def test_time_left_display_never_goes_negative_past_duration():
+    book = Book(asin="A1", title="T", progress_ms=150_000, duration_ms=100_000)
+    assert book.time_left_display == "done"
+
+
+def test_chapter_display_blank_when_not_yet_fetched():
+    book = Book(asin="A1", title="T")
+    assert book.chapter_display == ""
+
+
+def test_chapter_display_blank_when_confirmed_no_chapters():
+    book = Book(asin="A1", title="T", chapter_total=0)
+    assert book.chapter_display == ""
+
+
+def test_chapter_display_shows_current_over_total():
+    book = Book(asin="A1", title="T", chapter_total=15, chapter_current=6)
+    assert book.chapter_display == "6/15"
+
+
+def test_chapter_display_defaults_current_to_1_when_unknown():
+    book = Book(asin="A1", title="T", chapter_total=15, chapter_current=None)
+    assert book.chapter_display == "1/15"

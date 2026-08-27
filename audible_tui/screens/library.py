@@ -17,7 +17,7 @@ from audible_tui.services import download, library_cache, progress
 from audible_tui.services.api import AudibleAPI, Chapter
 from audible_tui.services.settings import Settings
 
-COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Local")
+COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Local")
 
 
 def _format_age(seconds: float) -> str:
@@ -53,17 +53,35 @@ _FILTER_LABELS = {
     "all": "All", "downloaded": "Downloaded", "in_progress": "In progress",
     "finished": "Finished", "not_started": "Not started",
 }
+_PROGRESS_DISPLAY_OPTIONS = ("percent", "time_left", "both")
+_PROGRESS_DISPLAY_LABELS = {
+    "percent": "%", "time_left": "Time left", "both": "% + time left",
+}
+
+
+def _current_chapter_number(chapters: list[Chapter], position_ms: int) -> int | None:
+    """1-based number of the chapter containing `position_ms`, or None if
+    `chapters` is empty."""
+    number = None
+    for i, chapter in enumerate(chapters, start=1):
+        if chapter.start_ms <= position_ms:
+            number = i
+        else:
+            break
+    return number
 
 
 class LibraryScreen(Screen[None]):
     BINDINGS = [
         ("/", "focus_search", "Search"),
+        ("down", "focus_table", "To list"),
         ("d", "download_selected", "Download"),
-        ("p", "play_selected", "Play"),
+        ("p,space", "play_selected", "Play"),
         ("x", "delete_selected", "Delete download"),
         ("r", "refresh", "Refresh"),
         ("o", "cycle_sort", "Sort"),
         ("f", "cycle_filter", "Filter"),
+        ("t", "cycle_progress_display", "Progress display"),
         ("escape", "clear_search", "Clear search"),
     ]
 
@@ -74,6 +92,12 @@ class LibraryScreen(Screen[None]):
         self.settings = Settings()
         self._books: list[Book] = []
         self._filtered: list[Book] = []
+        # In-memory only, refetched fresh each session -- a book's chapters
+        # don't change, but its current-chapter does as you listen, so a
+        # disk cache would need its own invalidation story. Reused across a
+        # manual refresh within the same session so that doesn't re-fetch
+        # what this session already knows.
+        self._chapter_cache: dict[str, list[Chapter]] = {}
         self._sort_key = (
             self.settings.library_sort_key
             if self.settings.library_sort_key in _SORT_OPTIONS
@@ -84,11 +108,19 @@ class LibraryScreen(Screen[None]):
             if self.settings.library_filter_key in _FILTER_OPTIONS
             else _FILTER_OPTIONS[0]
         )
+        self._progress_display = (
+            self.settings.progress_display_mode
+            if self.settings.progress_display_mode in _PROGRESS_DISPLAY_OPTIONS
+            else _PROGRESS_DISPLAY_OPTIONS[0]
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
-            yield Input(placeholder="Search title / author / series...", id="search")
+            yield Input(
+                placeholder="Search title / author / series... (↓ or Enter for list)",
+                id="search",
+            )
             yield Static("", id="sort-filter")
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
             with Horizontal(id="status-bar"):
@@ -160,6 +192,7 @@ class LibraryScreen(Screen[None]):
         self._books = books
         self._apply_filters_and_sort()
         self._set_status(f"{len(books)} titles")
+        self._fetch_chapter_counts(books)
 
     def _populate_offline(self, books: list[Book], cached_at: float) -> None:
         self._books = books
@@ -169,6 +202,35 @@ class LibraryScreen(Screen[None]):
             f"[yellow]Offline -- showing last known library "
             f"({len(books)} titles, cached {age} ago). Downloaded books still play.[/yellow]"
         )
+        self._fetch_chapter_counts(books)
+
+    @work(thread=True, exclusive=True, group="chapter_counts")
+    def _fetch_chapter_counts(self, books: list[Book]) -> None:
+        """Progressively fills in each book's chapter column after the table
+        is already showing -- one extra network call per book not already
+        known this session, so it's kept out of the main load/offline-
+        fallback path entirely. A book that fails (typically: offline, or no
+        chapter data for that title) just keeps its blank Chapter cell."""
+        for book in books:
+            chapters = self._chapter_cache.get(book.asin)
+            if chapters is None:
+                try:
+                    chapters = self.api.get_chapters(book.asin)
+                except Exception:  # noqa: BLE001
+                    continue
+                self._chapter_cache[book.asin] = chapters
+            book.chapter_total = len(chapters)
+            book.chapter_current = _current_chapter_number(chapters, book.progress_ms)
+            self.app.call_from_thread(self._refresh_table)
+
+    def _progress_cell(self, book: Book) -> str:
+        if self._progress_display == "time_left":
+            text = book.time_left_display
+        elif self._progress_display == "both":
+            text = f"{book.progress_pct}% ({book.time_left_display})"
+        else:
+            text = f"{book.progress_pct}%"
+        return text + (" ✓" if book.is_finished else "")
 
     def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
@@ -179,7 +241,8 @@ class LibraryScreen(Screen[None]):
                 book.author_display,
                 book.series_display,
                 book.runtime_display,
-                f"{book.progress_pct}%" + (" ✓" if book.is_finished else ""),
+                self._progress_cell(book),
+                book.chapter_display,
                 "yes" if book.is_downloaded else "",
                 key=book.asin,
             )
@@ -203,6 +266,9 @@ class LibraryScreen(Screen[None]):
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
 
+    def action_focus_table(self) -> None:
+        self.query_one(DataTable).focus()
+
     def action_clear_search(self) -> None:
         search = self.query_one("#search", Input)
         if search.value:
@@ -212,6 +278,10 @@ class LibraryScreen(Screen[None]):
     @on(Input.Changed, "#search")
     def _search_changed(self, event: Input.Changed) -> None:
         self._apply_filters_and_sort()
+
+    @on(Input.Submitted, "#search")
+    def _search_submitted(self) -> None:
+        self.action_focus_table()
 
     def action_refresh(self) -> None:
         self._load_library()
@@ -229,6 +299,13 @@ class LibraryScreen(Screen[None]):
         self._filter_key = _FILTER_OPTIONS[(idx + 1) % len(_FILTER_OPTIONS)]
         self.settings.set_library_filter_key(self._filter_key)
         self._apply_filters_and_sort()
+
+    def action_cycle_progress_display(self) -> None:
+        idx = _PROGRESS_DISPLAY_OPTIONS.index(self._progress_display)
+        self._progress_display = _PROGRESS_DISPLAY_OPTIONS[(idx + 1) % len(_PROGRESS_DISPLAY_OPTIONS)]
+        self.settings.set_progress_display_mode(self._progress_display)
+        self._refresh_table()
+        self._set_status(f"Progress column: {_PROGRESS_DISPLAY_LABELS[self._progress_display]}")
 
     def _update_sort_filter_label(self) -> None:
         # Shown count lives here rather than in #status: #status carries
@@ -378,13 +455,24 @@ class LibraryScreen(Screen[None]):
             self.app.call_from_thread(self._player_open_failed, str(exc))
             return
 
-        try:
-            chapters = self.api.get_chapters(book.asin)
-        except Exception:  # noqa: BLE001
-            # Chapter navigation is an enhancement, not a playback requirement
-            # -- a book without (or a failed fetch of) chapter data should
-            # still play, just without next/previous-chapter navigation.
-            chapters = []
+        # Reuse whatever the background library-table chapter fetch already
+        # found for this book, rather than fetching it a second time.
+        chapters = self._chapter_cache.get(book.asin)
+        if chapters is None:
+            try:
+                chapters = self.api.get_chapters(book.asin)
+            except Exception:  # noqa: BLE001
+                # Chapter navigation is an enhancement, not a playback
+                # requirement -- a book without (or a failed fetch of)
+                # chapter data should still play, just without next/
+                # previous-chapter navigation. Deliberately *not* cached on
+                # failure (unlike a real empty result): this might just be a
+                # transient blip, and caching [] here would wrongly look
+                # identical to "confirmed no chapters" and block any later
+                # retry (background re-fetch on refresh, or a future play).
+                chapters = []
+            else:
+                self._chapter_cache[book.asin] = chapters
 
         self.app.call_from_thread(self._launch_player, book, source, key, iv, chapters)
 

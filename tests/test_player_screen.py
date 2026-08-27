@@ -240,7 +240,7 @@ async def test_space_toggles_pause(fake_player):
         assert fake_player.toggle_pause_calls == 1
 
 
-async def test_left_seeks_back_10s(fake_player):
+async def test_left_seeks_back_30s(fake_player):
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
     app = HostApp(screen)
 
@@ -249,7 +249,7 @@ async def test_left_seeks_back_10s(fake_player):
         await pilot.press("left")
         await pilot.pause()
 
-        assert fake_player.seek_calls == [-10]
+        assert fake_player.seek_calls == [-30]
 
 
 async def test_right_seeks_forward_30s(fake_player):
@@ -541,12 +541,12 @@ async def test_chapter_row_shows_current_chapter(fake_player):
 
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
-        fake_player.position = 10.0  # inside "Chapter 1" (starts at 5s)
+        fake_player.position = 10.0  # inside "Chapter 1" (starts at 5s, len 60s)
         screen._tick()
 
         assert (
             str(screen.query_one("#chapter-row").content)
-            == "Chapter 2/3: Chapter 1"
+            == "Chapter 2/3: Chapter 1   (0:05 / 1:00)"
         )
 
 

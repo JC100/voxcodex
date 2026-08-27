@@ -37,33 +37,49 @@ Library screen:
 | Key | Action |
 |---|---|
 | `/` | Search (title / author / series) |
+| `↓` or `Enter` (from search) | Jump to the list |
 | `d` | Download selected book |
-| `p` | Play selected book (streams if not downloaded) |
+| `p` / `space` | Play selected book (streams if not downloaded) |
 | `x` | Delete local download |
 | `r` | Refresh library |
 | `o` | Cycle sort (Recent → Title → Author → Series → Progress → Recent) |
 | `f` | Cycle filter (All → Downloaded → In progress → Finished → Not started → All) |
+| `t` | Cycle progress column (% → time left → both → %) |
 | `q` | Quit |
+
+The search box has focus by default, so `d`/`p`/`o`/`f`/etc. would just be
+typed as search text until you leave it -- `↓` or `Enter` moves focus to the
+list (also shown in the search placeholder).
 
 Sort and filter apply client-side to whatever's already loaded (including
 the offline cache), so cycling them is instant and needs no network call.
 The line above the table always shows the current sort/filter and how many
 titles that leaves (e.g. `Sort: Title   Filter: Downloaded   (3/42 shown)`)
--- both choices persist across sessions the same way playback speed/volume
-do.
+-- sort, filter, and progress-column choices all persist across sessions
+the same way playback speed/volume do.
+
+The Chapter column (`current/total`, e.g. `6/15`) fills in progressively in
+the background after the table's already showing -- one API call per book
+not already known this session, kept off the main load/offline-fallback
+path entirely. Blank means either not fetched yet or the title genuinely
+has no chapter data (podcasts, samples, some older titles); pressing play
+reuses whatever this already found rather than fetching it again.
 
 Player screen:
 
 | Key | Action |
 |---|---|
 | `space` | Play / pause |
-| `←` / `→` | Seek -10s / +30s |
+| `←` / `→` | Seek -30s / +30s |
 | `shift+←` / `shift+→` | Seek -60s / +60s |
 | `↑` / `↓` | Speed up / down |
 | `]` / `[` | Volume up / down |
 | `s` | Cycle sleep timer (off → 15 → 30 → 45 → 60 min → off) |
 | `n` / `p` | Next / previous chapter |
 | `q` / `esc` | Stop and go back |
+
+The chapter line shows the current chapter's own elapsed/total time
+alongside its title and number, e.g. `Chapter 6/15: Some Title   (2:14 / 18:30)`.
 
 The sleep timer only counts down while actually playing (pausing freezes
 it); when it hits zero it pauses playback and resets to off.
@@ -73,6 +89,12 @@ alongside the license/voucher whenever you hit play; a title with no
 chapter data (podcasts, samples, some older titles) or a failed fetch just
 means no chapter row/navigation for that session -- playback itself is
 unaffected either way.
+
+`ctrl+p` opens Textual's built-in command palette (labeled "Commands" in the
+footer) -- among other things, a "Theme" command to pick from Textual's
+built-in themes. That choice persists across sessions too, the same way the
+rest of this section's settings do (Textual itself doesn't remember it
+between runs on its own).
 
 Playback speed and volume persist across sessions (`~/.config/audible-tui/settings.json`)
 -- adjust them once with `↑`/`↓`/`]`/`[` and every future play starts there.

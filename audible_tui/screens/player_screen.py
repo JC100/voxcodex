@@ -28,7 +28,7 @@ class PlayerScreen(Screen[int]):
 
     BINDINGS = [
         ("space", "toggle_pause", "Play/Pause"),
-        ("left", "seek_back", "-10s"),
+        ("left", "seek_back", "-30s"),
         ("right", "seek_forward", "+30s"),
         ("shift+left", "seek_back_long", "-60s"),
         ("shift+right", "seek_forward_long", "+60s"),
@@ -163,8 +163,12 @@ class PlayerScreen(Screen[int]):
         if self._chapters:
             idx = self._current_chapter_index()
             if idx is not None:
+                chapter = self._chapters[idx]
+                chapter_position = max(0.0, position - chapter.start_ms / 1000)
+                chapter_length = chapter.length_ms / 1000
                 chapter_row.update(
-                    f"Chapter {idx + 1}/{len(self._chapters)}: {self._chapters[idx].title}"
+                    f"Chapter {idx + 1}/{len(self._chapters)}: {chapter.title}   "
+                    f"({_fmt_hms(chapter_position)} / {_fmt_hms(chapter_length)})"
                 )
         else:
             chapter_row.update("")
@@ -208,7 +212,7 @@ class PlayerScreen(Screen[int]):
 
     def action_seek_back(self) -> None:
         if self._player:
-            self._player.seek_relative(-10)
+            self._player.seek_relative(-30)
 
     def action_seek_forward(self) -> None:
         if self._player:

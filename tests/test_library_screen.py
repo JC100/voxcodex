@@ -10,11 +10,11 @@ import asyncio
 
 import pytest
 from textual.app import App
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Input
 
 from audible_tui.models import Book
 from audible_tui.screens import library as library_module
-from audible_tui.screens.library import LibraryScreen
+from audible_tui.screens.library import COLUMNS, LibraryScreen
 from audible_tui.services.api import Chapter, License
 
 
@@ -34,6 +34,7 @@ class FakeSettings:
         self.last_played_externally_calls = []
         self.library_sort_key = "recent"
         self.library_filter_key = "all"
+        self.progress_display_mode = "percent"
 
     def set_last_played_externally(self, asin, updated_at):
         self.last_played_externally_calls.append((asin, updated_at))
@@ -43,6 +44,9 @@ class FakeSettings:
 
     def set_library_filter_key(self, key):
         self.library_filter_key = key
+
+    def set_progress_display_mode(self, mode):
+        self.progress_display_mode = mode
 
 
 class FakeAudibleClient:
@@ -303,6 +307,53 @@ async def test_slash_types_literal_slash_when_search_already_focused():
         assert screen.query_one("#search", Input).value == "/"
 
 
+async def test_down_arrow_from_search_moves_focus_to_the_table():
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert isinstance(app.focused, Input)  # default focus, per the earlier finding
+
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert isinstance(app.focused, DataTable)
+
+
+async def test_enter_in_search_also_moves_focus_to_the_table():
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        await pilot.press(*"one")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.focused, DataTable)
+
+
+async def test_space_plays_the_selected_book(monkeypatch):
+    from audible_tui.screens import player_screen as player_screen_module
+    from audible_tui.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
+
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("space")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+
 # -- sort / filter -----------------------------------------------------
 
 
@@ -475,6 +526,66 @@ async def test_unknown_persisted_sort_and_filter_keys_fall_back_to_defaults(_fak
 
     assert screen._sort_key == "recent"
     assert screen._filter_key == "all"
+
+
+# -- progress display -----------------------------------------------------
+
+
+async def test_progress_column_defaults_to_percent():
+    book = _book("B1", "One")
+    book.progress_ms, book.duration_ms = 3600_000, 7200_000  # 50%, 1h left
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._progress_cell(book) == "50%"
+
+
+async def test_cycle_progress_display_to_time_left(_fake_settings):
+    book = _book("B1", "One")
+    book.progress_ms, book.duration_ms = 3600_000, 7200_000  # 50%, 1h left
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("t")  # percent -> time_left
+        await pilot.pause()
+
+        assert screen._progress_cell(book) == "1h left"
+        assert _fake_settings.progress_display_mode == "time_left"
+
+
+async def test_cycle_progress_display_to_both():
+    book = _book("B1", "One")
+    book.progress_ms, book.duration_ms = 3600_000, 7200_000
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("t")
+        await pilot.press("t")  # percent -> time_left -> both
+        await pilot.pause()
+
+        assert screen._progress_cell(book) == "50% (1h left)"
+
+
+async def test_progress_display_mode_is_restored_from_settings(_fake_settings):
+    _fake_settings.progress_display_mode = "both"
+    screen = LibraryScreen(FakeAPI([]))
+    assert screen._progress_display == "both"
+
+
+async def test_finished_marker_appended_regardless_of_display_mode():
+    book = _book("B1", "One")
+    book.progress_ms, book.duration_ms, book.is_finished = 7200_000, 7200_000, True
+    screen = LibraryScreen(FakeAPI([book]))
+
+    assert screen._progress_cell(book) == "100% ✓"
 
 
 # -- download ---------------------------------------------------------------
@@ -680,6 +791,68 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
 
         # Chapter navigation is degraded, not the whole play action.
         assert app.screen._chapters == []
+
+
+async def test_library_load_fetches_chapter_counts_in_the_background():
+    chapters = [
+        Chapter(title="Ch1", start_ms=0, length_ms=1000),
+        Chapter(title="Ch2", start_ms=1000, length_ms=1000),
+        Chapter(title="Ch3", start_ms=2000, length_ms=1000),
+    ]
+    book = _book("B1", "One")
+    book.progress_ms = 1500  # inside "Ch2" -> chapter 2 of 3
+    screen = LibraryScreen(FakeAPI([book], chapters=chapters))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        await _wait_until(lambda: screen._books[0].chapter_total is not None)
+
+        assert screen._books[0].chapter_total == 3
+        assert screen._books[0].chapter_current == 2
+
+        from textual.coordinate import Coordinate
+
+        chapter_column = COLUMNS.index("Chapter")
+        cell = screen.query_one(DataTable).get_cell_at(Coordinate(0, chapter_column))
+        assert cell == "2/3"
+
+
+async def test_chapter_fetch_failure_leaves_chapter_column_blank():
+    api = FakeAPI([_book("B1", "One")], chapters_exc=RuntimeError("boom"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        # Give the background worker a moment to have tried and failed.
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+        assert api.chapter_calls == ["B1"]
+        assert screen._books[0].chapter_total is None
+
+
+async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monkeypatch):
+    from audible_tui.screens import player_screen as player_screen_module
+    from audible_tui.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
+
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=60_000)]
+    api = FakeAPI([_book("B1", "One")], chapters=chapters)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        await _wait_until(lambda: screen._books[0].chapter_total is not None)
+
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        assert api.chapter_calls == ["B1"]  # not fetched again for playback
 
 
 # -- last played externally -----------------------------------------------

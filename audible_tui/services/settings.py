@@ -24,6 +24,8 @@ DEFAULT_PLAYBACK_SPEED = 1.0
 DEFAULT_PLAYBACK_VOLUME = 100.0
 DEFAULT_LIBRARY_SORT = "recent"
 DEFAULT_LIBRARY_FILTER = "all"
+DEFAULT_THEME = "textual-dark"
+DEFAULT_PROGRESS_DISPLAY = "percent"
 
 
 class Settings:
@@ -92,6 +94,25 @@ class Settings:
 
     def set_library_filter_key(self, key: str) -> None:
         self._data["library_filter_key"] = key
+        self.save()
+
+    @property
+    def progress_display_mode(self) -> str:
+        return str(self._data.get("progress_display_mode", DEFAULT_PROGRESS_DISPLAY))
+
+    def set_progress_display_mode(self, mode: str) -> None:
+        self._data["progress_display_mode"] = mode
+        self.save()
+
+    @property
+    def theme(self) -> str:
+        # Textual itself doesn't persist the command-palette theme picker's
+        # choice across runs -- App.theme just resets to its class default
+        # every launch unless the app saves/restores it itself.
+        return str(self._data.get("theme", DEFAULT_THEME))
+
+    def set_theme(self, theme: str) -> None:
+        self._data["theme"] = theme
         self.save()
 
     def _last_played(self, key: str) -> tuple[str, float] | None:
