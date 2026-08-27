@@ -73,6 +73,20 @@ Player screen:
   for what was tried, what actually works, and why it doesn't reach the
   Android app or website.
 
+## Running tests
+
+```bash
+.venv/bin/pip install -e ".[test]"
+.venv/bin/pytest
+```
+
+Unit tests cover the service layer (parsing, download, progress tracking,
+mpv control) against fakes -- no real Audible account, network, or mpv
+process required. Screens (`audible_tui/screens/`) and the login flow's
+interaction with Amazon's actual pages aren't covered yet; those need real
+manual testing (see the `run` skill / tmux for driving the TUI) or a
+Textual-pilot-based integration layer as a follow-up.
+
 ## Local data
 
 - Config/auth: platform config dir (e.g. `~/.config/audible-tui/`)
