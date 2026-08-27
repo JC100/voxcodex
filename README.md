@@ -63,14 +63,15 @@ Player screen:
 - Playback runs `mpv` as a subprocess, controlled over its JSON IPC socket,
   handing the AAXC key/iv straight to ffmpeg's demuxer (`-audible_key`/
   `-audible_iv`) so it can play/stream directly with no separate decrypt step.
-- **Progress sync is one-directional (Audible -> this app).** Audible exposes
-  a documented-enough *read* endpoint for last-listened positions, but no
-  write endpoint for it turned up in the `audible` package, `audible-cli`, or
-  the community `audible.cr` API reference after checking all three. This app
-  reads your real position from Audible when it can, and always keeps its own
+- **Progress sync is one-directional (Audible -> this app).** This app reads
+  your real position from Audible when it can, and always keeps its own
   local record of where you left off (`~/.local/share/audible-tui/` by
   default) so resuming works reliably within the app -- it just can't push
-  a play made here back to Audible's own sync.
+  a play made here back to Audible's own cross-device sync. This was
+  investigated in depth and deliberately shelved rather than left
+  unexamined -- see [`docs/whispersync-research.md`](docs/whispersync-research.md)
+  for what was tried, what actually works, and why it doesn't reach the
+  Android app or website.
 
 ## Local data
 
