@@ -38,6 +38,7 @@ Library screen:
 |---|---|
 | `/` | Search (title / author / series) |
 | `↓` or `Enter` (from search) | Jump to the list |
+| `↑` (from the list's top row) | Jump back to search |
 | `d` | Download selected book |
 | `p` / `space` | Play selected book (streams if not downloaded) |
 | `x` | Delete local download |
@@ -49,7 +50,8 @@ Library screen:
 
 The search box has focus by default, so `d`/`p`/`o`/`f`/etc. would just be
 typed as search text until you leave it -- `↓` or `Enter` moves focus to the
-list (also shown in the search placeholder).
+list (also shown in the search placeholder), and `↑` from the top row goes
+back the other way.
 
 Sort and filter apply client-side to whatever's already loaded (including
 the offline cache), so cycling them is instant and needs no network call.
@@ -63,7 +65,12 @@ the background after the table's already showing -- one API call per book
 not already known this session, kept off the main load/offline-fallback
 path entirely. Blank means either not fetched yet or the title genuinely
 has no chapter data (podcasts, samples, some older titles); pressing play
-reuses whatever this already found rather than fetching it again.
+reuses whatever this already found rather than fetching it again. A book
+you haven't started yet shows `0/total`, not `1/total` -- you can't be "on"
+a chapter you haven't actually started listening to.
+
+The "Downloaded" column shows whether a title is saved locally for offline
+play -- not whether you've ever played it.
 
 Player screen:
 

@@ -6,6 +6,7 @@ import time
 
 from textual import on, work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
@@ -17,7 +18,7 @@ from audible_tui.services import download, library_cache, progress
 from audible_tui.services.api import AudibleAPI, Chapter
 from audible_tui.services.settings import Settings
 
-COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Local")
+COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded")
 
 
 def _format_age(seconds: float) -> str:
@@ -61,7 +62,15 @@ _PROGRESS_DISPLAY_LABELS = {
 
 def _current_chapter_number(chapters: list[Chapter], position_ms: int) -> int | None:
     """1-based number of the chapter containing `position_ms`, or None if
-    `chapters` is empty."""
+    `chapters` is empty.
+
+    A book with no progress at all reports 0, not 1 -- you can't be "on"
+    chapter 1 before you've actually started listening to it.
+    """
+    if not chapters:
+        return None
+    if position_ms <= 0:
+        return 0
     number = None
     for i, chapter in enumerate(chapters, start=1):
         if chapter.start_ms <= position_ms:
@@ -75,6 +84,13 @@ class LibraryScreen(Screen[None]):
     BINDINGS = [
         ("/", "focus_search", "Search"),
         ("down", "focus_table", "To list"),
+        # DataTable already binds "up" itself (move cursor up a row), so a
+        # normal binding here would never fire while the table has focus --
+        # it always wins for that key. priority=True checks this before the
+        # table gets a chance, so we can decide: at the top row, go to
+        # search (the counterpart of "down" from search); otherwise, do
+        # exactly what the table would have done anyway.
+        Binding("up", "cursor_up_or_focus_search", "To search", priority=True),
         ("d", "download_selected", "Download"),
         ("p,space", "play_selected", "Play"),
         ("x", "delete_selected", "Delete download"),
@@ -234,6 +250,14 @@ class LibraryScreen(Screen[None]):
 
     def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
+        # table.clear() resets the cursor to the top row -- fine when the
+        # rebuild follows straight from acting on the selected row (most
+        # calls here), but the background chapter-count fetch calls this
+        # independently of anything you're doing, so without restoring the
+        # selection it would silently yank your cursor back to the top of
+        # the list while you're just browsing.
+        previously_selected = self._selected_book()
+        selected_asin = previously_selected.asin if previously_selected else None
         table.clear()
         for book in self._filtered:
             table.add_row(
@@ -246,6 +270,11 @@ class LibraryScreen(Screen[None]):
                 "yes" if book.is_downloaded else "",
                 key=book.asin,
             )
+        if selected_asin is not None:
+            for row_index, book in enumerate(self._filtered):
+                if book.asin == selected_asin:
+                    table.move_cursor(row=row_index)
+                    break
 
     def _selected_book(self) -> Book | None:
         table = self.query_one(DataTable)
@@ -268,6 +297,18 @@ class LibraryScreen(Screen[None]):
 
     def action_focus_table(self) -> None:
         self.query_one(DataTable).focus()
+
+    def action_cursor_up_or_focus_search(self) -> None:
+        table = self.query_one(DataTable)
+        if self.focused is not table:
+            # "up" wasn't bound to anything here before this binding
+            # existed either (Input doesn't claim it) -- leave it a no-op
+            # rather than guessing new behavior for some other widget.
+            return
+        if table.cursor_row == 0:
+            self.action_focus_search()
+        else:
+            table.action_cursor_up()
 
     def action_clear_search(self) -> None:
         search = self.query_one("#search", Input)

@@ -14,7 +14,7 @@ from textual.widgets import DataTable, Input
 
 from audible_tui.models import Book
 from audible_tui.screens import library as library_module
-from audible_tui.screens.library import COLUMNS, LibraryScreen
+from audible_tui.screens.library import COLUMNS, LibraryScreen, _current_chapter_number
 from audible_tui.services.api import Chapter, License
 
 
@@ -352,6 +352,62 @@ async def test_space_plays_the_selected_book(monkeypatch):
         screen.query_one(DataTable).focus()
         await pilot.press("space")
         await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+
+async def test_up_arrow_at_top_row_moves_focus_to_search():
+    books = [_book("B1", "One"), _book("B2", "Two")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 2)
+        table = screen.query_one(DataTable)
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+
+        await pilot.press("up")
+        await pilot.pause()
+
+        assert isinstance(app.focused, Input)
+
+
+async def test_up_arrow_below_top_row_just_moves_the_cursor():
+    books = [_book("B1", "One"), _book("B2", "Two")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 2)
+        table = screen.query_one(DataTable)
+        table.focus()
+        table.move_cursor(row=1)
+        await pilot.pause()
+
+        await pilot.press("up")
+        await pilot.pause()
+
+        assert isinstance(app.focused, DataTable)
+        assert table.cursor_row == 0
+
+
+def test_local_column_is_labeled_downloaded_not_local():
+    assert "Downloaded" in COLUMNS
+    assert "Local" not in COLUMNS
+
+
+def test_current_chapter_number_is_zero_for_a_not_started_book():
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=1000)]
+    assert _current_chapter_number(chapters, position_ms=0) == 0
+
+
+def test_current_chapter_number_is_one_once_actually_into_chapter_one():
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=1000)]
+    assert _current_chapter_number(chapters, position_ms=1) == 1
+
+
+def test_current_chapter_number_none_for_no_chapters():
+    assert _current_chapter_number([], position_ms=0) is None
 
 
 # -- sort / filter -----------------------------------------------------
@@ -816,6 +872,29 @@ async def test_library_load_fetches_chapter_counts_in_the_background():
         chapter_column = COLUMNS.index("Chapter")
         cell = screen.query_one(DataTable).get_cell_at(Coordinate(0, chapter_column))
         assert cell == "2/3"
+
+
+async def test_background_chapter_fetch_does_not_disturb_current_selection():
+    """Regression test: _refresh_table's table.clear() resets the cursor to
+    row 0 -- fine when the rebuild follows directly from something you did
+    to the selected row, but the background chapter fetch calls it on its
+    own timer while you might be doing anything else. Caught originally by
+    the up-arrow-at-non-top-row test unexpectedly landing on search."""
+    books = [_book("B1", "One"), _book("B2", "Two"), _book("B3", "Three")]
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=1000)]
+    screen = LibraryScreen(FakeAPI(books, chapters=chapters))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 3)
+        table = screen.query_one(DataTable)
+        table.focus()
+        table.move_cursor(row=2)  # select "Three"
+
+        await _wait_until(lambda: all(b.chapter_total is not None for b in screen._books))
+
+        assert table.cursor_row == 2
+        assert screen._selected_book().asin == "B3"
 
 
 async def test_chapter_fetch_failure_leaves_chapter_column_blank():

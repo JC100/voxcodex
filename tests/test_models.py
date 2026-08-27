@@ -117,3 +117,10 @@ def test_chapter_display_shows_current_over_total():
 def test_chapter_display_defaults_current_to_1_when_unknown():
     book = Book(asin="A1", title="T", chapter_total=15, chapter_current=None)
     assert book.chapter_display == "1/15"
+
+
+def test_chapter_display_shows_0_for_a_not_yet_started_book():
+    # chapter_current=0 is a real, meaningful value (not started), distinct
+    # from None (not fetched yet) -- must not fall back to "1/15".
+    book = Book(asin="A1", title="T", chapter_total=15, chapter_current=0)
+    assert book.chapter_display == "0/15"

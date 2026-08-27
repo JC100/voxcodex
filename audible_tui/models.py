@@ -75,4 +75,8 @@ class Book:
     def chapter_display(self) -> str:
         if not self.chapter_total:
             return ""
-        return f"{self.chapter_current or 1}/{self.chapter_total}"
+        # `or 1` would be wrong here: chapter_current == 0 (not started
+        # yet) is a real, meaningful value, not falsy-for-"unknown" like
+        # None is.
+        current = 1 if self.chapter_current is None else self.chapter_current
+        return f"{current}/{self.chapter_total}"
