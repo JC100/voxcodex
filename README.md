@@ -172,3 +172,8 @@ you don't control.
 - Config/auth/settings: platform config dir (e.g. `~/.config/audible-tui/`)
 - Downloads, progress cache, and the offline library cache: platform data
   dir (e.g. `~/.local/share/audible-tui/`)
+
+## License
+
+[GNU AGPL-3.0](LICENSE) -- matching the license of the
+[`audible`](https://github.com/mkb79/Audible) library this project is built on.

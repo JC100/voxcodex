@@ -2,7 +2,14 @@
 name = "audible-tui"
 version = "0.1.0"
 description = "A terminal UI for browsing, downloading, and playing your existing Audible library."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "audible>=0.10.0",
     "textual>=0.60.0",
