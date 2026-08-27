@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -123,7 +123,7 @@ def most_recent_external_play(
             continue
         try:
             updated_at = datetime.strptime(raw_updated, "%Y-%m-%d %H:%M:%S.%f").replace(
-                tzinfo=UTC
+                tzinfo=timezone.utc
             )
         except ValueError:
             continue

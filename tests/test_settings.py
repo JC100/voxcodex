@@ -1,5 +1,5 @@
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from audible_tui.services import settings
 
@@ -66,7 +66,7 @@ def test_last_played_externally_defaults_to_none(tmp_path):
 
 def test_last_played_externally_round_trips_with_the_given_timestamp(tmp_path):
     s = settings.Settings(path=tmp_path / "settings.json")
-    when = datetime(2026, 8, 27, 8, 56, 11, tzinfo=UTC)
+    when = datetime(2026, 8, 27, 8, 56, 11, tzinfo=timezone.utc)
 
     s.set_last_played_externally("B002", when)
 
@@ -78,7 +78,7 @@ def test_last_played_externally_round_trips_with_the_given_timestamp(tmp_path):
 def test_last_played_in_app_and_externally_are_independent(tmp_path):
     s = settings.Settings(path=tmp_path / "settings.json")
     s.set_last_played_in_app("B001")
-    s.set_last_played_externally("B002", datetime(2026, 1, 1, tzinfo=UTC))
+    s.set_last_played_externally("B002", datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     assert s.last_played_in_app[0] == "B001"
     assert s.last_played_externally[0] == "B002"
