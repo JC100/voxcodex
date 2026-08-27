@@ -11,12 +11,56 @@ Audible app or website.
 
 - Python 3.10+
 - [mpv](https://mpv.io/) on your `PATH` (used for playback; not required for
-  browsing/downloading only)
-- `ffmpeg` is not required at runtime by this app, but mpv typically links
-  against libavformat internally to read/decrypt AAXC, so a normal mpv
-  install already covers it.
+  browsing/downloading only). `ffmpeg` itself isn't required at runtime --
+  mpv typically links against libavformat internally to read/decrypt AAXC,
+  so a normal mpv install already covers it.
 
-## Setup
+  | Distro / OS | Install command |
+  |---|---|
+  | Debian / Ubuntu | `sudo apt install mpv` |
+  | Fedora | `sudo dnf install mpv` |
+  | Arch | `sudo pacman -S mpv` |
+  | macOS (Homebrew) | `brew install mpv` |
+
+## Installation
+
+The recommended way to install is [pipx](https://pipx.pypa.io/), which keeps
+this (and its dependencies) in its own isolated environment and puts a
+`voxcodex` command on your `PATH` -- no messing with a venv yourself, and it
+works cleanly on distros that block plain `pip install` outside one (Debian/
+Ubuntu, Fedora, Arch all do this by default now).
+
+| Distro / OS | Install pipx with |
+|---|---|
+| Debian / Ubuntu | `sudo apt install pipx` |
+| Fedora | `sudo dnf install pipx` |
+| Arch | `sudo pacman -S python-pipx` |
+| macOS (Homebrew) | `brew install pipx` |
+| Anything else | `python3 -m pip install --user pipx` |
+
+Then:
+
+```bash
+pipx install git+https://github.com/JC100/voxcodex.git
+voxcodex
+```
+
+**To update** to the latest commit later:
+
+```bash
+pipx upgrade voxcodex
+```
+
+To pin a specific released version instead of always tracking the latest
+commit, install (or upgrade to) a tag: `pipx install git+https://github.com/JC100/voxcodex.git@v0.2.0`.
+See [Releases](https://github.com/JC100/voxcodex/releases) for what's tagged.
+
+On first run you'll be asked to sign in with your Amazon account (the same
+login used by the official Audible app), and optionally set a local "vault
+password" to encrypt the saved login on disk. If you skip it, the file is
+still written with `chmod 600` (owner-read/write only).
+
+## Development setup
 
 ```bash
 python3 -m venv .venv
@@ -24,11 +68,6 @@ python3 -m venv .venv
 .venv/bin/voxcodex
 # or: .venv/bin/python -m voxcodex
 ```
-
-On first run you'll be asked to sign in with your Amazon account (the same
-login used by the official Audible app), and optionally set a local "vault
-password" to encrypt the saved login on disk. If you skip it, the file is
-still written with `chmod 600` (owner-read/write only).
 
 ## Keybindings
 
