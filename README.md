@@ -84,6 +84,16 @@ so there's no way to compare them on equal footing yet.
 - Playback runs `mpv` as a subprocess, controlled over its JSON IPC socket,
   handing the AAXC key/iv straight to ffmpeg's demuxer (`-audible_key`/
   `-audible_iv`) so it can play/stream directly with no separate decrypt step.
+- **Browsing and playing downloaded books works offline.** Every successful
+  library fetch is cached (`~/.local/share/audible-tui/library_cache.json`);
+  if a fresh fetch fails for any reason (no connection, an Audible outage),
+  the library screen falls back to that cache instead of just showing an
+  error, and says so ("Offline -- showing last known library, cached Xm/h/d
+  ago"). Local download status and resume position are still read fresh off
+  disk in that fallback too, so anything already downloaded is exactly as
+  playable as when you're online -- only actions that inherently need a live
+  connection (downloading something new, streaming something you haven't
+  downloaded, fetching chapter metadata) are actually unavailable.
 - **Progress sync is one-directional (Audible -> this app).** This app reads
   your real position from Audible when it can, and always keeps its own
   local record of where you left off (`~/.local/share/audible-tui/` by
@@ -121,6 +131,6 @@ you don't control.
 
 ## Local data
 
-- Config/auth: platform config dir (e.g. `~/.config/audible-tui/`)
-- Downloads and progress cache: platform data dir (e.g.
-  `~/.local/share/audible-tui/`)
+- Config/auth/settings: platform config dir (e.g. `~/.config/audible-tui/`)
+- Downloads, progress cache, and the offline library cache: platform data
+  dir (e.g. `~/.local/share/audible-tui/`)

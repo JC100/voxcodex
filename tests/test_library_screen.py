@@ -48,15 +48,21 @@ class FakeAudibleClient:
 
 
 class FakeAPI:
-    def __init__(self, books, chapters=None, chapters_exc=None, annotations_response=None):
+    def __init__(
+        self, books, chapters=None, chapters_exc=None, annotations_response=None,
+        get_library_exc=None,
+    ):
         self._books = books
         self.client = FakeAudibleClient(annotations_response)
         self.license_calls = []
         self.chapter_calls = []
         self._chapters = chapters if chapters is not None else []
         self._chapters_exc = chapters_exc
+        self._get_library_exc = get_library_exc
 
     def get_library(self):
+        if self._get_library_exc is not None:
+            raise self._get_library_exc
         return list(self._books)
 
     def get_license(self, asin, quality="high"):
@@ -97,6 +103,29 @@ def _fake_settings(monkeypatch):
     return instance
 
 
+class FakeLibraryCache:
+    """Stands in for services.library_cache -- never touches the real
+    ~/.local/share/audible-tui/library_cache.json. `to_return` is what
+    `load()` answers with; defaults to "no cache exists yet"."""
+
+    def __init__(self):
+        self.save_calls = []
+        self.to_return = None
+
+    def save(self, books):
+        self.save_calls.append(books)
+
+    def load(self):
+        return self.to_return
+
+
+@pytest.fixture(autouse=True)
+def _fake_library_cache(monkeypatch):
+    instance = FakeLibraryCache()
+    monkeypatch.setattr(library_module, "library_cache", instance)
+    return instance
+
+
 @pytest.fixture(autouse=True)
 def _no_downloads_by_default(monkeypatch):
     monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: False)
@@ -124,6 +153,70 @@ async def test_library_populates_table_from_api():
         await _wait_until(lambda: len(screen._books) == 2)
         table = screen.query_one(DataTable)
         assert table.row_count == 2
+
+
+async def test_successful_fetch_caches_the_library_for_offline_use(_fake_library_cache):
+    books = [_book("B1", "Book One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert len(_fake_library_cache.save_calls) == 1
+        assert [b.asin for b in _fake_library_cache.save_calls[0]] == ["B1"]
+
+
+async def test_failed_fetch_with_no_cache_shows_the_error(_fake_library_cache):
+    _fake_library_cache.to_return = None  # no cache exists yet
+    api = FakeAPI([], get_library_exc=RuntimeError("connection refused"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(
+            lambda: "Failed to load library" in str(screen.query_one("#status").content)
+        )
+        assert screen._books == []
+
+
+async def test_failed_fetch_falls_back_to_cache_and_shows_offline_status(
+    _fake_library_cache, monkeypatch,
+):
+    import time as time_module
+
+    cached_books = [_book("B1", "Cached Book")]
+    _fake_library_cache.to_return = (cached_books, time_module.time() - 3600)  # 1h old
+    api = FakeAPI([], get_library_exc=RuntimeError("connection refused"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._books[0].asin == "B1"
+
+        status = str(screen.query_one("#status").content)
+        assert "Offline" in status
+        assert "1h ago" in status
+        # A failed fetch never had books to cache again.
+        assert _fake_library_cache.save_calls == []
+
+
+async def test_offline_fallback_still_reflects_local_download_and_progress_state(
+    _fake_library_cache, monkeypatch,
+):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin == "B1")
+
+    cached_books = [_book("B1", "Cached Book"), _book("B2", "Other Book")]
+    _fake_library_cache.to_return = (cached_books, 0.0)
+    api = FakeAPI([], get_library_exc=RuntimeError("connection refused"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 2)
+        by_asin = {b.asin: b for b in screen._books}
+        assert by_asin["B1"].is_downloaded is True
+        assert by_asin["B2"].is_downloaded is False
 
 
 # -- search ---------------------------------------------------------------

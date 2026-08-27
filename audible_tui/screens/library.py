@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -11,11 +13,24 @@ from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Stati
 from audible_tui.models import Book
 from audible_tui.screens.modals import ConfirmModal, MessageModal
 from audible_tui.screens.player_screen import PlayerScreen
-from audible_tui.services import download, progress
+from audible_tui.services import download, library_cache, progress
 from audible_tui.services.api import AudibleAPI, Chapter
 from audible_tui.services.settings import Settings
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Local")
+
+
+def _format_age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    return f"{hours // 24}d"
 
 
 class LibraryScreen(Screen[None]):
@@ -67,8 +82,18 @@ class LibraryScreen(Screen[None]):
         try:
             books = self.api.get_library()
         except Exception as exc:  # noqa: BLE001
-            self.app.call_from_thread(self._set_status, f"[red]Failed to load library: {exc}[/red]")
+            cached = library_cache.load()
+            if cached is None:
+                self.app.call_from_thread(
+                    self._set_status, f"[red]Failed to load library: {exc}[/red]"
+                )
+                return
+            cached_books, cached_at = cached
+            self._apply_local_state(cached_books)
+            self.app.call_from_thread(self._populate_offline, cached_books, cached_at)
             return
+
+        library_cache.save(books)
 
         annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
         remote_positions = progress.positions_from_annotations(annotations)
@@ -78,19 +103,38 @@ class LibraryScreen(Screen[None]):
             asin, updated_at = most_recent
             self.settings.set_last_played_externally(asin, updated_at)
 
+        self._apply_local_state(books, remote_positions)
+        self.app.call_from_thread(self._populate, books)
+
+    def _apply_local_state(
+        self, books: list[Book], remote_positions: dict[str, int] | None = None
+    ) -> None:
+        """Fills in whatever we can know without a network call: local
+        download status and the further-along of the local/remote resume
+        position. Used for both a live fetch and an offline cache fallback
+        -- `remote_positions` is simply empty in the latter case."""
+        remote_positions = remote_positions or {}
         for book in books:
             book.is_downloaded = download.is_downloaded(book.asin)
             local_ms = self.progress_store.get_position_ms(book.asin)
             remote_ms = remote_positions.get(book.asin, 0)
             book.progress_ms = max(book.progress_ms, local_ms, remote_ms)
 
-        self.app.call_from_thread(self._populate, books)
-
     def _populate(self, books: list[Book]) -> None:
         self._books = books
         self._filtered = books
         self._refresh_table()
         self._set_status(f"{len(books)} titles")
+
+    def _populate_offline(self, books: list[Book], cached_at: float) -> None:
+        self._books = books
+        self._filtered = books
+        self._refresh_table()
+        age = _format_age(time.time() - cached_at)
+        self._set_status(
+            f"[yellow]Offline -- showing last known library "
+            f"({len(books)} titles, cached {age} ago). Downloaded books still play.[/yellow]"
+        )
 
     def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
