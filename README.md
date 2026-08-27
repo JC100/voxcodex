@@ -81,15 +81,18 @@ Player screen:
 ```
 
 Unit tests cover the service layer (parsing, download, progress tracking,
-mpv control) against fakes, and Textual-pilot integration tests drive
-`LibraryScreen` and the modal dialogs through their real keybindings/clicks
-(not by calling `action_*` methods directly) -- no real Audible account,
-network, or mpv process required for any of it. `PlayerScreen` and the
-login flow's interaction with Amazon's actual pages aren't covered yet;
-login especially isn't a good target for this kind of test (it's mostly a
-thin pass-through to `audible.Authenticator.from_login`'s own scripted-HTTP
-flow against Amazon's real pages) -- that needs real manual testing (see the
-`run` skill / tmux for driving the TUI) rather than a fake.
+mpv control) against fakes, and Textual-pilot integration tests drive every
+screen and modal (`LibraryScreen`, `PlayerScreen`, `LoginScreen`, the modal
+dialogs) through their real keybindings/clicks/focus routing -- not by
+calling `action_*` methods directly. None of it needs a real Audible
+account, network, or mpv process: `LoginScreen`'s tests fake the `auth`
+module (`audible.Authenticator.from_login` etc.) rather than talking to
+Amazon, so they cover the screen's own state machine -- field navigation,
+validation, busy/error states, and the blocking-prompt relay used for
+OTP/CVF/CAPTCHA -- not Amazon's actual login pages, CAPTCHAs, or
+anti-automation checks. That real HTTP flow still needs manual testing (see
+the `run` skill / tmux for driving the TUI) -- there's no faking a website
+you don't control.
 
 ## Local data
 
