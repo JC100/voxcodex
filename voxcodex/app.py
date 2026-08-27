@@ -5,16 +5,16 @@ import logging
 import audible
 from textual.app import App
 
-from audible_tui import config
-from audible_tui.screens.library import LibraryScreen
-from audible_tui.screens.login import LoginScreen
-from audible_tui.services import auth
-from audible_tui.services.api import AudibleAPI
-from audible_tui.services.settings import Settings
+from voxcodex import config
+from voxcodex.screens.library import LibraryScreen
+from voxcodex.screens.login import LoginScreen
+from voxcodex.services import auth
+from voxcodex.services.api import AudibleAPI
+from voxcodex.services.settings import Settings
 
 
-class AudibleTUIApp(App[None]):
-    TITLE = "Audible TUI"
+class VoxCodexApp(App[None]):
+    TITLE = "VoxCodex"
     SUB_TITLE = "your library, in the terminal"
 
     # Textual auto-registers a binding for its built-in command palette
@@ -64,13 +64,13 @@ def _setup_logging() -> None:
     # Nothing here logs credentials in plaintext, but the login flow's HTML
     # inspection can be verbose -- keep it out of WARNING-level noise from
     # other libraries while still capturing it in the file.
-    for name in ("audible_tui", "audible.login", "audible.auth", "audible.client"):
+    for name in ("voxcodex", "audible.login", "audible.auth", "audible.client"):
         logging.getLogger(name).setLevel(logging.DEBUG)
 
 
 def run() -> None:
     _setup_logging()
-    AudibleTUIApp().run()
+    VoxCodexApp().run()
 
 
 if __name__ == "__main__":

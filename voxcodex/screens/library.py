@@ -11,12 +11,12 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
 
-from audible_tui.models import Book
-from audible_tui.screens.modals import ConfirmModal, MessageModal
-from audible_tui.screens.player_screen import PlayerScreen
-from audible_tui.services import download, library_cache, progress
-from audible_tui.services.api import AudibleAPI, Chapter
-from audible_tui.services.settings import Settings
+from voxcodex.models import Book
+from voxcodex.screens.modals import ConfirmModal, MessageModal
+from voxcodex.screens.player_screen import PlayerScreen
+from voxcodex.services import download, library_cache, progress
+from voxcodex.services.api import AudibleAPI, Chapter
+from voxcodex.services.settings import Settings
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded")
 

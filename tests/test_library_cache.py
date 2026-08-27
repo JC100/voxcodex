@@ -1,8 +1,8 @@
 import pytest
 
-from audible_tui import config
-from audible_tui.models import Book
-from audible_tui.services import library_cache
+from voxcodex import config
+from voxcodex.models import Book
+from voxcodex.services import library_cache
 
 
 @pytest.fixture(autouse=True)

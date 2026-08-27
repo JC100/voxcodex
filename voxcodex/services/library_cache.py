@@ -15,8 +15,8 @@ import logging
 import time
 from dataclasses import asdict
 
-from audible_tui import config
-from audible_tui.models import Book
+from voxcodex import config
+from voxcodex.models import Book
 
 logger = logging.getLogger(__name__)
 

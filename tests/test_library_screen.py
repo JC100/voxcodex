@@ -12,10 +12,10 @@ import pytest
 from textual.app import App
 from textual.widgets import DataTable, Input
 
-from audible_tui.models import Book
-from audible_tui.screens import library as library_module
-from audible_tui.screens.library import COLUMNS, LibraryScreen, _current_chapter_number
-from audible_tui.services.api import Chapter, License
+from voxcodex.models import Book
+from voxcodex.screens import library as library_module
+from voxcodex.screens.library import COLUMNS, LibraryScreen, _current_chapter_number
+from voxcodex.services.api import Chapter, License
 
 
 class FakeProgressStore:
@@ -117,7 +117,7 @@ def _fake_settings(monkeypatch):
 
 class FakeLibraryCache:
     """Stands in for services.library_cache -- never touches the real
-    ~/.local/share/audible-tui/library_cache.json. `to_return` is what
+    ~/.local/share/voxcodex/library_cache.json. `to_return` is what
     `load()` answers with; defaults to "no cache exists yet"."""
 
     def __init__(self):
@@ -337,8 +337,8 @@ async def test_enter_in_search_also_moves_focus_to_the_table():
 
 
 async def test_space_plays_the_selected_book(monkeypatch):
-    from audible_tui.screens import player_screen as player_screen_module
-    from audible_tui.screens.player_screen import PlayerScreen
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
     monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
@@ -805,8 +805,8 @@ class _FakeSettingsForLibraryTests:
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
-    from audible_tui.screens import player_screen as player_screen_module
-    from audible_tui.screens.player_screen import PlayerScreen
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
     monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
@@ -828,8 +828,8 @@ async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
 
 
 async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
-    from audible_tui.screens import player_screen as player_screen_module
-    from audible_tui.screens.player_screen import PlayerScreen
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
     monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
@@ -912,8 +912,8 @@ async def test_chapter_fetch_failure_leaves_chapter_column_blank():
 
 
 async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monkeypatch):
-    from audible_tui.screens import player_screen as player_screen_module
-    from audible_tui.screens.player_screen import PlayerScreen
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
     monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)

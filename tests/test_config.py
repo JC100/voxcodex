@@ -1,4 +1,4 @@
-from audible_tui import config
+from voxcodex import config
 
 
 def test_ensure_dirs_creates_config_data_and_downloads_dirs(tmp_path, monkeypatch):

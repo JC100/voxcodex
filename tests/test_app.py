@@ -1,7 +1,20 @@
 import pytest
 
-from audible_tui import app as app_module
-from audible_tui.app import AudibleTUIApp
+from voxcodex import app as app_module
+from voxcodex import config
+from voxcodex.app import VoxCodexApp
+
+
+@pytest.fixture(autouse=True)
+def _config_dirs_in_tmp_path(tmp_path, monkeypatch):
+    """VoxCodexApp.on_mount() calls config.ensure_dirs() and checks
+    config.AUTH_FILE for real -- without this, every test here would create
+    (harmless but real) directories under this machine's actual
+    ~/.config/voxcodex and ~/.local/share/voxcodex."""
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DOWNLOADS_DIR", tmp_path / "data" / "downloads")
+    monkeypatch.setattr(config, "AUTH_FILE", tmp_path / "config" / "auth.json")
 
 
 class FakeSettings:
@@ -20,7 +33,7 @@ class FakeSettings:
 
 async def test_command_palette_has_a_clear_footer_label(monkeypatch):
     monkeypatch.setattr(app_module, "Settings", lambda: FakeSettings())
-    app = AudibleTUIApp()
+    app = VoxCodexApp()
 
     async with app.run_test():
         binding = next(
@@ -31,7 +44,7 @@ async def test_command_palette_has_a_clear_footer_label(monkeypatch):
 
 async def test_starts_with_the_saved_theme_applied(monkeypatch):
     monkeypatch.setattr(app_module, "Settings", lambda: FakeSettings(theme="nord"))
-    app = AudibleTUIApp()
+    app = VoxCodexApp()
 
     async with app.run_test():
         assert app.theme == "nord"
@@ -43,7 +56,7 @@ async def test_falls_back_to_default_when_saved_theme_is_unrecognized(monkeypatc
     monkeypatch.setattr(
         app_module, "Settings", lambda: FakeSettings(theme="some-removed-theme")
     )
-    app = AudibleTUIApp()
+    app = VoxCodexApp()
 
     async with app.run_test():
         assert app.theme != "some-removed-theme"
@@ -52,7 +65,7 @@ async def test_falls_back_to_default_when_saved_theme_is_unrecognized(monkeypatc
 async def test_changing_theme_persists_it(monkeypatch):
     fake_settings = FakeSettings(theme="textual-dark")
     monkeypatch.setattr(app_module, "Settings", lambda: fake_settings)
-    app = AudibleTUIApp()
+    app = VoxCodexApp()
 
     async with app.run_test() as pilot:
         app.theme = "gruvbox"

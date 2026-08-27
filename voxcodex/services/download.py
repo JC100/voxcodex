@@ -6,9 +6,9 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from audible_tui import config
-from audible_tui.models import Book
-from audible_tui.services.api import AudibleAPI, License
+from voxcodex import config
+from voxcodex.models import Book
+from voxcodex.services.api import AudibleAPI, License
 
 ProgressCallback = Callable[[int, int], None]
 

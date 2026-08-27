@@ -1,4 +1,4 @@
-from audible_tui.app import run
+from voxcodex.app import run
 
 if __name__ == "__main__":
     run()

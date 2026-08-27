@@ -6,7 +6,7 @@ from pathlib import Path
 
 from platformdirs import user_config_dir, user_data_dir
 
-APP_NAME = "audible-tui"
+APP_NAME = "voxcodex"
 
 CONFIG_DIR = Path(user_config_dir(APP_NAME))
 DATA_DIR = Path(user_data_dir(APP_NAME))
@@ -16,7 +16,7 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 PROGRESS_CACHE_FILE = DATA_DIR / "progress_cache.json"
 LIBRARY_CACHE_FILE = DATA_DIR / "library_cache.json"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
-LOG_FILE = DATA_DIR / "audible-tui.log"
+LOG_FILE = DATA_DIR / "voxcodex.log"
 
 
 def ensure_dirs() -> None:

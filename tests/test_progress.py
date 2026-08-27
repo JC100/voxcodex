@@ -1,6 +1,6 @@
 import pytest
 
-from audible_tui.services import progress
+from voxcodex.services import progress
 
 
 class FakeClient:

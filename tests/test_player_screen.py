@@ -10,11 +10,11 @@ import pytest
 from textual.app import App
 from textual.widgets import Static
 
-from audible_tui.models import Book
-from audible_tui.screens import player_screen as player_screen_module
-from audible_tui.screens.player_screen import PlayerScreen
-from audible_tui.services.api import Chapter
-from audible_tui.services.player import MpvError, MpvNotFoundError
+from voxcodex.models import Book
+from voxcodex.screens import player_screen as player_screen_module
+from voxcodex.screens.player_screen import PlayerScreen
+from voxcodex.services.api import Chapter
+from voxcodex.services.player import MpvError, MpvNotFoundError
 
 
 class FakePlayer:

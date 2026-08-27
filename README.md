@@ -1,4 +1,4 @@
-# audible-tui
+# VoxCodex
 
 A terminal UI for browsing, downloading, and playing the audiobooks already in
 your Audible library.
@@ -21,8 +21,8 @@ Audible app or website.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
-.venv/bin/audible-tui
-# or: .venv/bin/python -m audible_tui
+.venv/bin/voxcodex
+# or: .venv/bin/python -m voxcodex
 ```
 
 On first run you'll be asked to sign in with your Amazon account (the same
@@ -103,7 +103,7 @@ built-in themes. That choice persists across sessions too, the same way the
 rest of this section's settings do (Textual itself doesn't remember it
 between runs on its own).
 
-Playback speed and volume persist across sessions (`~/.config/audible-tui/settings.json`)
+Playback speed and volume persist across sessions (`~/.config/voxcodex/settings.json`)
 -- adjust them once with `↑`/`↓`/`]`/`[` and every future play starts there.
 That file also tracks, but doesn't yet surface in the UI, which title you
 most recently played *in this app* and which one Audible's own record shows
@@ -123,7 +123,7 @@ so there's no way to compare them on equal footing yet.
   handing the AAXC key/iv straight to ffmpeg's demuxer (`-audible_key`/
   `-audible_iv`) so it can play/stream directly with no separate decrypt step.
 - **Browsing and playing downloaded books works offline.** Every successful
-  library fetch is cached (`~/.local/share/audible-tui/library_cache.json`);
+  library fetch is cached (`~/.local/share/voxcodex/library_cache.json`);
   if a fresh fetch fails for any reason (no connection, an Audible outage),
   the library screen falls back to that cache instead of just showing an
   error, and says so ("Offline -- showing last known library, cached Xm/h/d
@@ -134,7 +134,7 @@ so there's no way to compare them on equal footing yet.
   downloaded, fetching chapter metadata) are actually unavailable.
 - **Progress sync is one-directional (Audible -> this app).** This app reads
   your real position from Audible when it can, and always keeps its own
-  local record of where you left off (`~/.local/share/audible-tui/` by
+  local record of where you left off (`~/.local/share/voxcodex/` by
   default) so resuming works reliably within the app -- it just can't push
   a play made here back to Audible's own cross-device sync. This was
   investigated in depth and deliberately shelved rather than left
@@ -169,9 +169,9 @@ you don't control.
 
 ## Local data
 
-- Config/auth/settings: platform config dir (e.g. `~/.config/audible-tui/`)
+- Config/auth/settings: platform config dir (e.g. `~/.config/voxcodex/`)
 - Downloads, progress cache, and the offline library cache: platform data
-  dir (e.g. `~/.local/share/audible-tui/`)
+  dir (e.g. `~/.local/share/voxcodex/`)
 
 ## License
 

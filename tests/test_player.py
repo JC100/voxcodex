@@ -1,7 +1,7 @@
 import pytest
 
-from audible_tui.services import player as player_module
-from audible_tui.services.player import MpvError, MpvNotFoundError, MpvPlayer
+from voxcodex.services import player as player_module
+from voxcodex.services.player import MpvError, MpvNotFoundError, MpvPlayer
 
 
 def test_raises_when_mpv_not_on_path(monkeypatch):

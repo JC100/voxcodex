@@ -11,8 +11,8 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, LoadingIndicator, Select, Static
 
-from audible_tui.screens.modals import MessageModal, PromptModal
-from audible_tui.services import auth
+from voxcodex.screens.modals import MessageModal, PromptModal
+from voxcodex.services import auth
 
 LOCALES = [
     ("United States", "us"),
@@ -69,7 +69,7 @@ class LoginScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("[b]Audible TUI[/b]")
+            yield Static("[b]VoxCodex[/b]")
             if self._unlock_only:
                 yield Static("Enter your vault password to unlock your saved login.")
             else:

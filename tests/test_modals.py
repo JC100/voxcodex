@@ -1,7 +1,7 @@
 from textual.app import App
 from textual.widgets import Input
 
-from audible_tui.screens.modals import ConfirmModal, MessageModal, PromptModal
+from voxcodex.screens.modals import ConfirmModal, MessageModal, PromptModal
 
 
 class ModalHostApp(App):

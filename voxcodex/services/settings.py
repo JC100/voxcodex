@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from audible_tui import config
+from voxcodex import config
 
 DEFAULT_PLAYBACK_SPEED = 1.0
 DEFAULT_PLAYBACK_VOLUME = 100.0

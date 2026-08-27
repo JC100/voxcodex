@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from audible_tui import config
-from audible_tui.models import Book
-from audible_tui.services import download
-from audible_tui.services.api import License
+from voxcodex import config
+from voxcodex.models import Book
+from voxcodex.services import download
+from voxcodex.services.api import License
 
 
 @pytest.fixture(autouse=True)
@@ -150,7 +150,7 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
 
 
 def test_download_book_propagates_license_denied():
-    from audible_tui.services.api import LicenseDenied
+    from voxcodex.services.api import LicenseDenied
 
     api = FakeAPI(LicenseDenied("no rights"), response=None)
 

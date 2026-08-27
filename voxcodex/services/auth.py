@@ -15,10 +15,10 @@ from typing import Any
 import audible
 import audible.login as _login_internals
 
-from audible_tui import config
+from voxcodex import config
 
 Locale = str
-logger = logging.getLogger("audible_tui.auth")
+logger = logging.getLogger("voxcodex.auth")
 
 
 @dataclass

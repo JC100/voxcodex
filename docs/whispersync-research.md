@@ -3,7 +3,7 @@
 ## Status: not implemented. Local-only progress tracking is the current, intentional design.
 
 This app tracks listening position locally (`ProgressStore` in
-`audible_tui/services/progress.py`) and does a best-effort *read* of
+`voxcodex/services/progress.py`) and does a best-effort *read* of
 Audible's own last-position data (`fetch_remote_positions`, via
 `GET annotations/lastpositions`) to seed that local record. It does **not**
 push plays made in this app back to Audible, so other devices (the Android
@@ -52,8 +52,8 @@ account's actual cross-device sync state -- not a small fix.
 
 ## What we tried and reverted
 
-Implemented in `audible_tui/services/progress.py` (`push_last_heard`,
-`fetch_last_heard`) and wired into `audible_tui/screens/library.py`
+Implemented in `voxcodex/services/progress.py` (`push_last_heard`,
+`fetch_last_heard`) and wired into `voxcodex/screens/library.py`
 (`_open_player` fetched a fresh position before playing; `_on_close` pushed
 the final position after stopping). Both functions talked to the Fiona
 sidecar endpoint above:

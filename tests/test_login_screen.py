@@ -12,9 +12,9 @@ import asyncio
 from textual.app import App
 from textual.widgets import Input, Static
 
-from audible_tui.screens import login as login_module
-from audible_tui.screens.login import LoginScreen
-from audible_tui.screens.modals import PromptModal
+from voxcodex.screens import login as login_module
+from voxcodex.screens.login import LoginScreen
+from voxcodex.screens.modals import PromptModal
 
 
 class FakeAuthenticator:

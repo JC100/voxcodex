@@ -1,6 +1,6 @@
 import pytest
 
-from audible_tui.services.api import (
+from voxcodex.services.api import (
     AudibleAPI,
     LicenseDenied,
     NoDownloadUrl,
@@ -239,7 +239,7 @@ def test_get_license_decrypts_voucher_when_license_response_present(monkeypatch)
     path entirely to dodge needing real crypto -- which meant the actual
     happy path for protected content was unexercised. Faking only the crypto
     call itself (not the whole get_license flow) closes that gap."""
-    import audible_tui.services.api as api_module
+    import voxcodex.services.api as api_module
 
     resp = _license_response()
     resp["content_license"]["license_response"] = "opaque-encrypted-blob"

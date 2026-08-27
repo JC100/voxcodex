@@ -10,7 +10,7 @@ investigation into why not). So this app:
     which is what drives the resume point here regardless of whether the
     remote read succeeds.
 
-So "sync" here is one-directional (Audible -> audible-tui). If you also use
+So "sync" here is one-directional (Audible -> voxcodex). If you also use
 the official app, its plays will still be reflected next time this app reads
 that endpoint -- this app just can't push its own plays back to Audible.
 
@@ -35,8 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from audible_tui import config
-from audible_tui.services.api import AudibleAPI
+from voxcodex import config
+from voxcodex.services.api import AudibleAPI
 
 logger = logging.getLogger(__name__)
 

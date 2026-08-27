@@ -35,7 +35,7 @@ class MpvPlayer:
         self._proc: subprocess.Popen | None = None
         self._sock: socket.socket | None = None
         self._sockfile = None
-        self._socket_path = Path(tempfile.gettempdir()) / f"audible-tui-mpv-{id(self)}.sock"
+        self._socket_path = Path(tempfile.gettempdir()) / f"voxcodex-mpv-{id(self)}.sock"
         self._request_ids = itertools.count(1)
 
     @property

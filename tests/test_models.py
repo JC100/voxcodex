@@ -1,4 +1,4 @@
-from audible_tui.models import Book
+from voxcodex.models import Book
 
 
 def test_author_display_joins_multiple_authors():

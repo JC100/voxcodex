@@ -8,10 +8,10 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, ProgressBar, Static
 
-from audible_tui.models import Book
-from audible_tui.services.api import Chapter
-from audible_tui.services.player import MpvNotFoundError, MpvError, MpvPlayer
-from audible_tui.services.settings import Settings
+from voxcodex.models import Book
+from voxcodex.services.api import Chapter
+from voxcodex.services.player import MpvNotFoundError, MpvError, MpvPlayer
+from voxcodex.services.settings import Settings
 
 
 def _fmt_hms(seconds: float) -> str:

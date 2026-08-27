@@ -14,7 +14,7 @@ import httpx
 from audible.aescipher import decrypt_voucher_from_licenserequest
 from audible.client import raise_for_status
 
-from audible_tui.models import Book
+from voxcodex.models import Book
 
 LIBRARY_RESPONSE_GROUPS = (
     "contributors, customer_rights, media, product_attrs, product_desc, "

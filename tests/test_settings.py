@@ -1,7 +1,7 @@
 import time
 from datetime import datetime, timezone
 
-from audible_tui.services import settings
+from voxcodex.services import settings
 
 
 def test_playback_speed_defaults_to_1x(tmp_path):
