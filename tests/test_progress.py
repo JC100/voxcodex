@@ -171,9 +171,15 @@ class FakePushAPI:
     def __init__(self, exc=None):
         self.exc = exc
         self.calls = []
+        self.finished_calls = []
 
     def push_last_heard(self, asin, acr, content_version, codec, position_ms):
         self.calls.append((asin, acr, content_version, codec, position_ms))
+        if self.exc is not None:
+            raise self.exc
+
+    def set_finished(self, asin, finished):
+        self.finished_calls.append((asin, finished))
         if self.exc is not None:
             raise self.exc
 
@@ -199,3 +205,23 @@ def test_push_position_skips_the_call_without_content_version():
 def test_push_position_swallows_failure_and_reports_it():
     api = FakePushAPI(exc=RuntimeError("network exploded"))
     assert progress.push_position(api, "B001", "CR!ABC", "42", "AAXC", 5000) is False
+
+
+# -- push_finished ------------------------------------------------------
+
+
+def test_push_finished_calls_through_and_reports_success():
+    api = FakePushAPI()
+    assert progress.push_finished(api, "B001", True) is True
+    assert api.finished_calls == [("B001", True)]
+
+
+def test_push_finished_passes_through_unfinished_too():
+    api = FakePushAPI()
+    assert progress.push_finished(api, "B001", False) is True
+    assert api.finished_calls == [("B001", False)]
+
+
+def test_push_finished_swallows_failure_and_reports_it():
+    api = FakePushAPI(exc=RuntimeError("network exploded"))
+    assert progress.push_finished(api, "B001", True) is False

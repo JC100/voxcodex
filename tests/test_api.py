@@ -427,3 +427,50 @@ def test_push_last_heard_raises_on_http_error():
 
     with pytest.raises(UnexpectedError):
         api.push_last_heard("B001", "CR!ABC", "42", "AAXC", 1000)
+
+
+# -- set_finished --------------------------------------------------------
+
+
+class FakePutClient:
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.put_calls = []
+
+    def put(self, path, body=None, response_callback=None, **kwargs):
+        self.put_calls.append((path, body, kwargs))
+        if self.exc is not None:
+            raise self.exc
+
+
+def test_set_finished_puts_a_manual_mark_finished_event():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.set_finished("B001", True)
+
+    (path, body, _), = client.put_calls
+    assert path == "stats/events"
+    (event,) = body["stats"]
+    assert event["event_type"] == "ManualMarkAsFinished"
+    assert event["asin"] == "B001"
+    assert event["event_timestamp"].endswith("Z")
+    assert event["store"] == "Audible"
+
+
+def test_set_finished_false_sends_the_unfinished_event():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.set_finished("B001", False)
+
+    (_, body, _), = client.put_calls
+    assert body["stats"][0]["event_type"] == "ManualMarkAsUnfinished"
+
+
+def test_set_finished_propagates_http_errors():
+    client = FakePutClient(exc=RuntimeError("boom"))
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(RuntimeError):
+        api.set_finished("B001", True)

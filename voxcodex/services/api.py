@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import audible
@@ -53,6 +53,18 @@ _LICENSE_HEADERS = {
 # docs/whispersync-research.md for how it was found and verified against a
 # live account, and why an earlier attempt at this looked like a dead end.
 _FIONA_SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
+
+# `PUT /1.0/stats/events` is Audible's own telemetry sink (session lifecycle +
+# listening-interval events). VoxCodex only uses it for one thing: flipping a
+# title's finished state, which is confirmed to propagate to
+# `listening_status.is_finished` (and thus the official app/website "Finished"
+# badge) within seconds, and is fully reversible. The listening-interval
+# ("Listening") events are deliberately NOT sent -- their exact accepted shape
+# isn't pinned down, and malformed ones were observed to reset a title's
+# library-page `percent_complete` to 0. See
+# docs/library-progress-sync-investigation.md for the full trail, including the
+# enum of event types the endpoint accepts.
+_STATS_EVENTS_PATH = "stats/events"
 
 
 class LicenseDenied(Exception):
@@ -219,6 +231,46 @@ class AudibleAPI:
             headers={"Content-Type": "application/xml"},
         )
         raise_for_status(resp)
+
+    # -- finished state (write) --------------------------------------
+
+    def set_finished(self, asin: str, finished: bool) -> None:
+        """Marks `asin` finished (or un-finished) in Audible's cross-device
+        state, so the official app/website library show the same "Finished"
+        badge VoxCodex does once you reach the end of a book here.
+
+        Confirmed against a live account (2026-08-30, see
+        docs/library-progress-sync-investigation.md): a `ManualMarkAsFinished`
+        event flips `listening_status.is_finished` to true within seconds, and
+        `ManualMarkAsUnfinished` flips it straight back -- nothing here is
+        one-way. Raises on HTTP failure; callers wanting best-effort semantics
+        should use `services.progress.push_finished` rather than calling this
+        directly.
+        """
+        now = datetime.now(timezone.utc)
+        payload = {
+            "stats": [
+                {
+                    "event_type": (
+                        "ManualMarkAsFinished" if finished else "ManualMarkAsUnfinished"
+                    ),
+                    "asin": asin,
+                    "event_timestamp": now.strftime("%Y-%m-%dT%H:%M:%S.")
+                    + f"{now.microsecond // 1000:03d}Z",
+                    "listening_mode": "Online",
+                    "delivery_type": "Streaming",
+                    "audio_type": "FullTitle",
+                    "store": "Audible",
+                    "asin_owned": True,
+                    "playing_immersion_reading": False,
+                    "local_timezone": "Etc/UTC",
+                    "social_network_site": "Unknown",
+                }
+            ]
+        }
+        self.client.put(
+            _STATS_EVENTS_PATH, body=payload, response_callback=_full_response
+        )
 
     # -- chapters -----------------------------------------------------
 

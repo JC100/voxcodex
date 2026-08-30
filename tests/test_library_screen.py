@@ -14,7 +14,12 @@ from textual.widgets import DataTable, Input
 
 from voxcodex.models import Book
 from voxcodex.screens import library as library_module
-from voxcodex.screens.library import COLUMNS, LibraryScreen, _current_chapter_number
+from voxcodex.screens.library import (
+    COLUMNS,
+    LibraryScreen,
+    _current_chapter_number,
+    _reached_end,
+)
 from voxcodex.services.api import Chapter, License
 
 
@@ -408,6 +413,23 @@ def test_current_chapter_number_is_one_once_actually_into_chapter_one():
 
 def test_current_chapter_number_none_for_no_chapters():
     assert _current_chapter_number([], position_ms=0) is None
+
+
+# -- reached-end detection --------------------------------------------
+
+
+def test_reached_end_true_at_and_past_the_finished_fraction():
+    assert _reached_end(98_000, 100_000) is True
+    assert _reached_end(100_000, 100_000) is True
+
+
+def test_reached_end_false_before_the_finished_fraction():
+    assert _reached_end(97_000, 100_000) is False
+
+
+def test_reached_end_false_without_a_known_duration():
+    assert _reached_end(0, 0) is False
+    assert _reached_end(5000, 0) is False
 
 
 # -- sort / filter -----------------------------------------------------

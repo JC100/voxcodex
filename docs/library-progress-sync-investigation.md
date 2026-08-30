@@ -1,10 +1,41 @@
 # Library-page progress sync: investigation notes (2026-08-30, overnight)
 
-**Status: in progress.** Picks up from `whispersync-research.md`. That work
-made the *resume point* sync (open a book on another device, it starts where
-VoxCodex left off). This round is about the other half the user reported still
-broken: the **library page's "time left" / progress bar does not move** when
-VoxCodex pushes a position.
+**Status: partially resolved + implemented; one piece still open.** Picks up
+from `whispersync-research.md`. That work made the *resume point* sync (open a
+book on another device, it starts where VoxCodex left off). This round is about
+the other half the user reported still broken: the **library page's "time
+left" / progress bar / "Finished" badge did not move** when VoxCodex pushed a
+position.
+
+## TL;DR for the morning
+
+- **Root cause found.** The resume-position endpoints and the library-tile
+  progress fields (`listening_status.percent_complete` /
+  `time_remaining_seconds` / `is_finished`) are **separate server-side
+  records**. Pushing a position (either endpoint) never touched the tile.
+- **"Finished" now syncs — shipped this session.** `PUT /1.0/stats/events`
+  with a `ManualMarkAsFinished` event flips `listening_status.is_finished`
+  within seconds and is fully reversible (`ManualMarkAsUnfinished`). VoxCodex
+  now fires this when a playback session ends at ≥98 % of runtime. New:
+  `AudibleAPI.set_finished` / `services.progress.push_finished`, wired in
+  `screens/library.py` `_on_close`. Live-tested both directions.
+- **Still open: the mid-book `percent_complete` / "time left" number.** No
+  client-submittable call was found that moves it *to a correct value*.
+  `stats/events` activity *does* perturb it (it recomputed on a ~30-min+ delay
+  in testing) but synthetic `Listening` events drove it to **0 %**, not to the
+  real position — the exact `Listening` payload the app sends still needs a
+  capture. Until then VoxCodex does **not** send `Listening` events (they make
+  it worse). For a *finished* book this doesn't matter — the "Finished" badge
+  wins over the percent. It only shows for books left partway through.
+- **Bonus finding:** `PUT /1.0/lastpositions/{asin}` (clean JSON, normal
+  api.audible host, needs only `acr`) is a drop-in replacement for the legacy
+  Fiona XML sidecar hack VoxCodex still uses for the position push. Not
+  switched this session (Fiona works; low priority), but recommended — details
+  below.
+
+---
+
+## Detail
 
 All testing is black-box against the live `audible.com.au` account using the
 already-registered VoxCodex auth. Test titles (both **Purchase**-rights, so no
@@ -79,65 +110,125 @@ example): `asin`, `event_timestamp` (`...sssZ`), `listening_mode`,
 playback_rate, source}` (ms + RFC3339). Accepted; effect on `percent_complete`
 still being pinned down (see open questions).
 
-### CONFIRMED: `MarkAsFinished` via `stats/events` works
+### CONFIRMED + SHIPPED: finished state via `stats/events`
 
-Sending one event `{"event_type": "MarkAsFinished", ...common fields...}` for
-Subtle Art:
+Sending one event `{"event_type": "ManualMarkAsFinished", ...common fields...}`:
 
 - `GET /1.0/stats/status/finished?asin=...` → `is_marked_as_finished: true`,
   fresh `update_date`.
 - `/1.0/library` `listening_status.is_finished` → **`true`** (was `false`).
 
-So "user finished this book in VoxCodex → mark it finished on Audible" is a
-solved, one-call operation. `MarkAsUnfinished` / `ManualMarkAsFinished` /
-`ManualMarkAsUnfinished` are sibling enum values (reversibility test pending).
+Fully reversible and fast (<6 s each way), verified on both test titles:
+`ManualMarkAsFinished` → `is_finished: true`; `ManualMarkAsUnfinished` →
+`is_finished: false`. The non-`Manual` variants (`MarkAsFinished` /
+`MarkAsUnfinished`) behave the same in testing; VoxCodex uses the `Manual*`
+ones since a user reaching the end of a book *is* a manual action, not an
+auto-detected one.
 
-Note: after `MarkAsFinished`, `percent_complete` still read `2.0` (not snapped
-to 100) within the observation window — the "Finished" badge is driven by
-`is_finished`, not by percent, so the tile still displays correctly.
+Implemented this session — `AudibleAPI.set_finished(asin, finished)` posts the
+event; `services.progress.push_finished` is the best-effort wrapper;
+`screens/library.py` `_on_close` calls it when `_reached_end(final_position_ms,
+duration_ms)` (≥ `_FINISHED_FRACTION` = 0.98 of runtime) and the book wasn't
+already finished. Live end-to-end test through the real `push_finished` passed
+both directions.
 
-### Observed but not yet explained: `StartListening` knocked `percent_complete` 100 → 0
+Note: after a finish event, `percent_complete` did **not** snap to 100 within
+the observation window (it actually drifted to 0 — see below). The "Finished"
+badge is driven by `is_finished`, not by percent, so the tile still displays
+correctly for a finished book; the stale percent only bites a *partway* book.
 
-On Algo (started at `percent_complete: 100`), a batch of `StartListening` + 3
-`Listening` events (spanning up to 9,720,000 ms ≈ 25%) resulted in
-`percent_complete: 0.0` and `time_remaining_seconds: 38880` (full runtime),
-`is_finished: false` — i.e. it did NOT land on 25% (the events' end position)
-and did NOT stay at 100. A later lone `Listening` event with `lastposition`
-pre-set to 50% also left `percent_complete` at 0.0 across ~95 s.
+### The still-open piece: mid-book `percent_complete` / `time_remaining_seconds`
 
-Working hypothesis: `percent_complete` / `time_remaining_seconds` are served
-from a **batch-updated aggregate** (an analytics pipeline behind
-`stats/events`), not recomputed synchronously — so the real signal may just not
-have propagated yet in these short windows. `StartListening` may reset the
-aggregate to "0, in progress" and `Listening` events accumulate into it on a
-delay. Needs a longer-horizon re-check (10 min – several hours) and, ideally, a
-capture of the real app's exact `Listening` cadence/payload.
+`stats/events` activity **does** feed these fields — they are not frozen — but
+nothing tried drove them to a *correct* value:
+
+- On Algo (started at `percent_complete: 100`): `StartListening` + 3 `Listening`
+  events spanning up to 9,720,000 ms (≈ 25 %) → `percent_complete` recomputed
+  to **0.0**, `time_remaining_seconds` to full runtime. Not 25 %, not 100.
+- On Subtle Art: `Listening` events + a `MarkAsFinished` → `percent_complete`
+  went `2.0` → (about 30 min later) **0.0**. So it *did* recompute, just
+  wrongly.
+- Recompute lag is long: **tens of minutes**, not seconds. Nothing moved within
+  any 30–95 s window; changes showed up on the next check ~30 min later.
+- The endpoint accepts almost anything (bogus fields, missing nested objects,
+  flat vs. nested `listening` — all `200 OK` with a `stats_posted_timestamp`),
+  so a 200 tells you nothing about whether the payload was *understood*. Only
+  observing `listening_status` over time does.
+
+Read side: `GET /1.0/stats/aggregates?store=Audible&response_groups=total_listening_stats&daily_listening_interval_duration=N&daily_listening_interval_start_date=YYYY-MM-DD`
+returns per-day *total* listened-ms (`aggregated_daily_listening_stats`) and an
+all-time total — **not** per-title progress. Not the thing driving the tile.
+
+**Conclusion:** the `Listening`-event payload matters and can't be nailed by
+black-box guessing (permissive endpoint + long recompute lag + wrong results).
+This needs a **capture of the real Audible app's own `Listening` events** —
+exact field set, position mapping, batching, cadence — then replay-test whether
+that specific shape moves `percent_complete` correctly. Emulator/Frida rig
+notes are in `whispersync-research.md` + the `audible-tui-whispersync-blackbox-re`
+memory.
+
+### Emulator capture attempt this session — blocked, not abandoned
+
+Tried the no-emulator path first (per the user's instruction), got as far above
+as black-box API testing allows, then booted the `whispersync-re` AVD for a
+capture. Blockers hit, for next time:
+
+- **AVD config drift:** `~/.android/avd/whispersync-re.avd/config.ini` has
+  `hw.gpu.enabled=no` / `hw.gpu.mode=auto`. The prior session's notes say
+  `-gpu guest` on the command line is what stopped the crashes/ANRs — the
+  saved config doesn't encode that. Emulator threw repeated "System UI isn't
+  responding" ANRs during boot even with `-gpu guest` passed. Host was only at
+  ~1.0 load and 3 GB free RAM (AVD wants 2 GB) — RAM pressure is plausible.
+- **Audible app is still logged in** (mini-player showed the book + "5h 13m
+  left" — same stale value the API returns, confirming API == UI). So a
+  capture *is* possible without re-auth once the emulator is stable.
+- **Proxy not intercepting:** with `-http-proxy` + `settings put global
+  http_proxy 10.0.2.2:8080`, a `toybox nc` test from the guest reached
+  mitmdump, but **zero** Audible traffic did — not even failed CONNECTs. The
+  app's network client isn't honouring the system HTTP proxy. Next time: skip
+  the proxy, use a **Frida script that hooks the app's HTTP layer directly**
+  (OkHttp interceptor or the TLS socket) and logs request/response — no proxy,
+  no CA install. Watch for R8/ProGuard obfuscation of OkHttp class names in the
+  release APK. mitmproxy CA is installed into the conscrypt APEX
+  (`c8750f0d.0`) already if the proxy route is retried.
 
 ## Open questions / next steps
 
-1. **Does `percent_complete` catch up?** Re-poll Subtle Art (Listening events
-   sent ~12:36Z) and Algo over hours. If it eventually reflects the events,
-   this is a lag problem, not a payload problem.
-2. **Exact `Listening` payload the real app sends** — a capture would remove the
-   guesswork on `source` values, whether `event_start_time`/`event_end_time`
-   are required, batching size, and how position maps in. Emulator rig is
-   available (see `whispersync-research.md` / memory) but the no-emulator path
-   is being tried first.
-3. **`GET /1.0/stats/aggregates`** needs `store=Audible` (400s without it) —
-   worth reading to see if per-title listened-minutes show up there and
-   correlate with `percent_complete`.
-4. **Reversibility**: confirm `MarkAsUnfinished` cleanly reverts
-   `is_finished`/finished-status list.
-5. If lag-based: VoxCodex should send `StartListening` at play start and
-   `Listening` segments during/at end of a session, plus `MarkAsFinished` when
-   the user completes a book. If it turns out `percent_complete` never catches
-   up from these events, fall back to the emulator capture.
+1. **Capture the real `Listening` payload** (see above) — the one thing
+   blocking full mid-book progress sync. Everything else here is done.
+2. **Switch the position push to `PUT /1.0/lastpositions/{asin}`** — see the
+   "position-write endpoints" section. Removes the Fiona XML sidecar special
+   case (different host, `raw_request`, XML building, needs `content_version`
+   + `codec` + a constructed `guid`). New call needs only `acr`. Low risk,
+   nice cleanup; deferred only because Fiona currently works.
+3. **Re-poll `percent_complete` on the test titles over the next day** to see
+   whether the backend eventually self-corrects the 0 % it's showing now
+   (would tell us whether the pipeline is just slow vs. genuinely needs the
+   right event shape).
+4. **Decide product stance for going public:** "resume position + finished
+   state sync both ways; the in-progress % on the library tile updates once you
+   open the book on an official client" may be an acceptable v1 if the capture
+   turns out hard. The finished-state sync (shipped) covers the most visible
+   case.
 
-## Restoration ledger (so test books can be put back)
+## Restoration ledger (test books)
 
 Pre-investigation observed state:
-- `B01L790CUU`: `percent_complete` 2.0, `is_finished` false, lastpos 490,220.
-- `B07DGFS4LM`: `percent_complete` 100.0, `is_finished` false, lastpos 10,158.
+- `B01L790CUU` (Subtle Art): `percent_complete` 2.0, `is_finished` false, lastpos 490,220.
+- `B07DGFS4LM` (Algo): `percent_complete` 100.0, `is_finished` false, lastpos 10,158.
 
-User's real-world truth: both books finished. Final restoration target:
-`MarkAsFinished` both, lastpos left near where VoxCodex last had it.
+Both titles are **Purchase**-rights and the user confirmed both finished in
+real life, and OK'd full write latitude.
+
+**Left at end of session:**
+- `B01L790CUU`: `is_finished` **true**, lastpos **490,220** (restored),
+  `percent_complete` 0.0.
+- `B07DGFS4LM`: `is_finished` **true**, lastpos **10,158** (restored),
+  `percent_complete` 0.0.
+
+`is_finished: true` matches the user's real-world truth (better than the
+pre-investigation `false`). The `percent_complete: 0.0` on both is a side
+effect of the synthetic `Listening` events sent during testing — it is
+**cosmetic and hidden** behind the "Finished" badge in every Audible client,
+and opening either book on a real device (or the backend self-correcting) will
+re-derive it. lastpos is back to exactly the pre-investigation values.

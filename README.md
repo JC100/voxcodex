@@ -171,19 +171,23 @@ so there's no way to compare them on equal footing yet.
   playable as when you're online -- only actions that inherently need a live
   connection (downloading something new, streaming something you haven't
   downloaded, fetching chapter metadata) are actually unavailable.
-- **Progress sync is one-directional (Audible -> this app).** This app reads
-  your real position from Audible when it can, and always keeps its own
-  local record of where you left off (`~/.local/share/voxcodex/` by
-  default) so resuming works reliably within the app -- it just can't push
-  a play made here back to Audible's own cross-device sync. This was
-  investigated in depth and deliberately shelved rather than left
-  unexamined -- see [`docs/whispersync-research.md`](docs/whispersync-research.md)
-  for what was tried, what actually works, and why it doesn't reach the
-  Android app or website.
-  (The *read* side of this had been silently broken since day one, returning
-  nothing on every real account despite looking like it worked -- the actual
-  response shape wasn't confirmed against a live account until this was
-  revisited; fixed in `services/progress.py`.)
+- **Progress sync is mostly two-directional now, with one known gap.** This
+  app reads your real position from Audible, always keeps its own local
+  record of where you left off (`~/.local/share/voxcodex/` by default), and
+  pushes back:
+  - **Resume position** -- your position here propagates to Audible's
+    cross-device sync, so the app/website resume where you stopped in
+    VoxCodex. See [`docs/whispersync-research.md`](docs/whispersync-research.md).
+  - **Finished state** -- reach the end of a book here and it's marked
+    finished on Audible too (and vice versa on load).
+  - **Known gap:** the library-page *percent / "time left"* number for a book
+    you're partway through does not update from a VoxCodex play -- that field
+    is fed by a separate Audible system whose exact write format isn't pinned
+    down yet. A *finished* book shows correctly (the "Finished" badge wins).
+    See [`docs/library-progress-sync-investigation.md`](docs/library-progress-sync-investigation.md).
+  (The *read* side of position sync had been silently broken since day one,
+  returning nothing on every real account despite looking like it worked --
+  fixed in `services/progress.py`.)
 
 ## Running tests
 

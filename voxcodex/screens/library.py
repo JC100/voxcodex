@@ -60,6 +60,18 @@ _PROGRESS_DISPLAY_LABELS = {
 }
 
 
+# A playback session that ends at or past this fraction of a book's runtime is
+# treated as "finished" -- both for VoxCodex's own library flag and for the
+# best-effort push back to Audible's finished state. Audible's own clients mark
+# a title finished a hair before the very end too; 0.98 leaves room for
+# trailing credits/silence without needing a hard 100%.
+_FINISHED_FRACTION = 0.98
+
+
+def _reached_end(position_ms: int, duration_ms: int) -> bool:
+    return duration_ms > 0 and position_ms >= duration_ms * _FINISHED_FRACTION
+
+
 def _current_chapter_number(chapters: list[Chapter], position_ms: int) -> int | None:
     """1-based number of the chapter containing `position_ms`, or None if
     `chapters` is empty.
@@ -544,8 +556,15 @@ class LibraryScreen(Screen[None]):
         def _on_close(final_position_ms: int) -> None:
             self.progress_store.set_position_ms(book.asin, final_position_ms, book.duration_ms)
             book.progress_ms = final_position_ms
+            newly_finished = _reached_end(final_position_ms, book.duration_ms) and (
+                not book.is_finished
+            )
+            if newly_finished:
+                book.is_finished = True
             self._refresh_table()
             self._push_position(book.asin, acr, content_version, codec, final_position_ms)
+            if newly_finished:
+                self._push_finished(book.asin)
 
         self.app.push_screen(PlayerScreen(book, source, key, iv, chapters=chapters), _on_close)
 
@@ -554,3 +573,7 @@ class LibraryScreen(Screen[None]):
         self, asin: str, acr: str, content_version: str, codec: str, position_ms: int
     ) -> None:
         progress.push_position(self.api, asin, acr, content_version, codec, position_ms)
+
+    @work(thread=True, exclusive=False, group="push_finished")
+    def _push_finished(self, asin: str) -> None:
+        progress.push_finished(self.api, asin, True)

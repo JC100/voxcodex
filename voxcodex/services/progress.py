@@ -192,3 +192,20 @@ def push_position(
     except Exception:
         logger.debug("push_position failed for %s", asin, exc_info=True)
         return False
+
+
+def push_finished(api: AudibleAPI, asin: str, finished: bool) -> bool:
+    """Best-effort push of a title's finished state back to Audible.
+
+    Returns whether it went through -- never raises. Like `push_position`,
+    this is a sync enhancement, not something VoxCodex's own view depends on:
+    the local library's finished flag stands on its own whether or not this
+    call succeeds. Unlike the position push it needs no per-content
+    identifiers, just the asin (see `AudibleAPI.set_finished`).
+    """
+    try:
+        api.set_finished(asin, finished)
+        return True
+    except Exception:
+        logger.debug("push_finished failed for %s", asin, exc_info=True)
+        return False
