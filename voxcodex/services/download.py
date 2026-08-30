@@ -63,7 +63,19 @@ def download_book(
 def _write_voucher(asin: str, license_: License) -> None:
     voucher_path_for(asin).write_text(
         json.dumps(
-            {"asin": asin, "key": license_.key, "iv": license_.iv, "codec": license_.codec},
+            {
+                "asin": asin,
+                "key": license_.key,
+                "iv": license_.iv,
+                "codec": license_.codec,
+                # Needed to push a position back for a downloaded/offline
+                # play (see services.progress.push_position) -- not just for
+                # decryption. A voucher saved before this field existed
+                # loads fine via .get() below; that title just can't push
+                # until it's re-downloaded or played once while streaming.
+                "acr": license_.acr,
+                "content_version": license_.content_version,
+            },
             indent=2,
         )
     )

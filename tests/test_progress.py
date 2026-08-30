@@ -162,3 +162,40 @@ def test_most_recent_external_play_none_when_no_records():
 def test_most_recent_external_play_skips_unparseable_timestamps():
     records = [_existing("B001", 100, last_updated="not-a-real-timestamp")]
     assert progress.most_recent_external_play(records) is None
+
+
+# -- push_position -------------------------------------------------------
+
+
+class FakePushAPI:
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.calls = []
+
+    def push_last_heard(self, asin, acr, content_version, codec, position_ms):
+        self.calls.append((asin, acr, content_version, codec, position_ms))
+        if self.exc is not None:
+            raise self.exc
+
+
+def test_push_position_calls_through_and_reports_success():
+    api = FakePushAPI()
+    assert progress.push_position(api, "B001", "CR!ABC", "42", "AAXC", 5000) is True
+    assert api.calls == [("B001", "CR!ABC", "42", "AAXC", 5000)]
+
+
+def test_push_position_skips_the_call_without_acr():
+    api = FakePushAPI()
+    assert progress.push_position(api, "B001", "", "42", "AAXC", 5000) is False
+    assert api.calls == []
+
+
+def test_push_position_skips_the_call_without_content_version():
+    api = FakePushAPI()
+    assert progress.push_position(api, "B001", "CR!ABC", "", "AAXC", 5000) is False
+    assert api.calls == []
+
+
+def test_push_position_swallows_failure_and_reports_it():
+    api = FakePushAPI(exc=RuntimeError("network exploded"))
+    assert progress.push_position(api, "B001", "CR!ABC", "42", "AAXC", 5000) is False

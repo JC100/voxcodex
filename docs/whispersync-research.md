@@ -1,6 +1,42 @@
-# Cross-device listening-position sync: research notes (2026-08-26)
+# Cross-device listening-position sync: research notes (2026-08-26, updated 2026-08-30)
 
-## Status: not implemented. Local-only progress tracking is the current, intentional design.
+## Status: implemented. Push-to-Audible sync is live (`AudibleAPI.push_last_heard` / `services.progress.push_position`).
+
+**2026-08-30 update: the original conclusion below was wrong, and it's now
+fixed and shipped.** The 2026-08-26 investigation (kept below for the full
+trail) wrote to the same endpoint documented here, got a 200 OK, read its
+own write back successfully, and concluded the path was real but didn't
+reach the actual Android app or website. That test used a placeholder
+`guid="_LATEST_"` instead of a real per-content identifier. A real write
+needs `guid="{acr}:{version}"`, both pulled from a `get_license()` response's
+`content_reference` -- with that fixed, the write **does** reach
+`GET annotations/lastpositions` (confirmed via a live capture: writing
+`begin="221643"` through this endpoint made a subsequent
+`annotations/lastpositions` call return `position_ms: 221643` seconds
+later, and the user confirmed the same book showed matching progress in
+another Audible client). No native-protocol reverse engineering was needed
+after all -- see "2026-08-30: black-box capture, and the guid fix" below for
+the full method and evidence.
+
+This app now (`voxcodex/services/progress.py`, `voxcodex/services/api.py`,
+wired in `voxcodex/screens/library.py`):
+
+  - reads Audible's own last-position data on library load
+    (`fetch_remote_positions`, via `GET annotations/lastpositions`),
+  - pushes this app's final position back to Audible after a playback
+    session ends (`push_position`, via the legacy Fiona sidecar write --
+    see below for why that's the right endpoint despite being old), and
+  - always keeps its own local cache (`ProgressStore`) as the resume point
+    of record regardless of whether either remote call succeeds.
+
+The push is best-effort and requires the real `acr`/`content_version` for
+that title (obtained from `get_license()`, and persisted in the download
+voucher for offline plays) -- see `push_position`'s docstring for exactly
+what happens when those aren't available.
+
+---
+
+## Original investigation (2026-08-26/27) -- kept for the full trail
 
 This app tracks listening position locally (`ProgressStore` in
 `voxcodex/services/progress.py`) and does a best-effort *read* of
@@ -16,6 +52,12 @@ app or website, and the mechanism that actually feeds those is an
 undocumented native protocol, not a REST call. We backed out the code that
 tried this (see "What we tried and reverted" below) and went back to
 local-only.
+
+**(This conclusion turned out to be wrong -- see the 2026-08-30 update
+above. Kept as-is below since the schema/host findings were correct and the
+trail is still useful; only the "does it actually reach other devices"
+conclusion was mistaken, and it was mistaken because of a bad `guid`, not
+because the endpoint itself doesn't matter.)**
 
 ## The core finding
 
@@ -166,3 +208,178 @@ new auth flow was needed to talk to the Fiona sidecar's completely different
 host, and it would very likely also hold for probing other undocumented
 Audible-family hosts in the future -- it's the account's device
 registration being asserted, not something tied to a particular API.
+
+---
+
+## 2026-08-30: black-box capture, and the guid fix
+
+This picked back up from "What a future attempt would actually need" above,
+but changed the plan on step 1: the user intends to publish this
+investigation, and wanted to avoid the IP/legal exposure of decompiling
+Amazon's app and describing/reproducing its literal code. So this round was
+**black-box only** -- capture real traffic from the genuine Audible Android
+app and describe the protocol purely as observed input/output behavior,
+never touching a decompile. That constraint turned out not to cost
+anything: the answer was findable without ever looking at Amazon's code.
+
+### Method
+
+- Android emulator (`whispersync-re` AVD, Pixel 5 profile, Android 15,
+  `google_apis` x86_64 image -- deliberately not a Play Store image, so it's
+  rootable with no Play Integrity friction) via the Android SDK's
+  `cmdline-tools`/`avdmanager`/`emulator` (AUR packages on this Arch
+  machine).
+- `mitmproxy`/`mitmdump` as the intercepting proxy (emulator's global HTTP
+  proxy pointed at `10.0.2.2:8080`, the host-loopback alias from inside the
+  guest).
+- The real Audible APK (pulled from APKMirror rather than the user's own
+  device, at the user's choice), signed into the user's real account.
+- TLS interception without relying on the OS trust store at all: **Android
+  14+ moved the real system CA trust store into an immutable APEX module**
+  (`/apex/com.android.conscrypt/cacerts/`, read-only, ~145 certs) --
+  `/system/etc/security/cacerts/` is a legacy path that's no longer
+  consulted by Conscrypt on modern Android, so installing mitmproxy's CA
+  there (the traditional approach) silently does nothing. Instead: `frida`
+  + `objection`'s `android sslpinning disable`, attached to the *running*
+  (not freshly spawned) Audible process, patching
+  `com.android.org.conscrypt.TrustManagerImpl.verifyChain`/
+  `checkTrustedRecursive` and `okhttp3.CertificatePinner.check` at runtime.
+  This is a behavioral patch of the app's own trust checks via Frida, not a
+  modification to its code on disk -- no decompile, no repackaged APK.
+  - Attaching to a **freshly spawned** process reliably failed
+    (`java.io.IOException: Permission denied` inside frida-java-bridge's
+    `createTemporaryDex`) because the early-spawn window resolves
+    `Application.getCacheDir()` before a real `Application` object exists,
+    falling back to a hardcoded `/data/local/tmp` default that the app's own
+    UID can't write to even after `chmod 777`. Attaching to the already-
+    running process instead sidesteps the whole issue.
+  - A background/frozen process can't be attached to either: Frida's
+    ptrace-based attach hangs (`frida.TimedOutError`) against a process in
+    the kernel's `do_freezer_trap` wait state (Android's cached-app
+    freezer). Foreground the app first (`am start`/`monkey -c
+    android.intent.category.LAUNCHER`), confirm it's not frozen
+    (`ps -A` wait-channel column), then attach.
+  - Android's own background connectivity probe (a plain HTTP(S) request to
+    a Google host, done by `system_server`, not the app) uses the *real*
+    trust store, so it fails once the network is proxied and the OS marks
+    the network "partial" (not "validated") -- which some apps, Audible
+    included, treat as "no network" regardless of whether the app's own
+    (Frida-patched) traffic is working fine. Fix: `adb shell settings put
+    global captive_portal_http_url ''` / `captive_portal_https_url ''` on
+    both.
+  - The emulator itself crashed three times across this session --
+    `SIGSEGV` in its own `RenderThread` (GPU-emulation translation layer,
+    confirmed via `coredumpctl`/`gdb`, though Google's bundled binaries ship
+    with zero build-IDs so the crashing frame itself couldn't be
+    symbolized), under both host-GPU passthrough and `-gpu
+    swiftshader_indirect`. Software rendering also caused a separate,
+    non-fatal problem: heavy CPU contention right after boot triggered
+    repeated System UI ANRs and the Audible process itself being killed
+    every 60-90s (`ActivityManager: ... has died: fg TRNB`) regardless of
+    Frida. `-gpu guest` (fully in-guest software rendering, no host-side GL
+    translation layer at all -- a different code path from both of the
+    above) fixed both the crashes and the app-death cycling for the rest of
+    the session.
+
+### The finding: the write path from 2026-08-26 was real, just called wrong
+
+Capturing a normal play/pause/seek session against a book the user had
+already finished and named as safe to test with (*The Subtle Art of Not
+Giving a F\*ck*, ASIN `B01L790CUU`) showed the real app itself reading *and
+writing* the exact same `FionaCDEServiceEngine/sidecar` endpoint documented
+above, on every meaningful position change:
+
+```
+GET  https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar?type=AUDI&key=B01L790CUU&format=M4A_XHE&guid=CR%214MG9HYAN0H0CBESJ92WN51N83FEB%3A116727321&software_rev=...
+POST https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar
+     <?xml version="1.0" encoding="UTF-8"?>
+     <annotations version="1.0" timestamp="2026-08-30T18:53:59+0800">
+       <book key="B01L790CUU" type="AUDI" version="116727321" guid="CR!4MG9HYAN0H0CBESJ92WN51N83FEB:116727321" format="M4A_XHE">
+         <last_heard action="modify" begin="221643" timestamp="2026-08-30T18:53:58+0800"/>
+       </book>
+     </annotations>
+```
+
+Compare that `<book>` element to the 2026-08-26 write further up this
+document: `<book key="{ASIN}" type="AUDI" guid="_LATEST_">`. Three
+differences: a real `guid` (`{acr}:{version}`, not the placeholder
+`_LATEST_`), plus `version` and `format` attributes the earlier attempt
+didn't send at all. Both `acr` and `version` come straight out of a
+`POST content/{asin}/licenserequest` response, nested at
+`content_license.content_metadata.content_reference.{acr,version}` -- a
+response VoxCodex already fetches (`AudibleAPI.get_license`, requesting the
+`content_reference` response group) for every play, so no new API call was
+needed to get them.
+
+**Proof this actually propagates**, not just an echo from the same
+endpoint reading back its own write: a separate, genuinely different
+endpoint -- `GET api.audible.<domain>/1.0/annotations/lastpositions`, the
+*exact* call `fetch_remote_positions` in this codebase already makes --
+returned the identical position and a fresh timestamp immediately after:
+
+```json
+{
+    "asin_last_position_heard_annots": [
+        {
+            "asin": "B01L790CUU",
+            "last_position_heard": {
+                "last_updated": "2026-08-30 10:54:00.671",
+                "position_ms": 221643,
+                "status": "Exists"
+            }
+        }
+    ]
+}
+```
+
+(`10:54:00 UTC` = `18:54:00` local, i.e. one second after the Fiona POST
+above completed.) The same effect showed up a third way, in the
+`last_position_heard` field embedded directly in a fresh
+`content/{asin}/licenserequest` response after an earlier write of
+`begin="10033"` -- three independent read paths, all reflecting the same
+write. The user separately confirmed the position matched on another real
+Audible client, which is the only check no capture can substitute for.
+
+So the 2026-08-26 conclusion ("this write path is real but isn't what
+current clients read") was backwards: the endpoint was never the problem.
+An unresolvable placeholder `guid` meant the write landed somewhere the
+read side never looked -- not that the read side ignores this endpoint.
+
+### Why the real app *also* writes to `PUT /1.0/stats/events` -- not a competing/transitional system
+
+The same capture showed frequent `PUT api.audible.<domain>/1.0/stats/events`
+calls carrying position-shaped fields too, which raised the obvious
+question: is Audible mid-migration between two systems doing the same job?
+No -- they're for different jobs, and a real client legitimately needs
+both:
+
+- **`stats/events`** is an analytics/telemetry log: discrete lifecycle
+  events (`StartListening`, `MarkAsUnfinished`, `DownloadStart`/
+  `DownloadComplete`) plus interval-shaped `"Listening"` events recording
+  `event_start_position` -> `event_end_position` pairs, e.g. `213925 ->
+  221579` ("listened continuously from X to Y"). That's session/engagement
+  telemetry -- plausibly feeding royalty calculation (audiobook royalties
+  are commonly paid per-minute-listened), usage analytics, or
+  recommendations -- an append-only history of what happened, not a
+  queryable "where am I now."
+- **The Fiona sidecar's `last_heard`** is a single mutable record per
+  `guid` answering exactly that: "where should any device resume this book
+  from." That's the one feeding `annotations/lastpositions`.
+
+VoxCodex only implements the second (`push_last_heard` /
+`services.progress.push_position`) -- the first is Amazon-internal
+telemetry this app has no reason to emit.
+
+### Implementation
+
+Shipped in `voxcodex/services/api.py` (`AudibleAPI.push_last_heard`,
+extending `License` with `acr`/`content_version`),
+`voxcodex/services/progress.py` (`push_position`, the best-effort wrapper),
+`voxcodex/services/download.py` (voucher now also persists `acr`/
+`content_version` so offline/downloaded plays can push too), and wired into
+`voxcodex/screens/library.py` (`_open_player`/`_launch_player`/`_on_close`
+thread the identifiers through and push once on player close). See those
+modules' docstrings for the exact contract -- in particular, `push_position`
+returns `False` and never raises when the identifiers aren't available,
+since this app's own local resume point must never depend on Audible's
+sync working.

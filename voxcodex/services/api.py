@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import audible
@@ -45,6 +46,14 @@ _LICENSE_HEADERS = {
     "device_idiom": "phone",
 }
 
+# Amazon's older, Kindle-era Whispersync "Fiona" endpoint -- not under
+# api.audible.<domain> at all, so it's addressed as a full URL through
+# `raw_request` rather than `client.get`/`.post`. This is the confirmed
+# write path for cross-device resume position; see
+# docs/whispersync-research.md for how it was found and verified against a
+# live account, and why an earlier attempt at this looked like a dead end.
+_FIONA_SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
+
 
 class LicenseDenied(Exception):
     pass
@@ -62,6 +71,12 @@ class License:
     key: str
     iv: str
     last_position_ms: int = 0
+    # The per-content identifiers `push_last_heard` needs to write a position
+    # back that actually reaches Audible's cross-device sync (see that
+    # method's docstring). Empty when a response doesn't include them --
+    # callers must treat that as "can't push for this title", not guess.
+    acr: str = ""
+    content_version: str = ""
 
 
 @dataclass
@@ -136,9 +151,10 @@ class AudibleAPI:
         content_url = (content_metadata.get("content_url") or {}).get("offline_url")
         if not content_url:
             raise NoDownloadUrl(asin)
-        codec = (content_metadata.get("content_reference") or {}).get(
-            "content_format", "AAXC"
-        )
+        content_reference = content_metadata.get("content_reference") or {}
+        codec = content_reference.get("content_format", "AAXC")
+        acr = content_reference.get("acr", "")
+        content_version = str(content_reference.get("version") or "")
 
         key = iv = ""
         if "license_response" in content_license:
@@ -158,7 +174,51 @@ class AudibleAPI:
             key=key,
             iv=iv,
             last_position_ms=last_position_ms,
+            acr=acr,
+            content_version=content_version,
         )
+
+    # -- listening position (write) ------------------------------------
+
+    def push_last_heard(
+        self, asin: str, acr: str, content_version: str, codec: str, position_ms: int
+    ) -> None:
+        """Writes this app's current position back to Audible's cross-device
+        sync store, so the official app/website pick up where playback left
+        off here. Raises on failure -- callers wanting best-effort semantics
+        should use `services.progress.push_position` instead of calling this
+        directly.
+
+        `acr`/`content_version` must be the real per-content identifiers from
+        a `get_license()` response for *this* asin (they form the `guid`
+        Amazon's endpoint uses to key the record). A placeholder or stale
+        value here gets a 200 OK same as a real one -- it just silently never
+        reaches `annotations/lastpositions` or any other device. That
+        exact mistake is why an earlier attempt at this looked like a dead
+        end; see docs/whispersync-research.md.
+        """
+        if not acr or not content_version:
+            raise ValueError(
+                "push_last_heard needs a real acr/content_version from get_license()"
+            )
+        guid = f"{acr}:{content_version}"
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<annotations version="1.0" timestamp="{timestamp}">'
+            f'<book key="{asin}" type="AUDI" version="{content_version}" '
+            f'guid="{guid}" format="{codec}">'
+            f'<last_heard action="modify" begin="{position_ms}" timestamp="{timestamp}"/>'
+            "</book>"
+            "</annotations>"
+        )
+        resp = self.client.raw_request(
+            "POST",
+            _FIONA_SIDECAR_URL,
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+        )
+        raise_for_status(resp)
 
     # -- chapters -----------------------------------------------------
 

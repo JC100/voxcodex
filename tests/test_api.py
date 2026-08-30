@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from voxcodex.services.api import (
@@ -232,6 +233,36 @@ def test_get_license_defaults_to_zero_position_when_absent():
     assert license_.last_position_ms == 0
 
 
+def test_get_license_extracts_acr_and_content_version_from_content_reference():
+    # These are what push_last_heard needs to build a `guid` that actually
+    # reaches Audible's cross-device sync -- see that method's docstring and
+    # docs/whispersync-research.md for why a placeholder here silently
+    # writes a record nothing ever reads.
+    resp = _license_response()
+    resp["content_license"]["content_metadata"]["content_reference"].update(
+        {"acr": "CR!SOMEACR", "version": 116727321}
+    )
+    client = FakeAudibleClient(post_response=resp)
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.acr == "CR!SOMEACR"
+    # Amazon sends this as a number in some responses -- always normalized
+    # to str since it's only ever used to build a URL/XML guid, never math'd.
+    assert license_.content_version == "116727321"
+
+
+def test_get_license_defaults_acr_and_content_version_to_empty_when_absent():
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.acr == ""
+    assert license_.content_version == ""
+
+
 def test_get_license_decrypts_voucher_when_license_response_present(monkeypatch):
     """The real, common case for DRM-protected (Adrm) content: the license
     response includes an encrypted `license_response` blob that has to be
@@ -314,3 +345,85 @@ def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
     (path, kwargs), = client.calls
     assert path == "content/B12345/metadata"
     assert kwargs["response_groups"] == "chapter_info"
+
+
+# -- push_last_heard -------------------------------------------------------
+#
+# Writes to Amazon's legacy Fiona sidecar (a different host entirely, not
+# under api.audible.<domain>), so it goes through `client.raw_request`
+# rather than `.get`/`.post` -- these fakes model that instead of reusing
+# FakeAudibleClient above.
+
+
+class FakeRawResponse:
+    def __init__(self, status_code=200):
+        self.status_code = status_code
+        self.reason_phrase = "Internal Server Error" if status_code >= 400 else "OK"
+        self._request = httpx.Request("POST", "https://cde-ta-g7g.amazon.com/x")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=self._request, response=self)
+
+    @property
+    def text(self):
+        return "{}"
+
+
+class FakeRawClient:
+    def __init__(self, response=None):
+        self.response = response or FakeRawResponse()
+        self.raw_calls = []
+
+    def raw_request(self, method, url, **kwargs):
+        self.raw_calls.append((method, url, kwargs))
+        return self.response
+
+
+def test_push_last_heard_raises_without_acr():
+    api = _api_with_fake_client(FakeRawClient())
+    with pytest.raises(ValueError):
+        api.push_last_heard("B001", "", "42", "AAXC", 1000)
+
+
+def test_push_last_heard_raises_without_content_version():
+    api = _api_with_fake_client(FakeRawClient())
+    with pytest.raises(ValueError):
+        api.push_last_heard("B001", "CR!ABC", "", "AAXC", 1000)
+
+
+def test_push_last_heard_does_not_call_out_when_identifiers_missing():
+    client = FakeRawClient()
+    api = _api_with_fake_client(client)
+    with pytest.raises(ValueError):
+        api.push_last_heard("B001", "", "42", "AAXC", 1000)
+    assert client.raw_calls == []
+
+
+def test_push_last_heard_posts_xml_to_the_fiona_sidecar():
+    client = FakeRawClient()
+    api = _api_with_fake_client(client)
+
+    api.push_last_heard("B001", "CR!ABC", "42", "M4A_XHE", 12345)
+
+    (method, url, kwargs), = client.raw_calls
+    assert method == "POST"
+    assert url == "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
+    assert kwargs["headers"]["Content-Type"] == "application/xml"
+
+    body = kwargs["content"].decode("utf-8")
+    assert 'key="B001"' in body
+    assert 'guid="CR!ABC:42"' in body
+    assert 'version="42"' in body
+    assert 'format="M4A_XHE"' in body
+    assert 'begin="12345"' in body
+
+
+def test_push_last_heard_raises_on_http_error():
+    from audible.exceptions import UnexpectedError
+
+    client = FakeRawClient(response=FakeRawResponse(status_code=500))
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(UnexpectedError):
+        api.push_last_heard("B001", "CR!ABC", "42", "AAXC", 1000)

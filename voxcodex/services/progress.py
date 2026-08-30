@@ -1,20 +1,27 @@
 """Listening-position tracking.
 
 Audible exposes a confirmed *read* endpoint for last-listened positions
-(`GET 1.0/annotations/lastpositions`), but no endpoint the official apps use
-to *write* a position back (see docs/whispersync-research.md for the full
-investigation into why not). So this app:
+(`GET 1.0/annotations/lastpositions`), and this app can also *write* a
+position back via `AudibleAPI.push_last_heard` (an older Whispersync
+endpoint, not the modern api.audible.<domain> one -- see
+docs/whispersync-research.md for how that was found and verified against a
+live account, including an earlier attempt that looked like a dead end but
+turned out to just be using the wrong identifiers). So:
 
-  - reads the real position from Audible when available, and
+  - reads the real position from Audible when available,
+  - pushes this app's own final position back after a playback session, so
+    other devices/the official app pick up where this app left off, and
   - always keeps its own local cache of where you left off in *this* app,
-    which is what drives the resume point here regardless of whether the
-    remote read succeeds.
+    which is what drives the resume point here regardless of whether either
+    remote call succeeds.
 
-So "sync" here is one-directional (Audible -> voxcodex). If you also use
-the official app, its plays will still be reflected next time this app reads
-that endpoint -- this app just can't push its own plays back to Audible.
+Sync is therefore two-directional, but the push is best-effort: it needs the
+real per-content `acr`/`content_version` from a `get_license()` response for
+that title (see `push_position` below), and network/API failures there are
+swallowed the same way remote-read failures are -- this app's own resume
+point must never depend on Audible's sync working.
 
-The response shape below (`asin_last_position_heard_annots`, a list of
+The read response shape below (`asin_last_position_heard_annots`, a list of
 per-asin records each with a nested `last_position_heard` dict) is confirmed
 directly against a live account, not guessed -- an earlier version of this
 module guessed at several plausible-looking shapes none of which were the
@@ -158,3 +165,30 @@ def fetch_remote_positions(api: AudibleAPI, asins: list[str]) -> dict[str, int]:
     an enhancement over the local cache, not a dependency.
     """
     return positions_from_annotations(fetch_remote_annotations(api, asins))
+
+
+def push_position(
+    api: AudibleAPI, asin: str, acr: str, content_version: str, codec: str, position_ms: int
+) -> bool:
+    """Best-effort push of this app's position back to Audible's sync store.
+
+    Returns whether it actually went through -- never raises, and callers
+    should treat a False the same as if this were never called: this app's
+    own local resume point (`ProgressStore`) must not depend on it. Silently
+    does nothing (returns False) if `acr`/`content_version` are missing, e.g.
+    a voucher saved before this feature existed -- there's no ASIN-only
+    fallback because a guessed/placeholder identifier here doesn't fail
+    loudly, it just writes a record nothing ever reads (see
+    `AudibleAPI.push_last_heard`).
+    """
+    if not acr or not content_version:
+        logger.debug(
+            "push_position: no acr/content_version for %s, not pushing", asin
+        )
+        return False
+    try:
+        api.push_last_heard(asin, acr, content_version, codec, position_ms)
+        return True
+    except Exception:
+        logger.debug("push_position failed for %s", asin, exc_info=True)
+        return False
