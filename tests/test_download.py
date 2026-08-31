@@ -129,7 +129,7 @@ def test_load_voucher_parses_saved_json():
 def test_download_book_writes_audio_and_voucher_and_reports_progress():
     license_ = License(
         asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
-        key="thekey", iv="theiv", acr="CR!ABC", content_version="42",
+        key="thekey", iv="theiv", acr="CR!ABC",
     )
     response = FakeResponse([b"hello ", b"world"], headers={"content-length": "11"})
     api = FakeAPI(license_, response)
@@ -150,7 +150,6 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
         "iv": "theiv",
         "codec": "AAXC",
         "acr": "CR!ABC",
-        "content_version": "42",
     }
 
     assert progress_calls == [(6, 11), (11, 11)]

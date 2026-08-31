@@ -68,13 +68,12 @@ def _write_voucher(asin: str, license_: License) -> None:
                 "key": license_.key,
                 "iv": license_.iv,
                 "codec": license_.codec,
-                # Needed to push a position back for a downloaded/offline
-                # play (see services.progress.push_position) -- not just for
-                # decryption. A voucher saved before this field existed
-                # loads fine via .get() below; that title just can't push
-                # until it's re-downloaded or played once while streaming.
+                # Needed to push a position back for a downloaded/offline play
+                # (see services.progress.push_position) -- not for decryption.
+                # A voucher saved before this field existed loads fine via
+                # .get(); that title just can't push until it's re-downloaded
+                # or played once while streaming.
                 "acr": license_.acr,
-                "content_version": license_.content_version,
             },
             indent=2,
         )

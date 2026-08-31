@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
 
 from voxcodex.models import Book
-from voxcodex.screens.modals import ConfirmModal, MessageModal
+from voxcodex.screens.modals import ConfirmModal
 from voxcodex.screens.player_screen import PlayerScreen
 from voxcodex.services import download, library_cache, progress
 from voxcodex.services.api import AudibleAPI, Chapter
@@ -501,15 +501,11 @@ class LibraryScreen(Screen[None]):
                     raise RuntimeError("Downloaded file is missing its decryption voucher")
                 source = str(download.audio_path_for(book.asin))
                 key, iv = voucher["key"], voucher["iv"]
-                codec = voucher.get("codec", "")
                 acr = voucher.get("acr", "")
-                content_version = voucher.get("content_version", "")
             else:
                 license_ = self.api.get_license(book.asin)
                 source, key, iv = license_.content_url, license_.key, license_.iv
-                codec = license_.codec
                 acr = license_.acr
-                content_version = license_.content_version
         except Exception as exc:  # noqa: BLE001
             self.app.call_from_thread(self._player_open_failed, str(exc))
             return
@@ -534,7 +530,7 @@ class LibraryScreen(Screen[None]):
                 self._chapter_cache[book.asin] = chapters
 
         self.app.call_from_thread(
-            self._launch_player, book, source, key, iv, chapters, acr, content_version, codec
+            self._launch_player, book, source, key, iv, chapters, acr
         )
 
     def _player_open_failed(self, message: str) -> None:
@@ -548,8 +544,6 @@ class LibraryScreen(Screen[None]):
         iv: str,
         chapters: list[Chapter],
         acr: str,
-        content_version: str,
-        codec: str,
     ) -> None:
         self._set_status("")
 
@@ -562,17 +556,15 @@ class LibraryScreen(Screen[None]):
             if newly_finished:
                 book.is_finished = True
             self._refresh_table()
-            self._push_position(book.asin, acr, content_version, codec, final_position_ms)
+            self._push_position(book.asin, acr, final_position_ms)
             if newly_finished:
                 self._push_finished(book.asin)
 
         self.app.push_screen(PlayerScreen(book, source, key, iv, chapters=chapters), _on_close)
 
     @work(thread=True, exclusive=False, group="push_position")
-    def _push_position(
-        self, asin: str, acr: str, content_version: str, codec: str, position_ms: int
-    ) -> None:
-        progress.push_position(self.api, asin, acr, content_version, codec, position_ms)
+    def _push_position(self, asin: str, acr: str, position_ms: int) -> None:
+        progress.push_position(self.api, asin, acr, position_ms)
 
     @work(thread=True, exclusive=False, group="push_finished")
     def _push_finished(self, asin: str) -> None:

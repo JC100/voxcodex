@@ -1,22 +1,33 @@
-# Cross-device listening-position sync: research notes (2026-08-26, updated 2026-08-30)
+# Cross-device listening-position sync: research notes (2026-08-26, updated 2026-08-31)
 
-## Status: implemented. Push-to-Audible sync is live (`AudibleAPI.push_last_heard` / `services.progress.push_position`).
+## Status: implemented. Push-to-Audible sync is live (`AudibleAPI.push_last_position` / `services.progress.push_position`).
 
-**2026-08-30 update: the original conclusion below was wrong, and it's now
-fixed and shipped.** The 2026-08-26 investigation (kept below for the full
-trail) wrote to the same endpoint documented here, got a 200 OK, read its
-own write back successfully, and concluded the path was real but didn't
-reach the actual Android app or website. That test used a placeholder
-`guid="_LATEST_"` instead of a real per-content identifier. A real write
-needs `guid="{acr}:{version}"`, both pulled from a `get_license()` response's
-`content_reference` -- with that fixed, the write **does** reach
-`GET annotations/lastpositions` (confirmed via a live capture: writing
-`begin="221643"` through this endpoint made a subsequent
-`annotations/lastpositions` call return `position_ms: 221643` seconds
-later, and the user confirmed the same book showed matching progress in
-another Audible client). No native-protocol reverse engineering was needed
-after all -- see "2026-08-30: black-box capture, and the guid fix" below for
-the full method and evidence.
+**2026-08-31 update: the write now goes through `PUT /1.0/lastpositions/{asin}`**
+(clean JSON, on the normal `api.audible.<domain>` host), not the Fiona XML
+sidecar this doc spends most of its length on. Body is just
+`{"acr": ..., "asin": ..., "position_ms": ...}` -- only `acr` from
+`get_license()`'s `content_reference` is needed; no `guid`, no
+`content_version`, no `codec`, no XML. It propagates to
+`GET /1.0/annotations/lastpositions` identically to the Fiona write (verified
+live). The Fiona sidecar path (and the whole `guid = "{acr}:{version}"` saga
+below) still works and is what proved the mechanism, but there's no reason to
+keep the special case now that the same effect is one `client.put` call. The
+rest of this doc is kept as the historical trail -- read the
+`content_version`/`guid`/XML detail as "how it was figured out", not "what the
+code does".
+
+**2026-08-30 update (still current): the 2026-08-26 conclusion below was
+wrong.** That investigation wrote to the Fiona endpoint, got a 200 OK, read
+its own write back, and concluded the path didn't reach real Audible clients.
+It used a placeholder `guid="_LATEST_"`. The real requirement was
+`guid="{acr}:{version}"` from `get_license()`'s `content_reference` -- with
+that fixed the write **does** reach `GET annotations/lastpositions` (live
+capture: `begin="221643"` there → a later `annotations/lastpositions` returned
+`position_ms: 221643`, and the user confirmed matching progress on another
+Audible client). No native-protocol reverse engineering was needed -- see
+"2026-08-30: black-box capture, and the guid fix" below. The `PUT
+/1.0/lastpositions/{asin}` endpoint (used now) was found during the follow-up
+library-progress investigation; see docs/library-progress-sync-investigation.md.
 
 This app now (`voxcodex/services/progress.py`, `voxcodex/services/api.py`,
 wired in `voxcodex/screens/library.py`):
@@ -24,15 +35,15 @@ wired in `voxcodex/screens/library.py`):
   - reads Audible's own last-position data on library load
     (`fetch_remote_positions`, via `GET annotations/lastpositions`),
   - pushes this app's final position back to Audible after a playback
-    session ends (`push_position`, via the legacy Fiona sidecar write --
-    see below for why that's the right endpoint despite being old), and
+    session ends (`push_position` → `AudibleAPI.push_last_position`, via
+    `PUT /1.0/lastpositions/{asin}`), and
   - always keeps its own local cache (`ProgressStore`) as the resume point
     of record regardless of whether either remote call succeeds.
 
-The push is best-effort and requires the real `acr`/`content_version` for
-that title (obtained from `get_license()`, and persisted in the download
-voucher for offline plays) -- see `push_position`'s docstring for exactly
-what happens when those aren't available.
+The push is best-effort and requires the real `acr` for that title (obtained
+from `get_license()`, and persisted in the download voucher for offline
+plays) -- see `push_position`'s docstring for exactly what happens when it
+isn't available.
 
 ---
 

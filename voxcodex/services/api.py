@@ -1,6 +1,7 @@
-"""Thin wrapper around `audible.Client` for the read-only calls this app needs:
-library listing, content licensing (for download/playback decryption), and
-listening-position lookup. No purchase/checkout endpoints are used anywhere here.
+"""Thin wrapper around `audible.Client` for the calls this app needs: library
+listing, content licensing (for download/playback decryption), listening-position
+read/write, and finished-state write. No purchase/checkout endpoints are used
+anywhere here.
 """
 
 from __future__ import annotations
@@ -46,14 +47,6 @@ _LICENSE_HEADERS = {
     "device_idiom": "phone",
 }
 
-# Amazon's older, Kindle-era Whispersync "Fiona" endpoint -- not under
-# api.audible.<domain> at all, so it's addressed as a full URL through
-# `raw_request` rather than `client.get`/`.post`. This is the confirmed
-# write path for cross-device resume position; see
-# docs/whispersync-research.md for how it was found and verified against a
-# live account, and why an earlier attempt at this looked like a dead end.
-_FIONA_SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
-
 # `PUT /1.0/stats/events` is Audible's own telemetry sink (session lifecycle +
 # listening-interval events). VoxCodex only uses it for one thing: flipping a
 # title's finished state, which is confirmed to propagate to
@@ -83,12 +76,10 @@ class License:
     key: str
     iv: str
     last_position_ms: int = 0
-    # The per-content identifiers `push_last_heard` needs to write a position
-    # back that actually reaches Audible's cross-device sync (see that
-    # method's docstring). Empty when a response doesn't include them --
-    # callers must treat that as "can't push for this title", not guess.
+    # Per-content identifier `push_last_position` needs to write a position
+    # back to Audible's cross-device sync. Empty when a response doesn't
+    # include it -- callers must treat that as "can't push for this title".
     acr: str = ""
-    content_version: str = ""
 
 
 @dataclass
@@ -166,7 +157,6 @@ class AudibleAPI:
         content_reference = content_metadata.get("content_reference") or {}
         codec = content_reference.get("content_format", "AAXC")
         acr = content_reference.get("acr", "")
-        content_version = str(content_reference.get("version") or "")
 
         key = iv = ""
         if "license_response" in content_license:
@@ -187,50 +177,30 @@ class AudibleAPI:
             iv=iv,
             last_position_ms=last_position_ms,
             acr=acr,
-            content_version=content_version,
         )
 
     # -- listening position (write) ------------------------------------
 
-    def push_last_heard(
-        self, asin: str, acr: str, content_version: str, codec: str, position_ms: int
-    ) -> None:
+    def push_last_position(self, asin: str, acr: str, position_ms: int) -> None:
         """Writes this app's current position back to Audible's cross-device
         sync store, so the official app/website pick up where playback left
         off here. Raises on failure -- callers wanting best-effort semantics
         should use `services.progress.push_position` instead of calling this
         directly.
 
-        `acr`/`content_version` must be the real per-content identifiers from
-        a `get_license()` response for *this* asin (they form the `guid`
-        Amazon's endpoint uses to key the record). A placeholder or stale
-        value here gets a 200 OK same as a real one -- it just silently never
-        reaches `annotations/lastpositions` or any other device. That
-        exact mistake is why an earlier attempt at this looked like a dead
-        end; see docs/whispersync-research.md.
+        `acr` must be the real per-content identifier from a `get_license()`
+        response for *this* asin -- it's what keys the record. A stale or
+        placeholder value gets a 200 OK same as a real one but silently never
+        reaches `annotations/lastpositions` or any other device (that exact
+        mistake is written up in docs/whispersync-research.md).
         """
-        if not acr or not content_version:
-            raise ValueError(
-                "push_last_heard needs a real acr/content_version from get_license()"
-            )
-        guid = f"{acr}:{content_version}"
-        timestamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f'<annotations version="1.0" timestamp="{timestamp}">'
-            f'<book key="{asin}" type="AUDI" version="{content_version}" '
-            f'guid="{guid}" format="{codec}">'
-            f'<last_heard action="modify" begin="{position_ms}" timestamp="{timestamp}"/>'
-            "</book>"
-            "</annotations>"
+        if not acr:
+            raise ValueError("push_last_position needs a real acr from get_license()")
+        self.client.put(
+            f"lastpositions/{asin}",
+            body={"acr": acr, "asin": asin, "position_ms": position_ms},
+            response_callback=_full_response,
         )
-        resp = self.client.raw_request(
-            "POST",
-            _FIONA_SIDECAR_URL,
-            content=body.encode("utf-8"),
-            headers={"Content-Type": "application/xml"},
-        )
-        raise_for_status(resp)
 
     # -- finished state (write) --------------------------------------
 

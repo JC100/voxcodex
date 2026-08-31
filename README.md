@@ -52,7 +52,7 @@ pipx upgrade voxcodex
 ```
 
 To pin a specific released version instead of always tracking the latest
-commit, install (or upgrade to) a tag: `pipx install git+https://github.com/JC100/voxcodex.git@v0.2.0`.
+commit, install (or upgrade to) a tag: `pipx install git+https://github.com/JC100/voxcodex.git@v0.3.0`.
 See [Releases](https://github.com/JC100/voxcodex/releases) for what's tagged.
 
 On first run you'll be asked to sign in with your Amazon account (the same
@@ -147,9 +147,7 @@ Playback speed and volume persist across sessions (`~/.config/voxcodex/settings.
 That file also tracks, but doesn't yet surface in the UI, which title you
 most recently played *in this app* and which one Audible's own record shows
 as most recently played *elsewhere* -- kept as two separate values rather
-than merged into one "last played" for the same reason progress sync is
-one-directional (see below): this app's plays never reach Audible's side,
-so there's no way to compare them on equal footing yet.
+than merged into one "last played".
 
 ## How it works
 

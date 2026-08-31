@@ -27,11 +27,13 @@ position.
   capture. Until then VoxCodex does **not** send `Listening` events (they make
   it worse). For a *finished* book this doesn't matter — the "Finished" badge
   wins over the percent. It only shows for books left partway through.
-- **Bonus finding:** `PUT /1.0/lastpositions/{asin}` (clean JSON, normal
-  api.audible host, needs only `acr`) is a drop-in replacement for the legacy
-  Fiona XML sidecar hack VoxCodex still uses for the position push. Not
-  switched this session (Fiona works; low priority), but recommended — details
-  below.
+- **Position push moved off the Fiona sidecar (done, v0.3.0).** The push now
+  goes through `PUT /1.0/lastpositions/{asin}` — clean JSON
+  (`{acr, asin, position_ms}`), normal api.audible host, no `guid` / XML /
+  `content_version` / `codec`. `AudibleAPI.push_last_position` replaced
+  `push_last_heard`; `content_version` is gone from `License` / the voucher /
+  the whole call chain. Verified live (propagates to
+  `annotations/lastpositions` in ~3 s, same as Fiona did). Details below.
 
 ---
 
@@ -66,14 +68,15 @@ app library views render.
 
 Two separate endpoints update the resume pointer (`GET /1.0/annotations/lastpositions`):
 
-1. **Legacy Fiona XML sidecar** — what VoxCodex ships today
-   (`AudibleAPI.push_last_heard`).
-2. **`PUT /1.0/lastpositions/{asin}`** — a clean JSON endpoint on the normal
+1. **`PUT /1.0/lastpositions/{asin}`** — clean JSON endpoint on the normal
    `api.audible.<domain>` host. Body: `{"acr": "...", "asin": "...", "position_ms": N}`.
    `acr` from a `licenserequest` `content_reference` (no `version`/`guid`/XML
-   needed). Returns empty body. **Propagates to `annotations/lastpositions`
-   identically to the Fiona write.** → *This should replace the Fiona XML hack —
-   simpler, same host as everything else, fewer moving parts.*
+   needed). Returns empty body. **This is what VoxCodex uses now**
+   (`AudibleAPI.push_last_position`, since v0.3.0).
+2. **Legacy Fiona XML sidecar** — what VoxCodex used through v0.2.x; the whole
+   `guid = "{acr}:{version}"` / XML story is in `whispersync-research.md`.
+   Still works, just no longer worth the special case now that #1 does the
+   same thing in one `client.put`.
 
 **Experiment 1** (Fiona) and **Experiment 2** (`PUT /1.0/lastpositions`): both
 moved `lastpositions.position_ms` immediately (tested 9,510,000 then 5,706,000
@@ -195,12 +198,12 @@ capture. Blockers hit, for next time:
 ## Open questions / next steps
 
 1. **Capture the real `Listening` payload** (see above) — the one thing
-   blocking full mid-book progress sync. Everything else here is done.
-2. **Switch the position push to `PUT /1.0/lastpositions/{asin}`** — see the
-   "position-write endpoints" section. Removes the Fiona XML sidecar special
-   case (different host, `raw_request`, XML building, needs `content_version`
-   + `codec` + a constructed `guid`). New call needs only `acr`. Low risk,
-   nice cleanup; deferred only because Fiona currently works.
+   blocking full mid-book progress sync. This is what stands between here and
+   the v1.0.0 bar (feature parity with the Android app on position + finished
+   + progateted percent + royalty-side listening events).
+2. ~~Switch the position push to `PUT /1.0/lastpositions/{asin}`~~ — **done in
+   v0.3.0.** `push_last_heard` → `push_last_position`; Fiona sidecar,
+   `content_version`, and the constructed `guid` are all gone.
 3. **Re-poll `percent_complete` on the test titles over the next day** to see
    whether the backend eventually self-corrects the 0 % it's showing now
    (would tell us whether the pipeline is just slow vs. genuinely needs the

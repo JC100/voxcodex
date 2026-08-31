@@ -1,5 +1,3 @@
-import pytest
-
 from voxcodex.services import progress
 
 
@@ -173,8 +171,8 @@ class FakePushAPI:
         self.calls = []
         self.finished_calls = []
 
-    def push_last_heard(self, asin, acr, content_version, codec, position_ms):
-        self.calls.append((asin, acr, content_version, codec, position_ms))
+    def push_last_position(self, asin, acr, position_ms):
+        self.calls.append((asin, acr, position_ms))
         if self.exc is not None:
             raise self.exc
 
@@ -186,25 +184,19 @@ class FakePushAPI:
 
 def test_push_position_calls_through_and_reports_success():
     api = FakePushAPI()
-    assert progress.push_position(api, "B001", "CR!ABC", "42", "AAXC", 5000) is True
-    assert api.calls == [("B001", "CR!ABC", "42", "AAXC", 5000)]
+    assert progress.push_position(api, "B001", "CR!ABC", 5000) is True
+    assert api.calls == [("B001", "CR!ABC", 5000)]
 
 
 def test_push_position_skips_the_call_without_acr():
     api = FakePushAPI()
-    assert progress.push_position(api, "B001", "", "42", "AAXC", 5000) is False
-    assert api.calls == []
-
-
-def test_push_position_skips_the_call_without_content_version():
-    api = FakePushAPI()
-    assert progress.push_position(api, "B001", "CR!ABC", "", "AAXC", 5000) is False
+    assert progress.push_position(api, "B001", "", 5000) is False
     assert api.calls == []
 
 
 def test_push_position_swallows_failure_and_reports_it():
     api = FakePushAPI(exc=RuntimeError("network exploded"))
-    assert progress.push_position(api, "B001", "CR!ABC", "42", "AAXC", 5000) is False
+    assert progress.push_position(api, "B001", "CR!ABC", 5000) is False
 
 
 # -- push_finished ------------------------------------------------------
