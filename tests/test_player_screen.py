@@ -642,17 +642,30 @@ async def test_chapter_navigation_is_a_no_op_without_chapters(fake_player):
         assert fake_player.seek_absolute_calls == []
 
 
-async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
-    """If a transport key is pressed in the brief window before the mpv
-    worker thread finishes starting, there's no player yet to control --
-    these must no-op rather than raise (e.g. on a None _player)."""
+async def test_actions_are_safe_while_player_is_still_starting(monkeypatch):
+    """The player handle is published before the blocking start() so the
+    screen can stop mpv if it closes mid-startup -- but that handle isn't
+    connected yet, so a transport keypress in that window must be swallowed
+    (a real MpvPlayer raises MpvError('Player is not running')) rather than
+    crash the app."""
     import threading
 
     release = threading.Event()
 
     class BlocksUntilReleased:
+        def __init__(self):
+            self.stopped = False
+
         def start(self, *a, **k):
             release.wait(timeout=5)  # released below; timeout is just a safety net
+
+        def stop(self):
+            self.stopped = True
+
+        def _not_running(self, *a, **k):
+            raise MpvError("Player is not running")
+
+        toggle_pause = seek_relative = set_speed = set_volume = _not_running
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", BlocksUntilReleased)
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
@@ -660,7 +673,6 @@ async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
 
     try:
         async with app.run_test() as pilot:
-            assert screen._player is None
             await pilot.press("space")
             await pilot.press("left")
             await pilot.press("up")
@@ -711,6 +723,23 @@ async def test_tick_shows_finished_state_on_eof(fake_player):
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
         fake_player.eof = True
+
+        screen._tick()
+
+        assert screen.query_one("#state", Static).content == "Finished"
+
+
+async def test_tick_shows_finished_when_mpv_has_exited(fake_player):
+    """With --idle=once mpv quits at end-of-file, so a tick that finds the
+    process gone should land on 'Finished' rather than stay on 'Playing'."""
+    screen = PlayerScreen(_book(duration_ms=100_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(
+            lambda: screen.query_one("#state", Static).content == "Playing"
+        )
+        fake_player.stopped = True  # is_running -> False
 
         screen._tick()
 

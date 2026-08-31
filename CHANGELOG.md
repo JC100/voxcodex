@@ -15,9 +15,21 @@ Critical fixes from an outside code review.
   group instead of sharing one -- pressing play no longer aborts an in-flight
   download, etc. Workers now check for cancellation and no longer tear the app
   down with a traceback if the screen is closed while they're still running.
-- **mpv is no longer orphaned.** Closing the player (or quitting) while mpv is
-  still starting now stops it instead of leaving a headless process holding the
-  audio device. A failed IPC connect kills the process it just spawned.
+- **mpv is no longer orphaned.** The player handle is now published before the
+  (up to 8 s) blocking startup, so closing the player or quitting mid-start
+  stops mpv instead of leaving a headless process holding the audio device;
+  `stop()` during startup also breaks the IPC connect loop promptly. mpv now
+  runs with `--idle=once` so it exits at end-of-file rather than idling
+  forever, and a failed IPC connect kills the process it just spawned.
+- **The mpv IPC socket is no longer world-reachable.** It moves from a
+  guessable `/tmp/voxcodex-mpv-<id>.sock` (any local user could connect and,
+  via mpv's `run` command, get code execution as you) into a per-session
+  `mkdtemp` directory created `0700`, removed on stop.
+- **Player IPC errors no longer crash the app.** Socket failures
+  (`BrokenPipeError`, `ConnectionResetError`, timeouts) are now funnelled into
+  `MpvError`, transport keypresses against a dead mpv are swallowed, and the
+  connect retry loop no longer leaks a socket per failed attempt. The line
+  reader no longer relies on `socket.makefile()` across a socket timeout.
 - **Truncated downloads are rejected.** A download that ends short of the
   server-stated size is discarded rather than renamed into place to fail later
   at playback; interrupted downloads no longer leave a `.part` file behind.

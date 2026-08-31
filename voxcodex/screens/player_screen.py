@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -14,6 +17,8 @@ from voxcodex.models import Book
 from voxcodex.services.api import Chapter
 from voxcodex.services.player import MpvNotFoundError, MpvError, MpvPlayer
 from voxcodex.services.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -108,26 +113,35 @@ class PlayerScreen(Screen[int]):
     @work(thread=True, exclusive=True, exit_on_error=False)
     def _start_player(self, start_seconds: float) -> None:
         worker = get_current_worker()
-        player: MpvPlayer | None = None
         try:
             player = MpvPlayer()
-            player.start(self._source, self._key, self._iv, start_seconds=start_seconds)
-        except (MpvNotFoundError, MpvError) as exc:
-            if player is not None:
-                player.stop()
+        except MpvNotFoundError as exc:
             if not worker.is_cancelled and self.is_mounted:
                 self.app.call_from_thread(self._start_failed, str(exc))
             return
 
-        # The screen can be dismissed (or the app quit) while start() is
-        # blocking on mpv's IPC socket -- up to 8s. If it was, nobody will
-        # ever run action_close/on_unmount for this player, so stop it here
-        # rather than leave an orphaned mpv holding the audio device.
-        if worker.is_cancelled or not self.is_mounted:
+        # Publish the handle *before* the blocking start() (up to 8s inside
+        # mpv's IPC connect): if the screen is dismissed or the app quits
+        # mid-startup, action_close / on_unmount need something to stop, and
+        # MpvPlayer.stop() breaks a concurrent start() out of its connect loop.
+        self._player = player
+        try:
+            player.start(self._source, self._key, self._iv, start_seconds=start_seconds)
+        except (MpvNotFoundError, MpvError) as exc:
             player.stop()
+            self._player = None
+            if not worker.is_cancelled and self.is_mounted:
+                self.app.call_from_thread(self._start_failed, str(exc))
             return
 
-        self._player = player
+        # If the screen went away during start(), on_unmount already called
+        # stop() (a no-op to repeat) -- but cover the race where it read
+        # self._player before we assigned it and stopped nothing.
+        if worker.is_cancelled or not self.is_mounted:
+            player.stop()
+            self._player = None
+            return
+
         self.app.call_from_thread(self._start_succeeded)
 
     def _start_failed(self, message: str) -> None:
@@ -144,15 +158,34 @@ class PlayerScreen(Screen[int]):
             if self._player:
                 self._player.stop()
             return
-        if self._player:
-            self._player.set_speed(self._speed)
-            self._player.set_volume(self._volume)
+        self._control(lambda p: p.set_speed(self._speed))
+        self._control(lambda p: p.set_volume(self._volume))
         self._settings.set_last_played_in_app(self.book.asin)
         self.set_interval(1.0, self._tick)
 
+    def _control(self, fn: Callable[[MpvPlayer], object]) -> None:
+        """Run a transport command against the player, swallowing an
+        MpvError from a dead or stalled socket so a keypress can't take the
+        whole app down. The next _tick notices `is_running` went False."""
+        player = self._player
+        if player is None:
+            return
+        try:
+            fn(player)
+        except MpvError as exc:
+            logger.warning("mpv command failed: %s", exc)
+
     def _tick(self) -> None:
         player = self._player
-        if player is None or not player.is_running:
+        if player is None:
+            return
+        if not player.is_running:
+            # With --idle=once mpv exits on its own at end-of-file; reflect
+            # that rather than leaving the state stuck on "Playing".
+            try:
+                self.query_one("#state", Static).update("Finished")
+            except NoMatches:
+                pass
             return
         try:
             position = player.position_seconds
@@ -167,7 +200,7 @@ class PlayerScreen(Screen[int]):
         if self._sleep_remaining_seconds is not None and not paused:
             self._sleep_remaining_seconds = max(0.0, self._sleep_remaining_seconds - 1.0)
             if self._sleep_remaining_seconds <= 0:
-                player.set_paused(True)
+                self._control(lambda p: p.set_paused(True))
                 paused = True
                 self._sleep_remaining_seconds = None
                 self._sleep_preset_index = 0
@@ -215,7 +248,8 @@ class PlayerScreen(Screen[int]):
             return
         idx = self._current_chapter_index()
         if idx is not None and idx + 1 < len(self._chapters):
-            self._player.seek_absolute(self._chapters[idx + 1].start_ms / 1000)
+            target = self._chapters[idx + 1].start_ms / 1000
+            self._control(lambda p: p.seek_absolute(target))
 
     def action_previous_chapter(self) -> None:
         if not self._player or not self._chapters:
@@ -229,51 +263,51 @@ class PlayerScreen(Screen[int]):
             target = self._chapters[idx - 1]
         else:
             target = chapter
-        self._player.seek_absolute(target.start_ms / 1000)
+        target_s = target.start_ms / 1000
+        self._control(lambda p: p.seek_absolute(target_s))
 
     def action_toggle_pause(self) -> None:
-        if self._player:
-            self._player.toggle_pause()
+        self._control(lambda p: p.toggle_pause())
 
     def action_seek_back(self) -> None:
-        if self._player:
-            self._player.seek_relative(-30)
+        self._control(lambda p: p.seek_relative(-30))
 
     def action_seek_forward(self) -> None:
-        if self._player:
-            self._player.seek_relative(30)
+        self._control(lambda p: p.seek_relative(30))
 
     def action_seek_back_long(self) -> None:
-        if self._player:
-            self._player.seek_relative(-60)
+        self._control(lambda p: p.seek_relative(-60))
 
     def action_seek_forward_long(self) -> None:
-        if self._player:
-            self._player.seek_relative(60)
+        self._control(lambda p: p.seek_relative(60))
 
     def action_speed_up(self) -> None:
-        if self._player:
-            self._speed = min(3.0, round(self._speed + 0.1, 1))
-            self._player.set_speed(self._speed)
-            self._settings.set_playback_speed(self._speed)
+        if self._player is None:
+            return
+        self._speed = min(3.0, round(self._speed + 0.1, 1))
+        self._control(lambda p: p.set_speed(self._speed))
+        self._settings.set_playback_speed(self._speed)
 
     def action_speed_down(self) -> None:
-        if self._player:
-            self._speed = max(0.5, round(self._speed - 0.1, 1))
-            self._player.set_speed(self._speed)
-            self._settings.set_playback_speed(self._speed)
+        if self._player is None:
+            return
+        self._speed = max(0.5, round(self._speed - 0.1, 1))
+        self._control(lambda p: p.set_speed(self._speed))
+        self._settings.set_playback_speed(self._speed)
 
     def action_volume_up(self) -> None:
-        if self._player:
-            self._volume = min(100.0, self._volume + 5)
-            self._player.set_volume(self._volume)
-            self._settings.set_playback_volume(self._volume)
+        if self._player is None:
+            return
+        self._volume = min(100.0, self._volume + 5)
+        self._control(lambda p: p.set_volume(self._volume))
+        self._settings.set_playback_volume(self._volume)
 
     def action_volume_down(self) -> None:
-        if self._player:
-            self._volume = max(0.0, self._volume - 5)
-            self._player.set_volume(self._volume)
-            self._settings.set_playback_volume(self._volume)
+        if self._player is None:
+            return
+        self._volume = max(0.0, self._volume - 5)
+        self._control(lambda p: p.set_volume(self._volume))
+        self._settings.set_playback_volume(self._volume)
 
     def action_cycle_sleep_timer(self) -> None:
         self._sleep_preset_index = (self._sleep_preset_index + 1) % len(self._SLEEP_PRESETS_MIN)
