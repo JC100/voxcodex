@@ -185,6 +185,45 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
     assert not download.voucher_path_for("B001").exists()
 
 
+def test_download_book_rejects_a_truncated_stream_and_cleans_up():
+    # Server promises 100 bytes, connection delivers 4 -- the old code renamed
+    # the short file into place and it looked downloaded until playback failed.
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"abcd"], headers={"content-length": "100"})
+    api = FakeAPI(license_, response)
+
+    with pytest.raises(OSError, match="truncated"):
+        download.download_book(_book("B001"), api)
+
+    assert not download.audio_path_for("B001").exists()
+    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert not download.voucher_path_for("B001").exists()
+
+
+def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"one", b"two", b"three"], headers={"content-length": "11"})
+    api = FakeAPI(license_, response)
+
+    seen = []
+
+    def cancel_after_first_chunk():
+        seen.append(1)
+        return len(seen) > 1  # let the first chunk through, then bail
+
+    with pytest.raises(download.DownloadCancelled):
+        download.download_book(_book("B001"), api, cancel_check=cancel_after_first_chunk)
+
+    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert not download.audio_path_for("B001").exists()
+
+
 def test_download_book_passes_content_url_and_uses_get_method():
     license_ = License(
         asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",

@@ -64,7 +64,13 @@ class MpvPlayer:
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        self._connect()
+        try:
+            self._connect()
+        except Exception:
+            # Don't leave the mpv process we just spawned running headless
+            # with no IPC channel to control or stop it.
+            self.stop()
+            raise
 
     def _connect(self, timeout: float = 8.0) -> None:
         deadline = time.monotonic() + timeout

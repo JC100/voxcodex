@@ -11,6 +11,11 @@ from voxcodex.models import Book
 from voxcodex.services.api import AudibleAPI, License
 
 ProgressCallback = Callable[[int, int], None]
+CancelCheck = Callable[[], bool]
+
+
+class DownloadCancelled(Exception):
+    """Raised by `download_book` when `cancel_check` asks it to stop."""
 
 
 def voucher_path_for(asin: str) -> Path:
@@ -30,6 +35,7 @@ def download_book(
     api: AudibleAPI,
     on_progress: ProgressCallback | None = None,
     quality: str = "high",
+    cancel_check: CancelCheck | None = None,
 ) -> Path:
     config.ensure_dirs()
     license_ = api.get_license(book.asin, quality=quality)
@@ -42,18 +48,32 @@ def download_book(
     # CDN has rejected the plain-httpx version of this request with a WAF "Request
     # blocked" 403 even though the signed URL itself was valid, while this same
     # signed-session request and mpv's own fetch (used for streaming) both work.
-    with api.client.session.stream(
-        "GET", license_.content_url, follow_redirects=True, timeout=60
-    ) as resp:
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        with open(tmp_path, "wb") as f:
-            for chunk in resp.iter_bytes(chunk_size=1024 * 256):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if on_progress:
-                    on_progress(downloaded, total)
+    try:
+        with api.client.session.stream(
+            "GET", license_.content_url, follow_redirects=True, timeout=60
+        ) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length", 0))
+            downloaded = 0
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 256):
+                    if cancel_check is not None and cancel_check():
+                        raise DownloadCancelled(book.asin)
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress:
+                        on_progress(downloaded, total)
+
+        # A connection dropped mid-stream leaves a short file that would
+        # otherwise be renamed into place and look downloaded until it fails
+        # to play. Only accept it when the server told us a size and we got it.
+        if total and downloaded != total:
+            raise OSError(
+                f"download truncated: got {downloaded} of {total} bytes"
+            )
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     tmp_path.replace(audio_path)
     _write_voucher(book.asin, license_)

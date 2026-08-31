@@ -59,11 +59,15 @@ def _log_cvf_page(soup: Any) -> None:
         logger.info("login flow: cvf page has no <form>")
         return
     for field in form.find_all(["input", "select"]):
+        # Deliberately don't log `value` -- hidden inputs on this page carry
+        # session tokens (appActionToken / metadata1 / etc.). The length is
+        # enough to tell "prefilled" from "empty" when debugging.
+        raw_value = field.get("value") or ""
         logger.info(
-            "login flow: cvf field name=%r type=%r value=%r checked=%r",
+            "login flow: cvf field name=%r type=%r value_len=%d checked=%r",
             field.get("name"),
             field.get("type"),
-            field.get("value"),
+            len(raw_value),
             field.has_attr("checked"),
         )
 

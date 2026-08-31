@@ -5,8 +5,10 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import Footer, ProgressBar, Static
+from textual.worker import get_current_worker
 
 from voxcodex.models import Book
 from voxcodex.services.api import Chapter
@@ -103,22 +105,45 @@ class PlayerScreen(Screen[int]):
         start_seconds = 0.0 if self.book.is_finished else self.book.progress_ms / 1000
         self._start_player(start_seconds)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, exit_on_error=False)
     def _start_player(self, start_seconds: float) -> None:
+        worker = get_current_worker()
+        player: MpvPlayer | None = None
         try:
             player = MpvPlayer()
             player.start(self._source, self._key, self._iv, start_seconds=start_seconds)
         except (MpvNotFoundError, MpvError) as exc:
-            self.app.call_from_thread(self._start_failed, str(exc))
+            if player is not None:
+                player.stop()
+            if not worker.is_cancelled and self.is_mounted:
+                self.app.call_from_thread(self._start_failed, str(exc))
             return
+
+        # The screen can be dismissed (or the app quit) while start() is
+        # blocking on mpv's IPC socket -- up to 8s. If it was, nobody will
+        # ever run action_close/on_unmount for this player, so stop it here
+        # rather than leave an orphaned mpv holding the audio device.
+        if worker.is_cancelled or not self.is_mounted:
+            player.stop()
+            return
+
         self._player = player
         self.app.call_from_thread(self._start_succeeded)
 
     def _start_failed(self, message: str) -> None:
-        self.query_one("#state", Static).update(f"[red]{message}[/red]")
+        try:
+            self.query_one("#state", Static).update(f"[red]{message}[/red]")
+        except NoMatches:
+            pass
 
     def _start_succeeded(self) -> None:
-        self.query_one("#state", Static).update("Playing")
+        try:
+            self.query_one("#state", Static).update("Playing")
+        except NoMatches:
+            # Screen went away between the is_mounted check and here.
+            if self._player:
+                self._player.stop()
+            return
         if self._player:
             self._player.set_speed(self._speed)
             self._player.set_volume(self._volume)

@@ -89,9 +89,13 @@ class FakePlayer:
 class FailingPlayer:
     def __init__(self, exc):
         self._exc = exc
+        self.stopped = False
 
     def start(self, *args, **kwargs):
         raise self._exc
+
+    def stop(self):
+        self.stopped = True
 
 
 class FakeSettings:

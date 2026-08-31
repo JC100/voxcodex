@@ -674,7 +674,7 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
     download_calls = []
     monkeypatch.setattr(
         library_module.download, "download_book",
-        lambda book, api, on_progress=None: download_calls.append(book.asin),
+        lambda book, api, on_progress=None, cancel_check=None: download_calls.append(book.asin),
     )
 
     books = [_book("B1", "One")]
@@ -694,7 +694,7 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
 async def test_download_success_updates_status_and_table(monkeypatch):
     download_calls = []
 
-    def fake_download_book(book, api, on_progress=None):
+    def fake_download_book(book, api, on_progress=None, cancel_check=None):
         download_calls.append(book.asin)
         return "/tmp/fake.aaxc"
 
@@ -716,7 +716,7 @@ async def test_download_success_updates_status_and_table(monkeypatch):
 
 
 async def test_download_failure_shows_error_and_book_stays_not_downloaded(monkeypatch):
-    def fake_download_book(book, api, on_progress=None):
+    def fake_download_book(book, api, on_progress=None, cancel_check=None):
         raise RuntimeError("403 Forbidden")
 
     monkeypatch.setattr(library_module.download, "download_book", fake_download_book)

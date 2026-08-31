@@ -8,8 +8,10 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
+from textual.worker import get_current_worker
 
 from voxcodex.models import Book
 from voxcodex.screens.modals import ConfirmModal
@@ -167,17 +169,25 @@ class LibraryScreen(Screen[None]):
     # -- loading -------------------------------------------------------
 
     def _set_status(self, text: str) -> None:
-        self.query_one("#status", Static).update(text)
+        # Called from background workers via call_from_thread; the screen may
+        # already have been popped by the time one lands.
+        try:
+            self.query_one("#status", Static).update(text)
+        except NoMatches:
+            pass
 
     def _load_library(self) -> None:
         self._set_status("Loading your library...")
         self._fetch_library()
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, group="library", exit_on_error=False)
     def _fetch_library(self) -> None:
+        worker = get_current_worker()
         try:
             books = self.api.get_library()
         except Exception as exc:  # noqa: BLE001
+            if worker.is_cancelled:
+                return
             cached = library_cache.load()
             if cached is None:
                 self.app.call_from_thread(
@@ -187,6 +197,9 @@ class LibraryScreen(Screen[None]):
             cached_books, cached_at = cached
             self._apply_local_state(cached_books)
             self.app.call_from_thread(self._populate_offline, cached_books, cached_at)
+            return
+
+        if worker.is_cancelled:
             return
 
         library_cache.save(books)
@@ -200,6 +213,8 @@ class LibraryScreen(Screen[None]):
             self.settings.set_last_played_externally(asin, updated_at)
 
         self._apply_local_state(books, remote_positions)
+        if worker.is_cancelled:
+            return
         self.app.call_from_thread(self._populate, books)
 
     def _apply_local_state(
@@ -232,14 +247,17 @@ class LibraryScreen(Screen[None]):
         )
         self._fetch_chapter_counts(books)
 
-    @work(thread=True, exclusive=True, group="chapter_counts")
+    @work(thread=True, exclusive=True, group="chapter_counts", exit_on_error=False)
     def _fetch_chapter_counts(self, books: list[Book]) -> None:
         """Progressively fills in each book's chapter column after the table
         is already showing -- one extra network call per book not already
         known this session, so it's kept out of the main load/offline-
         fallback path entirely. A book that fails (typically: offline, or no
         chapter data for that title) just keeps its blank Chapter cell."""
+        worker = get_current_worker()
         for book in books:
+            if worker.is_cancelled:
+                return
             chapters = self._chapter_cache.get(book.asin)
             if chapters is None:
                 try:
@@ -249,7 +267,8 @@ class LibraryScreen(Screen[None]):
                 self._chapter_cache[book.asin] = chapters
             book.chapter_total = len(chapters)
             book.chapter_current = _current_chapter_number(chapters, book.progress_ms)
-            self.app.call_from_thread(self._refresh_table)
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self._refresh_table)
 
     def _progress_cell(self, book: Book) -> str:
         if self._progress_display == "time_left":
@@ -261,7 +280,12 @@ class LibraryScreen(Screen[None]):
         return text + (" ✓" if book.is_finished else "")
 
     def _refresh_table(self) -> None:
-        table = self.query_one(DataTable)
+        # Reached from the background chapter-count worker too, which may
+        # outlive the screen.
+        try:
+            table = self.query_one(DataTable)
+        except NoMatches:
+            return
         # table.clear() resets the cursor to the top row -- fine when the
         # rebuild follows straight from acting on the selected row (most
         # calls here), but the background chapter-count fetch calls this
@@ -438,29 +462,48 @@ class LibraryScreen(Screen[None]):
         bar.update(total=100, progress=0)
         self._do_download(book)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, group="download", exit_on_error=False)
     def _do_download(self, book: Book) -> None:
+        worker = get_current_worker()
+
         def on_progress(done: int, total: int) -> None:
-            if total:
-                self.app.call_from_thread(
-                    self.query_one("#download-progress", ProgressBar).update,
-                    total=total,
-                    progress=done,
-                )
+            if total and not worker.is_cancelled:
+                self.app.call_from_thread(self._update_download_bar, done, total)
 
         try:
-            download.download_book(book, self.api, on_progress=on_progress)
+            download.download_book(
+                book,
+                self.api,
+                on_progress=on_progress,
+                cancel_check=lambda: worker.is_cancelled,
+            )
+        except download.DownloadCancelled:
+            return
         except Exception as exc:  # noqa: BLE001
             self.app.call_from_thread(self._download_failed, book, str(exc))
             return
         self.app.call_from_thread(self._download_succeeded, book)
 
+    def _update_download_bar(self, done: int, total: int) -> None:
+        try:
+            self.query_one("#download-progress", ProgressBar).update(
+                total=total, progress=done
+            )
+        except NoMatches:
+            pass
+
     def _download_failed(self, book: Book, message: str) -> None:
-        self.query_one("#download-progress", ProgressBar).display = False
+        try:
+            self.query_one("#download-progress", ProgressBar).display = False
+        except NoMatches:
+            return
         self._set_status(f"[red]Download failed for {book.title}: {message}[/red]")
 
     def _download_succeeded(self, book: Book) -> None:
-        self.query_one("#download-progress", ProgressBar).display = False
+        try:
+            self.query_one("#download-progress", ProgressBar).display = False
+        except NoMatches:
+            return
         book.is_downloaded = True
         self._refresh_table()
         self._set_status(f"Downloaded: {book.title}")
@@ -492,8 +535,9 @@ class LibraryScreen(Screen[None]):
         self._set_status(f"Opening license for {book.title}...")
         self._open_player(book)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, group="player", exit_on_error=False)
     def _open_player(self, book: Book) -> None:
+        worker = get_current_worker()
         try:
             if book.is_downloaded:
                 voucher = download.load_voucher(book.asin)
@@ -529,6 +573,8 @@ class LibraryScreen(Screen[None]):
             else:
                 self._chapter_cache[book.asin] = chapters
 
+        if worker.is_cancelled:
+            return
         self.app.call_from_thread(
             self._launch_player, book, source, key, iv, chapters, acr
         )
@@ -562,10 +608,10 @@ class LibraryScreen(Screen[None]):
 
         self.app.push_screen(PlayerScreen(book, source, key, iv, chapters=chapters), _on_close)
 
-    @work(thread=True, exclusive=False, group="push_position")
+    @work(thread=True, exclusive=False, group="push_position", exit_on_error=False)
     def _push_position(self, asin: str, acr: str, position_ms: int) -> None:
         progress.push_position(self.api, asin, acr, position_ms)
 
-    @work(thread=True, exclusive=False, group="push_finished")
+    @work(thread=True, exclusive=False, group="push_finished", exit_on_error=False)
     def _push_finished(self, asin: str) -> None:
         progress.push_finished(self.api, asin, True)
