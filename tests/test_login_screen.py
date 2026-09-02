@@ -8,6 +8,7 @@ README.md.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from textual.app import App
 from textual.widgets import Input, Static
@@ -236,3 +237,64 @@ async def test_otp_callback_relays_through_a_prompt_modal(monkeypatch):
 
         await _wait_until(lambda: app.authenticated_with is not None)
         assert captured["otp"] == "123456"
+
+
+# -- double-submit / shutdown (H9, H7) -----------------------------------------
+
+
+async def test_double_submit_triggers_only_one_login(monkeypatch):
+    release = threading.Event()
+    calls = []
+
+    def fake_login(*a, **k):
+        calls.append(1)
+        release.wait(timeout=5)
+        return FakeAuthenticator()
+
+    monkeypatch.setattr(login_module.auth, "login", fake_login)
+    monkeypatch.setattr(login_module.auth, "save", lambda auth, pw: None)
+
+    screen = LoginScreen(unlock_only=False)
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test(size=(80, 50)) as pilot:
+            screen.query_one("#username", Input).value = "me@example.com"
+            screen.query_one("#password", Input).value = "hunter2"
+            await pilot.click("#submit")
+            await _wait_until(lambda: calls == [1])
+
+            await pilot.click("#submit")  # busy -> ignored
+            await pilot.click("#submit")
+            await pilot.pause()
+
+            assert calls == [1]
+    finally:
+        release.set()
+
+
+async def test_blocking_prompt_gives_up_when_the_screen_shuts_down(monkeypatch):
+    """A ctrl+q while an OTP prompt is open must not park the login worker in
+    _blocking_prompt forever (which hangs process exit)."""
+    otp_result = {}
+
+    def fake_login(username, password, locale, callbacks):
+        otp_result["value"] = callbacks.otp()  # blocks until shutdown
+        return FakeAuthenticator()
+
+    monkeypatch.setattr(login_module.auth, "login", fake_login)
+    monkeypatch.setattr(login_module.auth, "save", lambda auth, pw: None)
+
+    screen = LoginScreen(unlock_only=False)
+    app = HostApp(screen)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        screen.query_one("#username", Input).value = "me@example.com"
+        screen.query_one("#password", Input).value = "hunter2"
+        await pilot.click("#submit")
+        await _wait_until(lambda: isinstance(app.screen, PromptModal))
+
+        screen._shutting_down.set()  # stand in for the unmount on app exit
+
+        await _wait_until(lambda: "value" in otp_result)
+        assert otp_result["value"] == ""

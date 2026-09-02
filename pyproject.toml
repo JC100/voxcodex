@@ -18,10 +18,17 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "audible>=0.10.0",
-    "textual>=0.60.0",
-    "httpx>=0.27.0",
-    "platformdirs>=4.0.0",
+    # audible: reaches into audible.aescipher.decrypt_voucher_from_licenserequest,
+    # audible.client.raise_for_status, and monkeypatches five private
+    # audible.login.check_for_* functions -- all present in 0.10-0.12, none
+    # API-stable, so pin the minor range.
+    "audible>=0.10,<0.13",
+    # textual: App.theme / App.available_themes (used at startup) are the
+    # theme system that landed in ~0.86; the old >=0.60 floor threw
+    # AttributeError on launch.
+    "textual>=0.86,<9",
+    "httpx>=0.27,<1",
+    "platformdirs>=4,<5",
 ]
 
 [project.urls]

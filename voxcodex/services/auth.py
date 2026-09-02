@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,12 @@ from voxcodex import config
 
 Locale = str
 logger = logging.getLogger("voxcodex.auth")
+
+# `_login_flow_diagnostics` swaps five functions on the `audible.login`
+# module. If two logins ran it concurrently, the second would capture the
+# first's *wrappers* as its "originals" and its finally-block would restore
+# a wrapper, leaving audible.login monkeypatched for the life of the process.
+_diagnostics_lock = threading.Lock()
 
 
 @dataclass
@@ -83,6 +90,13 @@ def _login_flow_diagnostics():
     if the account has one configured, with no way to ask for SMS instead),
     so this is the only way to see what really happened there.
     """
+    if not _diagnostics_lock.acquire(blocking=False):
+        # Another login already has the patches installed. Don't nest --
+        # just run without our own diagnostics for this one.
+        logger.info("login flow: diagnostics already active on another login, skipping")
+        yield
+        return
+
     names = [
         "check_for_captcha",
         "check_for_choice_mfa",
@@ -116,6 +130,7 @@ def _login_flow_diagnostics():
     finally:
         for name, original in originals.items():
             setattr(_login_internals, name, original)
+        _diagnostics_lock.release()
 
 
 def login(

@@ -854,6 +854,36 @@ async def test_closing_with_q_flushes_a_final_checkpoint(fake_player):
     assert (88_000, True) in saved
 
 
+async def test_poll_worker_reads_mpv_off_the_event_loop_and_renders(fake_player):
+    screen = PlayerScreen(_book(duration_ms=200_000), "s", "k", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 61.0
+        fake_player.duration = 200.0
+
+        screen._poll()  # would normally be the 1 Hz interval
+
+        await _wait_until(
+            lambda: "1:01" in str(screen.query_one("#time-row", Static).content)
+        )
+        assert screen._last_position_ms == 61_000
+        assert screen._poll_inflight is False  # reset so the next tick can run
+
+
+async def test_poll_does_not_stack_reads_while_one_is_in_flight(fake_player):
+    screen = PlayerScreen(_book(duration_ms=200_000), "s", "k", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._poll_inflight = True  # pretend a read is already running
+        screen._poll()  # must be a no-op, not a second worker
+        # nothing to assert beyond "did not raise / did not clear the flag"
+        assert screen._poll_inflight is True
+
+
 async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
     def boom(pos, *, final):
         raise RuntimeError("owner blew up")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import audible
 from textual import on, work
@@ -66,6 +67,13 @@ class LoginScreen(Screen[None]):
     def __init__(self, unlock_only: bool) -> None:
         super().__init__()
         self._unlock_only = unlock_only
+        # Set on unmount so a login worker parked in _blocking_prompt (waiting
+        # on an OTP/CAPTCHA the user will now never enter) can give up instead
+        # of blocking asyncio's executor forever and hanging the process exit.
+        self._shutting_down = threading.Event()
+
+    def on_unmount(self) -> None:
+        self._shutting_down.set()
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -152,25 +160,29 @@ class LoginScreen(Screen[None]):
         self.query_one("#status", Static).update(text)
 
     def _start_unlock(self) -> None:
+        if self.has_class("busy"):
+            return
         password = self.query_one("#vault-password", Input).value or None
         self.add_class("busy")
         self._set_status("")
         self._do_unlock(password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_unlock(self, password: str | None) -> None:
         try:
             authenticator = auth.load(password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._unlock_failed, str(exc))
+            self._call_back(self._unlock_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _unlock_failed(self, message: str) -> None:
         self.remove_class("busy")
         self._set_status(f"[red]Could not unlock: {message}[/red]")
 
     def _start_login(self) -> None:
+        if self.has_class("busy"):
+            return
         username = self.query_one("#username", Input).value.strip()
         password = self.query_one("#password", Input).value
         locale = str(self.query_one("#locale", Select).value)
@@ -182,7 +194,7 @@ class LoginScreen(Screen[None]):
         self._set_status("Signing in...")
         self._do_login(username, password, locale, vault_password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_login(
         self, username: str, password: str, locale: str, vault_password: str | None
     ) -> None:
@@ -207,27 +219,29 @@ class LoginScreen(Screen[None]):
             authenticator = auth.login(username, password, locale, callbacks)
             auth.save(authenticator, vault_password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._login_failed, str(exc))
+            self._call_back(self._login_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _start_external_login(self) -> None:
+        if self.has_class("busy"):
+            return
         locale = str(self.query_one("#locale", Select).value)
         vault_password = self.query_one("#vault-password", Input).value or None
         self.add_class("busy")
         self._set_status("Starting browser login...")
         self._do_external_login(locale, vault_password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_external_login(self, locale: str, vault_password: str | None) -> None:
         callbacks = auth.LoginCallbacks(login_url=self._external_url_prompt)
         try:
             authenticator = auth.login_external(locale, callbacks)
             auth.save(authenticator, vault_password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._login_failed, str(exc))
+            self._call_back(self._login_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _external_url_prompt(self, url: str) -> str:
         import webbrowser
@@ -247,8 +261,21 @@ class LoginScreen(Screen[None]):
         )
         return self._blocking_prompt("Browser login", message, allow_empty=False)
 
+    def _call_back(self, fn: Callable[..., None], *args: object) -> None:
+        """call_from_thread, but a no-op once the screen is tearing down --
+        the app loop may be gone, and there's nothing left to update."""
+        if self._shutting_down.is_set():
+            return
+        try:
+            self.app.call_from_thread(fn, *args)
+        except RuntimeError:
+            pass
+
     def _blocking_prompt(self, title: str, message: str, allow_empty: bool = False) -> str:
-        """Runs on the login worker thread; blocks it until the user answers in the UI."""
+        """Runs on the login worker thread; blocks it until the user answers
+        in the UI -- or until the screen is torn down (ctrl+q during an OTP
+        prompt), in which case it returns "" so the login flow fails cleanly
+        instead of the worker parking here forever and hanging process exit."""
         event = threading.Event()
         result: list[str] = [""]
 
@@ -261,8 +288,16 @@ class LoginScreen(Screen[None]):
                 PromptModal(title, message, password=False, allow_empty=allow_empty), _done
             )
 
-        self.app.call_from_thread(_push)
-        event.wait()
+        if self._shutting_down.is_set():
+            return ""
+        try:
+            self.app.call_from_thread(_push)
+        except RuntimeError:
+            return ""
+
+        while not event.wait(timeout=0.2):
+            if self._shutting_down.is_set():
+                return ""
         return result[0]
 
     def _login_failed(self, message: str) -> None:

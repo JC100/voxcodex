@@ -50,6 +50,10 @@ class VoxCodexApp(App[None]):
         self.push_screen(LoginScreen(unlock_only=auth.is_registered()))
 
     def on_authenticated(self, authenticator: audible.Authenticator) -> None:
+        if self.api is not None:
+            # A second successful login (e.g. re-auth) would otherwise leak
+            # the first Client's httpx connection pool.
+            self.api.close()
         self.api = AudibleAPI(authenticator)
         self.pop_screen()
         self.push_screen(LibraryScreen(self.api, self.settings))

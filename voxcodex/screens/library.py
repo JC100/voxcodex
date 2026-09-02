@@ -468,10 +468,20 @@ class LibraryScreen(Screen[None]):
     @work(thread=True, exclusive=True, group="download", exit_on_error=False)
     def _do_download(self, book: Book) -> None:
         worker = get_current_worker()
+        last_bar_update = 0.0
 
         def on_progress(done: int, total: int) -> None:
-            if total and not worker.is_cancelled:
-                self.app.call_from_thread(self._update_download_bar, done, total)
+            nonlocal last_bar_update
+            if not total or worker.is_cancelled:
+                return
+            # download.download_book calls this once per 256 KB chunk -- a
+            # ~1 GB file is thousands of calls, each a blocking hop onto the
+            # event loop. Cap it at ~4/s, but always let the final one land.
+            now = time.monotonic()
+            if done < total and now - last_bar_update < 0.25:
+                return
+            last_bar_update = now
+            self.app.call_from_thread(self._update_download_bar, done, total)
 
         try:
             download.download_book(

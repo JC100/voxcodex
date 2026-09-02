@@ -47,6 +47,26 @@ Critical fixes from an outside code review.
 - **Truncated downloads are rejected.** A download that ends short of the
   server-stated size is discarded rather than renamed into place to fail later
   at playback; interrupted downloads no longer leave a `.part` file behind.
+- **A wedged mpv no longer freezes the UI.** The player polled mpv's position
+  with four blocking IPC round trips *on the event loop* every second (up to a
+  20 s freeze if mpv stalled); those reads now happen on a background worker
+  and only the render touches the UI. IPC command timeout cut from 5 s to
+  1.5 s, and closing the player is bounded to ~2 s instead of ~5 s. One lock
+  serialises socket I/O now that reads and transport commands run on separate
+  threads.
+- **Login can't hang the process on exit.** Quitting (`ctrl+q`) while an
+  OTP / CAPTCHA prompt was open left the login worker blocked forever on
+  `event.wait()`, so the process never exited. The wait now polls a
+  shutting-down flag and gives up.
+- **Double-submitting the login form is ignored.** The sign-in / unlock /
+  browser-login workers are now exclusive and guarded by the busy state, so a
+  fast double-click can't start two logins (which corrupted the diagnostics
+  monkeypatch permanently and leaked an HTTP client). A second successful
+  login now also closes the previous API client.
+- **Dependency floors are now real.** `textual>=0.86` (the theme APIs used at
+  startup landed there; the old `>=0.60` `AttributeError`d on launch),
+  `audible>=0.10,<0.13`, and upper bounds on everything. A smoke test pins the
+  private `audible` internals the app reaches into so a bad bump fails in CI.
 
 ## 0.3.0
 

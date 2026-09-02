@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from textual import work
 from textual.app import ComposeResult
@@ -28,6 +29,26 @@ def _fmt_hms(seconds: float) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+@dataclass
+class _Playback:
+    """A snapshot of mpv's state, read in one place so the four IPC round
+    trips happen off the Textual event loop (see _poll_player)."""
+
+    position: float
+    duration: float
+    paused: bool
+    eof: bool
+
+    @classmethod
+    def read(cls, player: MpvPlayer, book_duration_ms: int) -> _Playback:
+        return cls(
+            position=player.position_seconds,
+            duration=player.duration_seconds or (book_duration_ms / 1000),
+            paused=player.paused,
+            eof=player.eof_reached,
+        )
 
 
 class PlayerScreen(Screen[int]):
@@ -107,6 +128,7 @@ class PlayerScreen(Screen[int]):
         self._on_progress = on_progress
         self._saved_position_ms = book.progress_ms
         self._ticks_since_checkpoint = 0
+        self._poll_inflight = False
         self._settings = settings if settings is not None else Settings()
         self._speed = self._settings.playback_speed
         self._volume = self._settings.playback_volume
@@ -178,12 +200,12 @@ class PlayerScreen(Screen[int]):
         self._control(lambda p: p.set_speed(self._speed))
         self._control(lambda p: p.set_volume(self._volume))
         self._settings.set_last_played_in_app(self.book.asin)
-        self.set_interval(1.0, self._tick)
+        self.set_interval(1.0, self._poll)
 
     def _control(self, fn: Callable[[MpvPlayer], object]) -> None:
         """Run a transport command against the player, swallowing an
         MpvError from a dead or stalled socket so a keypress can't take the
-        whole app down. The next _tick notices `is_running` went False."""
+        whole app down. The next poll notices `is_running` went False."""
         player = self._player
         if player is None:
             return
@@ -192,24 +214,66 @@ class PlayerScreen(Screen[int]):
         except MpvError as exc:
             logger.warning("mpv command failed: %s", exc)
 
-    def _tick(self) -> None:
+    def _poll(self) -> None:
+        """Event-loop timer: kick a background read of mpv's state. The reads
+        themselves (4 IPC round trips) must not run here -- a wedged mpv would
+        freeze the whole TUI for the length of their timeouts."""
+        if self._poll_inflight or self._player is None:
+            return
+        self._poll_inflight = True
+        self._poll_player()
+
+    @work(thread=True, exclusive=True, group="poll", exit_on_error=False)
+    def _poll_player(self) -> None:
+        try:
+            player = self._player
+            if player is None or not self.is_mounted:
+                return
+            if not player.is_running:
+                self._from_thread(self._render_finished)
+                return
+            try:
+                snap = _Playback.read(player, self.book.duration_ms)
+            except MpvError:
+                return
+            self._from_thread(self._tick, snap)
+        finally:
+            self._poll_inflight = False
+
+    def _from_thread(self, fn: Callable[..., object], *args: object) -> None:
+        try:
+            self.app.call_from_thread(fn, *args)
+        except RuntimeError:  # app is shutting down
+            pass
+
+    def _render_finished(self) -> None:
+        # With --idle=once mpv exits on its own at end-of-file; reflect that
+        # rather than leaving the state stuck on "Playing".
+        try:
+            self.query_one("#state", Static).update("Finished")
+        except NoMatches:
+            pass
+
+    def _tick(self, snap: _Playback | None = None) -> None:
+        """Render playback state. `snap` comes from the background poll worker;
+        when called without one (the first render, and tests) it reads mpv
+        directly -- fine off the hot path, not on the 1 Hz timer."""
         player = self._player
         if player is None:
             return
-        if not player.is_running:
-            # With --idle=once mpv exits on its own at end-of-file; reflect
-            # that rather than leaving the state stuck on "Playing".
+        if snap is None:
+            if not player.is_running:
+                self._render_finished()
+                return
             try:
-                self.query_one("#state", Static).update("Finished")
-            except NoMatches:
-                pass
-            return
-        try:
-            position = player.position_seconds
-            duration = player.duration_seconds or (self.book.duration_ms / 1000)
-            paused = player.paused
-        except Exception:  # noqa: BLE001
-            return
+                snap = _Playback.read(player, self.book.duration_ms)
+            except MpvError:
+                return
+
+        position = snap.position
+        duration = snap.duration or (self.book.duration_ms / 1000)
+        paused = snap.paused
+
         self._last_position_ms = int(position * 1000)
         self._ticks_since_checkpoint += 1
         if self._ticks_since_checkpoint >= self._CHECKPOINT_EVERY_TICKS:
@@ -235,7 +299,7 @@ class PlayerScreen(Screen[int]):
             f"{'paused' if paused else 'playing'}   speed {self._speed:.1f}x   "
             f"vol {self._volume:.0f}%{sleep_part}"
         )
-        if player.eof_reached:
+        if snap.eof:
             self.query_one("#state", Static).update("Finished")
 
         chapter_row = self.query_one("#chapter-row", Static)

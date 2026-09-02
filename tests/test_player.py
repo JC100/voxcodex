@@ -297,6 +297,34 @@ def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     assert not tmp_dir.exists()
 
 
+def test_command_is_serialised_across_threads(fake_mpv):
+    """The player screen polls position from a background worker while
+    transport actions run on theirs -- interleaved sendall/recv on one
+    socket would scramble request/response framing. _io_lock prevents it."""
+    p = MpvPlayer()
+    p.start("s", "k", "iv")
+
+    results = []
+    errors = []
+
+    def hammer():
+        try:
+            for _ in range(15):
+                results.append(p.get_property("time-pos"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    p.stop()
+    assert not errors
+    assert results and all(r == 42 for r in results)  # never a mismatched reply
+
+
 def test_stop_during_startup_breaks_connect_out_of_its_retry_loop(monkeypatch):
     """mpv is up but never creates the IPC socket; a stop() from another
     thread must make the blocking start() bail promptly instead of spinning

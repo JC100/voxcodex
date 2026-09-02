@@ -50,6 +50,10 @@ class MpvPlayer:
         # _stop_lock serialises concurrent teardowns.
         self._stopping = threading.Event()
         self._stop_lock = threading.Lock()
+        # One request/response on the socket at a time -- the player screen
+        # now polls position from a background worker while transport actions
+        # run on their own, so interleaved sendall/recv would corrupt framing.
+        self._io_lock = threading.Lock()
 
     @property
     def is_running(self) -> bool:
@@ -111,50 +115,51 @@ class MpvPlayer:
             time.sleep(0.05)
         raise MpvError(f"Could not connect to mpv IPC socket: {last_err}")
 
-    def _read_line(self, timeout: float) -> bytes | None:
-        """Read one newline-terminated IPC message. Returns None if the peer
-        closed the connection. Buffers manually rather than via
+    def _read_line(self, sock: socket.socket, timeout: float) -> bytes | None:
+        """Read one newline-terminated IPC message off `sock`. Returns None if
+        the peer closed the connection. Buffers manually rather than via
         socket.makefile(), whose internal state is left inconsistent by a
         timeout on the underlying socket."""
-        assert self._sock is not None
         while b"\n" not in self._recv_buf:
-            self._sock.settimeout(timeout)
-            chunk = self._sock.recv(65536)
+            sock.settimeout(timeout)
+            chunk = sock.recv(65536)
             if not chunk:
                 return None
             self._recv_buf += chunk
         line, self._recv_buf = self._recv_buf.split(b"\n", 1)
         return line
 
-    def _command(self, *args: object, timeout: float = 5.0) -> object:
-        if self._sock is None:
-            raise MpvError("Player is not running")
-        req_id = next(self._request_ids)
-        payload = json.dumps({"command": list(args), "request_id": req_id}) + "\n"
-        deadline = time.monotonic() + timeout
-        try:
-            self._sock.settimeout(timeout)
-            self._sock.sendall(payload.encode())
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise MpvError(f"timed out waiting for mpv response to {args[0]!r}")
-                line = self._read_line(remaining)
-                if line is None:
-                    raise MpvError("mpv IPC connection closed")
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if msg.get("request_id") == req_id:
-                    if msg.get("error") not in (None, "success"):
-                        raise MpvError(str(msg.get("error")))
-                    return msg.get("data")
-        except OSError as exc:
-            # Socket I/O fails as BrokenPipeError / ConnectionResetError /
-            # socket.timeout -- all OSError, none MpvError. Funnel them into
-            # the one exception type callers actually catch.
-            raise MpvError(f"mpv IPC error: {exc}") from exc
+    def _command(self, *args: object, timeout: float = 1.5) -> object:
+        with self._io_lock:
+            sock = self._sock
+            if sock is None:
+                raise MpvError("Player is not running")
+            req_id = next(self._request_ids)
+            payload = json.dumps({"command": list(args), "request_id": req_id}) + "\n"
+            deadline = time.monotonic() + timeout
+            try:
+                sock.settimeout(timeout)
+                sock.sendall(payload.encode())
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise MpvError(f"timed out waiting for mpv response to {args[0]!r}")
+                    line = self._read_line(sock, remaining)
+                    if line is None:
+                        raise MpvError("mpv IPC connection closed")
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("request_id") == req_id:
+                        if msg.get("error") not in (None, "success"):
+                            raise MpvError(str(msg.get("error")))
+                        return msg.get("data")
+            except OSError as exc:
+                # Socket I/O fails as BrokenPipeError / ConnectionResetError /
+                # socket.timeout -- all OSError, none MpvError. Funnel them into
+                # the one exception type callers actually catch.
+                raise MpvError(f"mpv IPC error: {exc}") from exc
 
     def get_property(self, name: str, default: object = None) -> object:
         try:
@@ -204,13 +209,17 @@ class MpvPlayer:
         self.set_property("volume", max(0.0, min(100.0, volume)))
 
     def stop(self) -> None:
+        # Called from the event loop (on_unmount / action_close) as well as
+        # the player-screen worker, so it stays deliberately quick: a best-
+        # effort quit with a short timeout, then SIGTERM, then SIGKILL.
+        # Closing the socket also unblocks any in-flight _command on the poll
+        # or control worker (its recv raises, surfaced as MpvError).
         self._stopping.set()
         with self._stop_lock:
             sock, self._sock = self._sock, None
-            self._recv_buf = b""
             if sock is not None:
                 try:
-                    sock.settimeout(2.0)
+                    sock.settimeout(0.5)
                     sock.sendall(b'{"command": ["quit"]}\n')
                 except OSError:
                     pass
@@ -223,7 +232,7 @@ class MpvPlayer:
             if proc is not None and proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=3.0)
+                    proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
