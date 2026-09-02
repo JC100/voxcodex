@@ -60,6 +60,11 @@ class PlayerScreen(Screen[int]):
     # last few seconds you already heard instead of going back a chapter.
     _CHAPTER_RESTART_THRESHOLD_MS = 3000
 
+    # _tick fires ~1/s; checkpoint the listening position roughly this often
+    # so an abnormal exit (ctrl+q, closed terminal, crash) loses seconds, not
+    # the whole session. The close/unmount flush is the authoritative write.
+    _CHECKPOINT_EVERY_TICKS = 15
+
     DEFAULT_CSS = """
     PlayerScreen {
         align: center middle;
@@ -80,7 +85,14 @@ class PlayerScreen(Screen[int]):
     """
 
     def __init__(
-        self, book: Book, source: str, key: str, iv: str, chapters: list[Chapter] | None = None
+        self,
+        book: Book,
+        source: str,
+        key: str,
+        iv: str,
+        chapters: list[Chapter] | None = None,
+        settings: Settings | None = None,
+        on_progress: Callable[..., None] | None = None,
     ) -> None:
         super().__init__()
         self.book = book
@@ -90,7 +102,12 @@ class PlayerScreen(Screen[int]):
         self._chapters = chapters or []
         self._player: MpvPlayer | None = None
         self._last_position_ms = book.progress_ms
-        self._settings = Settings()
+        # (position_ms, *, final) -> None. The owner persists it and, when
+        # final, pushes it to Audible. See LibraryScreen._launch_player.
+        self._on_progress = on_progress
+        self._saved_position_ms = book.progress_ms
+        self._ticks_since_checkpoint = 0
+        self._settings = settings if settings is not None else Settings()
         self._speed = self._settings.playback_speed
         self._volume = self._settings.playback_volume
         self._sleep_preset_index = 0
@@ -194,6 +211,10 @@ class PlayerScreen(Screen[int]):
         except Exception:  # noqa: BLE001
             return
         self._last_position_ms = int(position * 1000)
+        self._ticks_since_checkpoint += 1
+        if self._ticks_since_checkpoint >= self._CHECKPOINT_EVERY_TICKS:
+            self._ticks_since_checkpoint = 0
+            self._flush_progress(final=False)
         pct = int(position / duration * 100) if duration else 0
         self.query_one("#bar", ProgressBar).update(total=100, progress=min(100, pct))
 
@@ -314,11 +335,36 @@ class PlayerScreen(Screen[int]):
         minutes = self._SLEEP_PRESETS_MIN[self._sleep_preset_index]
         self._sleep_remaining_seconds = float(minutes * 60) if minutes else None
 
+    def _flush_progress(self, *, final: bool) -> None:
+        """Hand the current position to the owner to persist. Periodic
+        (final=False) calls are skipped when nothing moved; the final call
+        (close / unmount) always goes through so the owner can also push it
+        to Audible and run end-of-book detection."""
+        if self._on_progress is None:
+            return
+        if not final and self._last_position_ms == self._saved_position_ms:
+            return
+        try:
+            self._on_progress(self._last_position_ms, final=final)
+        except Exception:  # noqa: BLE001
+            logger.warning("progress checkpoint failed", exc_info=True)
+        self._saved_position_ms = self._last_position_ms
+
     def action_close(self) -> None:
-        if self._player:
+        if self._player and self._player.is_running:
+            # Grab a fresh position before stopping -- the last _tick can be
+            # up to a second stale. Ignore a 0 (a transient IPC read failure
+            # shouldn't rewind the resume point to the start of the book).
+            pos_ms = int(self._player.position_seconds * 1000)
+            if pos_ms > 0:
+                self._last_position_ms = pos_ms
             self._player.stop()
         self.dismiss(self._last_position_ms)
 
     def on_unmount(self) -> None:
         if self._player:
             self._player.stop()
+        # Fires for an explicit q/esc *and* for a hard app quit -- the sole
+        # write path used to be the dismiss() result callback, which a
+        # ctrl+q never reached, losing the whole session.
+        self._flush_progress(final=True)

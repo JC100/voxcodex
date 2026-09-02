@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,34 +47,38 @@ from voxcodex.services.api import AudibleAPI
 
 logger = logging.getLogger(__name__)
 
+_FILE_LOCK = threading.RLock()
+
 
 class ProgressStore:
     def __init__(self, path: Path = config.PROGRESS_CACHE_FILE) -> None:
         self._path = path
-        self._data: dict[str, dict[str, Any]] = {}
-        self._load()
+        with _FILE_LOCK:
+            self._data: dict[str, dict[str, Any]] = self._read_file()
 
-    def _load(self) -> None:
-        if self._path.exists():
-            try:
-                self._data = json.loads(self._path.read_text())
-            except (json.JSONDecodeError, OSError):
-                self._data = {}
-
-    def save(self) -> None:
-        config.ensure_dirs()
-        self._path.write_text(json.dumps(self._data, indent=2))
+    def _read_file(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads(self._path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def get_position_ms(self, asin: str) -> int:
         return int(self._data.get(asin, {}).get("position_ms", 0))
 
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
-        entry = self._data.setdefault(asin, {})
-        entry["position_ms"] = int(position_ms)
-        if duration_ms:
-            entry["duration_ms"] = int(duration_ms)
-        entry["updated_at"] = time.time()
-        self.save()
+        # Reload-modify-write atomically: the player screen checkpoints
+        # position on a timer as well as on close, so writes land often and
+        # must not truncate the file or drop another title's entry.
+        with _FILE_LOCK:
+            data = self._read_file()
+            entry = data.setdefault(asin, {})
+            entry["position_ms"] = int(position_ms)
+            if duration_ms:
+                entry["duration_ms"] = int(duration_ms)
+            entry["updated_at"] = time.time()
+            config.atomic_write_text(self._path, json.dumps(data, indent=2))
+            self._data = data
 
 
 def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str, Any]]:

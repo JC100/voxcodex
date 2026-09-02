@@ -31,8 +31,11 @@ class VoxCodexApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.api: AudibleAPI | None = None
-        self._settings = Settings()
-        saved_theme = self._settings.theme
+        # One Settings for the whole app, passed down to the screens rather
+        # than each constructing its own over the same file (which meant a
+        # write from one silently reverting the others' unseen changes).
+        self.settings = Settings()
+        saved_theme = self.settings.theme
         if saved_theme in self.available_themes:
             self.theme = saved_theme
 
@@ -40,7 +43,7 @@ class VoxCodexApp(App[None]):
         # Textual's own App.theme doesn't persist across runs by itself --
         # save whatever the command palette's theme picker (or anything
         # else) sets it to, so next launch starts back where you left it.
-        self._settings.set_theme(theme_name)
+        self.settings.set_theme(theme_name)
 
     def on_mount(self) -> None:
         config.ensure_dirs()
@@ -49,7 +52,7 @@ class VoxCodexApp(App[None]):
     def on_authenticated(self, authenticator: audible.Authenticator) -> None:
         self.api = AudibleAPI(authenticator)
         self.pop_screen()
-        self.push_screen(LibraryScreen(self.api))
+        self.push_screen(LibraryScreen(self.api, self.settings))
 
     def on_unmount(self) -> None:
         if self.api is not None:

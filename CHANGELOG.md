@@ -30,6 +30,20 @@ Critical fixes from an outside code review.
   `MpvError`, transport keypresses against a dead mpv are swallowed, and the
   connect retry loop no longer leaks a socket per failed attempt. The line
   reader no longer relies on `socket.makefile()` across a socket timeout.
+- **Settings no longer silently revert each other.** The app, library screen
+  and player screen shared one `settings.json` through separate in-memory
+  copies, so (for example) changing the theme from the command palette would
+  roll back a sort order you'd just cycled in the library. There is now one
+  `Settings` passed down from the app, every write is a reload-modify-write of
+  just its own key under a process-wide lock, and all of `settings.json`,
+  `progress_cache.json` and `library_cache.json` are written atomically
+  (temp file + rename) so a crash mid-write can't truncate them.
+- **Listening position is saved even on a hard quit.** It used to persist
+  only when you left the player with `q` / `esc`; closing the terminal or
+  `ctrl+q` discarded the whole session, locally and remotely. The player now
+  checkpoints position roughly every 15 s and always on unmount, with the
+  close still the authoritative flush (and the only thing that pushes to
+  Audible / marks a book finished).
 - **Truncated downloads are rejected.** A download that ends short of the
   server-stated size is discarded rather than renamed into place to fail later
   at playback; interrupted downloads no longer leave a `.part` file behind.

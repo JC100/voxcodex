@@ -1,3 +1,5 @@
+import pytest
+
 from voxcodex import config
 
 
@@ -43,3 +45,34 @@ def test_auth_and_settings_files_are_under_config_dir():
 def test_progress_and_library_cache_files_are_under_data_dir():
     assert config.PROGRESS_CACHE_FILE.parent == config.DATA_DIR
     assert config.LIBRARY_CACHE_FILE.parent == config.DATA_DIR
+
+
+# -- atomic_write_text (H2) -------------------------------------------------
+
+
+def test_atomic_write_text_writes_the_file_and_creates_parent(tmp_path):
+    target = tmp_path / "nested" / "dir" / "state.json"
+    config.atomic_write_text(target, '{"a": 1}')
+    assert target.read_text() == '{"a": 1}'
+
+
+def test_atomic_write_text_replaces_existing_content(tmp_path):
+    target = tmp_path / "state.json"
+    target.write_text("old")
+    config.atomic_write_text(target, "new")
+    assert target.read_text() == "new"
+
+
+def test_atomic_write_text_leaves_old_file_intact_and_no_tmp_on_failure(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    target.write_text("good")
+
+    def boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(config.os, "replace", boom)
+    with pytest.raises(OSError):
+        config.atomic_write_text(target, "half-written")
+
+    assert target.read_text() == "good"
+    assert list(tmp_path.iterdir()) == [target]  # temp file cleaned up

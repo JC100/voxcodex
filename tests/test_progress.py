@@ -56,6 +56,22 @@ def test_progress_store_set_position_without_duration_does_not_error(tmp_path):
     assert store.get_position_ms("B001") == 500
 
 
+def test_progress_store_write_does_not_drop_another_titles_entry(tmp_path):
+    """The player checkpoints position on a timer now, so two stores over the
+    same file (or the same store after an external write) must merge, not
+    overwrite -- a stale in-memory copy can't wipe B002."""
+    path = tmp_path / "progress.json"
+    a = progress.ProgressStore(path=path)
+    b = progress.ProgressStore(path=path)
+
+    a.set_position_ms("B001", 1_000)
+    b.set_position_ms("B002", 2_000)  # b never saw a's B001 write
+
+    reloaded = progress.ProgressStore(path=path)
+    assert reloaded.get_position_ms("B001") == 1_000
+    assert reloaded.get_position_ms("B002") == 2_000
+
+
 # -- fetch_remote_annotations / positions_from_annotations --------------
 #
 # Response shape confirmed directly against a live account (see

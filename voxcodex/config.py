@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from platformdirs import user_config_dir, user_data_dir
@@ -23,3 +25,22 @@ def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` via a temp file in the same directory followed
+    by `os.replace`, so a crash mid-write or a concurrent reader never sees a
+    half-written or truncated file. The rename is atomic on POSIX when both
+    paths are on the same filesystem, which they are (same parent dir)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

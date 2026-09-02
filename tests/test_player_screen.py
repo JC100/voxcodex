@@ -778,3 +778,93 @@ async def test_escape_also_closes(fake_player):
 
         assert fake_player.stopped is True
         assert len(results) == 1
+
+
+# -- progress checkpointing (H3) ----------------------------------------------
+
+
+async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 123.0
+
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick()
+
+        assert saved == [(123_000, False)]  # exactly one, and not "final"
+
+
+async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=10_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # right where the book was already left
+
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS * 2):
+            screen._tick()
+
+        assert saved == []
+
+
+async def test_final_progress_is_flushed_on_unmount_even_without_an_explicit_close(fake_player):
+    """A ctrl+q / closed terminal never runs action_close -- on_unmount is
+    the backstop so the session isn't lost."""
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=5_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 42.0
+        screen._tick()
+
+    assert saved[-1] == (42_000, True)
+
+
+async def test_closing_with_q_flushes_a_final_checkpoint(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=1_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 88.0
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert (88_000, True) in saved
+
+
+async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
+    def boom(pos, *, final):
+        raise RuntimeError("owner blew up")
+
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv", on_progress=boom,
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 30.0
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick()  # must not raise despite the callback raising

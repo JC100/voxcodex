@@ -40,6 +40,12 @@ class FakeSettings:
         self.library_sort_key = "recent"
         self.library_filter_key = "all"
         self.progress_display_mode = "percent"
+        # PlayerScreen surface -- LibraryScreen now passes its Settings
+        # straight through to the player rather than the player building its
+        # own, so one fake has to cover both.
+        self.playback_speed = 1.0
+        self.playback_volume = 100.0
+        self.last_played_in_app_calls = []
 
     def set_last_played_externally(self, asin, updated_at):
         self.last_played_externally_calls.append((asin, updated_at))
@@ -52,6 +58,15 @@ class FakeSettings:
 
     def set_progress_display_mode(self, mode):
         self.progress_display_mode = mode
+
+    def set_playback_speed(self, speed):
+        self.playback_speed = speed
+
+    def set_playback_volume(self, volume):
+        self.playback_volume = volume
+
+    def set_last_played_in_app(self, asin):
+        self.last_played_in_app_calls.append(asin)
 
 
 class FakeAudibleClient:
@@ -346,7 +361,6 @@ async def test_space_plays_the_selected_book(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     books = [_book("B1", "One")]
     screen = LibraryScreen(FakeAPI(books))
@@ -797,6 +811,10 @@ class _FakeMpvPlayer:
     """Stands in for MpvPlayer so `p` never spawns a real mpv subprocess."""
 
     volume = 100.0
+    position_seconds = 0.0
+    duration_seconds = 0.0
+    paused = False
+    eof_reached = False
 
     def start(self, *args, **kwargs):
         pass
@@ -815,15 +833,33 @@ class _FakeMpvPlayer:
         return True
 
 
-class _FakeSettingsForLibraryTests:
-    """Stands in for services.settings.Settings inside PlayerScreen, so these
-    library-screen tests never touch the real config dir either."""
+async def test_playback_progress_is_persisted_when_the_player_is_closed(monkeypatch):
+    """The player hands its final position back to LibraryScreen, which
+    writes it to the progress store and updates the in-memory Book."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
-    playback_speed = 1.0
-    playback_volume = 100.0
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
 
-    def set_last_played_in_app(self, asin):
-        pass
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert screen.progress_store.get_position_ms("B1") == 512_000
+    assert book.progress_ms == 512_000
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
@@ -831,7 +867,6 @@ async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     chapters = [Chapter(title="Chapter 1", start_ms=0, length_ms=60_000)]
     books = [_book("B1", "One")]
@@ -854,7 +889,6 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     books = [_book("B1", "One")]
     api = FakeAPI(books, chapters_exc=RuntimeError("metadata endpoint exploded"))
@@ -938,7 +972,6 @@ async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monke
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     chapters = [Chapter(title="Ch1", start_ms=0, length_ms=60_000)]
     api = FakeAPI([_book("B1", "One")], chapters=chapters)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from textual import on, work
@@ -19,6 +20,8 @@ from voxcodex.screens.player_screen import PlayerScreen
 from voxcodex.services import download, library_cache, progress
 from voxcodex.services.api import AudibleAPI, Chapter
 from voxcodex.services.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded")
 
@@ -115,11 +118,11 @@ class LibraryScreen(Screen[None]):
         ("escape", "clear_search", "Clear search"),
     ]
 
-    def __init__(self, api: AudibleAPI) -> None:
+    def __init__(self, api: AudibleAPI, settings: Settings | None = None) -> None:
         super().__init__()
         self.api = api
         self.progress_store = progress.ProgressStore()
-        self.settings = Settings()
+        self.settings = settings if settings is not None else Settings()
         self._books: list[Book] = []
         self._filtered: list[Book] = []
         # In-memory only, refetched fresh each session -- a book's chapters
@@ -593,20 +596,43 @@ class LibraryScreen(Screen[None]):
     ) -> None:
         self._set_status("")
 
-        def _on_close(final_position_ms: int) -> None:
-            self.progress_store.set_position_ms(book.asin, final_position_ms, book.duration_ms)
-            book.progress_ms = final_position_ms
-            newly_finished = _reached_end(final_position_ms, book.duration_ms) and (
-                not book.is_finished
+        def _on_progress(position_ms: int, *, final: bool) -> None:
+            # Called both on a ~15s timer during playback and once on close /
+            # unmount (final=True) -- so progress survives a hard quit, not
+            # just an explicit q/esc out of the player.
+            self.progress_store.set_position_ms(book.asin, position_ms, book.duration_ms)
+            book.progress_ms = position_ms
+            newly_finished = (
+                final
+                and _reached_end(position_ms, book.duration_ms)
+                and not book.is_finished
             )
             if newly_finished:
                 book.is_finished = True
-            self._refresh_table()
-            self._push_position(book.asin, acr, final_position_ms)
-            if newly_finished:
-                self._push_finished(book.asin)
+            if final:
+                # The library table is behind the player during a periodic
+                # checkpoint -- only worth rebuilding when we're heading back
+                # to it. The push to Audible is also close-only.
+                self._refresh_table()
+                # On a hard app quit the screen may already be tearing down,
+                # in which case spawning a push worker can fail -- the local
+                # save above is what actually matters, so don't let this
+                # propagate out of the player's on_unmount.
+                try:
+                    self._push_position(book.asin, acr, position_ms)
+                    if newly_finished:
+                        self._push_finished(book.asin)
+                except Exception:  # noqa: BLE001
+                    logger.debug("progress push on close failed", exc_info=True)
 
-        self.app.push_screen(PlayerScreen(book, source, key, iv, chapters=chapters), _on_close)
+        self.app.push_screen(
+            PlayerScreen(
+                book, source, key, iv,
+                chapters=chapters,
+                settings=self.settings,
+                on_progress=_on_progress,
+            )
+        )
 
     @work(thread=True, exclusive=False, group="push_position", exit_on_error=False)
     def _push_position(self, asin: str, acr: str, position_ms: int) -> None:

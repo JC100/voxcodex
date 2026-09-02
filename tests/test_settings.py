@@ -1,6 +1,8 @@
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 from voxcodex.services import settings
 
 
@@ -135,3 +137,51 @@ def test_theme_round_trips(tmp_path):
     s = settings.Settings(path=tmp_path / "settings.json")
     s.set_theme("nord")
     assert s.theme == "nord"
+
+
+# -- concurrent / independent instances (H2) ----------------------------------
+
+
+def test_two_instances_do_not_clobber_each_others_unseen_writes(tmp_path):
+    """The bug: the app, library screen and player screen each held their own
+    Settings over one file, and every setter serialised that instance's whole
+    (possibly stale) copy -- so changing the theme reverted a sort cycled in
+    the library. Each setter now reload-modify-writes just its own key."""
+    path = tmp_path / "settings.json"
+    a = settings.Settings(path=path)
+    b = settings.Settings(path=path)  # both start from the same empty file
+
+    a.set_library_sort_key("title")   # a writes; b's in-memory copy is now stale
+    b.set_theme("nord")               # b must not wipe a's sort key
+
+    reloaded = settings.Settings(path=path)
+    assert reloaded.library_sort_key == "title"
+    assert reloaded.theme == "nord"
+
+
+def test_setter_picks_up_a_concurrent_change_before_writing(tmp_path):
+    path = tmp_path / "settings.json"
+    a = settings.Settings(path=path)
+    b = settings.Settings(path=path)
+
+    b.set_playback_volume(40.0)
+    a.set_playback_speed(2.0)  # a never saw b's volume write
+
+    reloaded = settings.Settings(path=path)
+    assert reloaded.playback_speed == 2.0
+    assert reloaded.playback_volume == 40.0
+
+
+def test_a_failed_write_keeps_the_previous_settings_intact(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    settings.Settings(path=path).set_theme("gruvbox")
+
+    monkeypatch.setattr(
+        settings.config, "atomic_write_text",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    with pytest.raises(OSError):
+        settings.Settings(path=path).set_theme("nord")
+
+    monkeypatch.undo()
+    assert settings.Settings(path=path).theme == "gruvbox"
