@@ -74,38 +74,6 @@ class PromptModal(ModalScreen[str]):
             self.dismiss(value)
 
 
-class MessageModal(ModalScreen[None]):
-    """Shows a message with an OK button."""
-
-    DEFAULT_CSS = """
-    MessageModal {
-        align: center middle;
-    }
-    MessageModal > Vertical {
-        width: 60;
-        height: auto;
-        padding: 1 2;
-        border: round $accent;
-        background: $panel;
-    }
-    """
-
-    def __init__(self, title: str, message: str) -> None:
-        super().__init__()
-        self._title = title
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(f"[b]{self._title}[/b]")
-            yield Static(self._message)
-            yield Button("OK", variant="primary", id="ok")
-
-    @on(Button.Pressed, "#ok")
-    def _ok(self) -> None:
-        self.dismiss(None)
-
-
 class ConfirmModal(ModalScreen[bool]):
     DEFAULT_CSS = """
     ConfirmModal {

@@ -13,9 +13,8 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 
 ## Low-priority findings (L1-L13)
 
-- [ ] L1 -- `MessageModal` (`screens/modals.py`) is dead code: defined and
-      tested, never instantiated in production. Delete it and its test, or
-      find it a real use.
+- [x] L1 -- `MessageModal` (`screens/modals.py`) is dead code: defined and
+      tested, never instantiated in production. Deleted it and its test.
 - [ ] L2 -- `License.last_position_ms` (`services/api.py`) is fetched but
       never read. Use it in `_launch_player`, or drop the field.
 - [ ] L3 -- `set_finished(asin, False)` (`screens/library.py`) is
