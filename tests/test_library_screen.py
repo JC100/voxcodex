@@ -96,7 +96,8 @@ class FakeAudibleClient:
 class FakeAPI:
     def __init__(
         self, books, chapters=None, chapters_exc=None, annotations_response=None,
-        get_library_exc=None,
+        get_library_exc=None, license_acr="",
+        push_position_exc=None, set_finished_exc=None,
     ):
         self._books = books
         self.client = FakeAudibleClient(annotations_response)
@@ -105,6 +106,11 @@ class FakeAPI:
         self._chapters = chapters if chapters is not None else []
         self._chapters_exc = chapters_exc
         self._get_library_exc = get_library_exc
+        self._license_acr = license_acr
+        self._push_position_exc = push_position_exc
+        self._set_finished_exc = set_finished_exc
+        self.push_position_calls = []
+        self.set_finished_calls = []
 
     def get_library(self):
         if self._get_library_exc is not None:
@@ -113,7 +119,20 @@ class FakeAPI:
 
     def get_license(self, asin, quality="high"):
         self.license_calls.append((asin, quality))
-        return License(asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i")
+        return License(
+            asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
+            acr=self._license_acr,
+        )
+
+    def push_last_position(self, asin, acr, position_ms):
+        self.push_position_calls.append((asin, acr, position_ms))
+        if self._push_position_exc is not None:
+            raise self._push_position_exc
+
+    def set_finished(self, asin, finished):
+        self.set_finished_calls.append((asin, finished))
+        if self._set_finished_exc is not None:
+            raise self._set_finished_exc
 
     def get_chapters(self, asin):
         self.chapter_calls.append(asin)
@@ -948,6 +967,130 @@ async def test_playback_progress_is_persisted_when_the_player_is_closed(monkeypa
 
     assert screen.progress_store.get_position_ms("B1") == 512_000
     assert book.progress_ms == 512_000
+
+
+# -- sync-failure status (M6) ----------------------------------------------
+
+
+async def test_playback_close_shows_a_status_when_the_position_push_fails(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_acr="CR!ABC", push_position_exc=RuntimeError("token expired"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(
+            lambda: "Audible sync failed" in str(screen.query_one("#status").content)
+        )
+        assert api.push_position_calls == [("B1", "CR!ABC", 512_000)]
+
+
+async def test_playback_close_shows_no_status_when_the_position_push_succeeds(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_acr="CR!ABC")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await _wait_until(lambda: api.push_position_calls == [("B1", "CR!ABC", 512_000)])
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert "sync failed" not in str(screen.query_one("#status").content)
+
+
+async def test_playback_close_does_not_warn_when_there_is_no_acr_to_push_with(monkeypatch):
+    """A voucher saved before `acr` existed is a known compatibility gap,
+    not a sync failure -- nothing was attempted, so nothing should warn."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book])  # license_acr defaults to ""
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert api.push_position_calls == []
+        assert "sync failed" not in str(screen.query_one("#status").content)
+
+
+async def test_playback_close_shows_a_status_when_the_finished_push_fails(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 995.0  # past the 0.98 finished threshold
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.duration_ms = 1_000_000  # matches PlayingMpv's duration_seconds so _reached_end fires
+    api = FakeAPI([book], license_acr="CR!ABC", set_finished_exc=RuntimeError("boom"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(
+            lambda: "Finished status saved locally; Audible sync failed"
+            in str(screen.query_one("#status").content)
+        )
+        assert api.set_finished_calls == [("B1", True)]
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):

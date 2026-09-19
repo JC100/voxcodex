@@ -722,8 +722,22 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=False, group="push_position", exit_on_error=False)
     def _push_position(self, asin: str, acr: str, position_ms: int) -> None:
-        progress.push_position(self.api, asin, acr, position_ms)
+        if not acr:
+            # No per-content identifier to push with (see push_position's
+            # docstring) -- nothing was attempted, so this isn't a sync
+            # failure worth surfacing, just a known compatibility gap for
+            # vouchers saved before `acr` existed.
+            return
+        if not progress.push_position(self.api, asin, acr, position_ms):
+            self.app.call_from_thread(
+                self._set_status,
+                "[yellow]Progress saved locally; Audible sync failed[/yellow]",
+            )
 
     @work(thread=True, exclusive=False, group="push_finished", exit_on_error=False)
     def _push_finished(self, asin: str) -> None:
-        progress.push_finished(self.api, asin, True)
+        if not progress.push_finished(self.api, asin, True):
+            self.app.call_from_thread(
+                self._set_status,
+                "[yellow]Finished status saved locally; Audible sync failed[/yellow]",
+            )
