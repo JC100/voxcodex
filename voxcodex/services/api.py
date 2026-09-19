@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 import audible
@@ -117,7 +117,7 @@ def parse_audible_timestamp(raw: Any) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return None
 
@@ -293,7 +293,7 @@ class AudibleAPI:
         should use `services.progress.push_finished` rather than calling this
         directly.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload = {
             "stats": [
                 {

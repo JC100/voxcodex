@@ -158,7 +158,7 @@ def test_positions_with_updated_at_includes_the_timestamp():
     position_ms, updated_at = result["B001"]
     assert position_ms == 4242
     import datetime
-    expected = datetime.datetime(2026, 8, 20, 23, 35, 5, 608000, tzinfo=datetime.timezone.utc)
+    expected = datetime.datetime(2026, 8, 20, 23, 35, 5, 608000, tzinfo=datetime.UTC)
     assert updated_at == expected.timestamp()
 
 

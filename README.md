@@ -9,7 +9,7 @@ Audible app or website.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - [mpv](https://mpv.io/) on your `PATH` (used for playback; not required for
   browsing/downloading only). `ffmpeg` itself isn't required at runtime --
   mpv typically links against libavformat internally to read/decrypt AAXC,

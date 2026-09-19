@@ -3,7 +3,7 @@ name = "voxcodex"
 dynamic = ["version"]
 description = "A terminal UI for browsing, downloading, and playing your existing Audible library."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "JC100" }]
 keywords = ["audible", "audiobooks", "tui", "terminal", "textual"]
@@ -12,17 +12,18 @@ classifiers = [
     "License :: OSI Approved :: GNU Affero General Public License v3",
     "Environment :: Console",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     # audible: reaches into audible.aescipher.decrypt_voucher_from_licenserequest,
-    # audible.client.raise_for_status, and monkeypatches five private
-    # audible.login.check_for_* functions -- all present in 0.10-0.12, none
-    # API-stable, so pin the minor range.
-    "audible>=0.10,<0.13",
+    # audible.client.raise_for_status, audible.exceptions.AudibleError (needs
+    # >=0.11), and monkeypatches five private audible.login.check_for_*
+    # functions -- all present in 0.11-0.12, none API-stable, so pin the minor
+    # range. audible>=0.11 itself requires Python>=3.11, which is also why
+    # this package no longer supports 3.10 (see CLAUDE.md / TODO.md history).
+    "audible>=0.11,<0.13",
     # textual: App.theme / App.available_themes (used at startup) are the
     # theme system that landed in ~0.86; the old >=0.60 floor threw
     # AttributeError on launch.
@@ -61,12 +62,12 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "BLE", "SIM", "UP"]
 
 [tool.mypy]
 files = ["voxcodex"]
-python_version = "3.10"
+python_version = "3.11"
 strict = true

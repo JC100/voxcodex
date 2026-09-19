@@ -343,13 +343,19 @@ async def test_search_filters_by_title():
 
 async def test_search_debounces_rather_than_filtering_on_every_keystroke(monkeypatch):
     """L5: typing used to clear-and-rebuild the whole table once per
-    keystroke. Typing "laughter" (8 keystrokes) quickly enough that they
-    land inside one debounce window should coalesce into a single
-    _apply_filters_and_sort call, not eight."""
-    books = [
-        _book("B1", "How to Win Friends", authors=["Dale Carnegie"]),
-        _book("B2", "Before & Laughter", authors=["Jimmy Carr"]),
-    ]
+    keystroke. 8 Input.Changed events landing inside one debounce window
+    should coalesce into a single _apply_filters_and_sort call, not eight.
+
+    Fires _search_changed directly and synchronously (no `await` between
+    calls) rather than via real Pilot keystrokes: real keystrokes go
+    through the actual event loop, so how many land inside one 150ms
+    debounce window depends on how fast the machine running the test is --
+    fine on a quiet dev machine, but this flaked on a loaded CI runner.
+    Firing the handler directly removes that dependency on wall-clock
+    timing entirely while still exercising the same stop-and-reset timer
+    logic. test_search_filters_by_title / _by_author already cover that
+    real typing eventually produces the right filtered result."""
+    books = [_book("B1", "One")]
     screen = LibraryScreen(FakeAPI(books))
     app = HostApp(screen)
 
@@ -363,13 +369,17 @@ async def test_search_debounces_rather_than_filtering_on_every_keystroke(monkeyp
 
     monkeypatch.setattr(screen, "_apply_filters_and_sort", _counting_apply)
 
-    async with app.run_test() as pilot:
-        await _wait_until(lambda: len(screen._books) == 2)
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
         apply_calls_after_load = apply_calls
 
-        await pilot.press(*"laughter")
-        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B2"])
+        for _ in range(8):
+            screen._search_changed(None)  # event argument is unused
 
+        await _wait_until(lambda: apply_calls - apply_calls_after_load == 1)
+        # Confirm it stays at 1 -- no further calls trickling in afterward.
+        for _ in range(10):
+            await asyncio.sleep(0.02)
         assert apply_calls - apply_calls_after_load == 1
 
 

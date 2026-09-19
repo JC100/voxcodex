@@ -350,7 +350,7 @@ def test_get_license_extracts_last_position_updated_at():
     license_ = api.get_license("B001")
 
     expected = datetime.datetime(
-        2026, 8, 30, 10, 54, 0, 671000, tzinfo=datetime.timezone.utc
+        2026, 8, 30, 10, 54, 0, 671000, tzinfo=datetime.UTC
     )
     assert license_.last_position_updated_at == expected.timestamp()
 
