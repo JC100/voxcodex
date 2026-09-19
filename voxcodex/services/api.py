@@ -163,7 +163,18 @@ class AudibleAPI:
                     "library page %d returned %d items (requested %d)",
                     page, len(items), num_results,
                 )
-            books.extend(_book_from_item(item) for item in items)
+            for item in items:
+                if not item.get("asin"):
+                    # DataTable rows are keyed by asin (see LibraryScreen.
+                    # _refresh_table); a missing one would default to "" and
+                    # crash add_row with DuplicateKey the moment a second
+                    # ASIN-less item showed up. Better to drop the item (and
+                    # say so) than lose the whole library load to it.
+                    logger.warning(
+                        "library item missing asin, skipping: %r", item.get("title")
+                    )
+                    continue
+                books.append(_book_from_item(item))
             if page >= _MAX_LIBRARY_PAGES:
                 logger.warning(
                     "library pagination hit the %d-page safety limit "

@@ -215,6 +215,32 @@ def test_get_library_returns_empty_list_for_an_empty_library():
     assert len(client.get_calls) == 1
 
 
+def test_get_library_skips_items_with_no_asin(caplog):
+    # L7: DataTable rows are keyed by asin -- two items defaulting to ""
+    # would crash add_row with DuplicateKey the moment the second one
+    # rendered. Dropping them here is what keeps the rest of the library
+    # loading instead of losing the whole page to one bad item.
+    items = [
+        {"asin": "B001", "title": "Has an ASIN"},
+        {"asin": "", "title": "Missing ASIN"},
+        {"title": "No asin key at all"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "Missing ASIN" in caplog.text
+    assert "No asin key at all" in caplog.text
+
+
 # -- get_license -------------------------------------------------------
 
 

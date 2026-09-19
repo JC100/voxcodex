@@ -34,9 +34,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       import, not at call time. Both now take `path: Path | None = None`
       and resolve `config.SETTINGS_FILE`/`config.PROGRESS_CACHE_FILE`
       inside `__init__`.
-- [ ] L7 -- `table.add_row(key=book.asin)` (`screens/library.py`) can
-      raise `DuplicateKey` if `book.asin` is empty/missing. Skip
-      ASIN-less items at parse time.
+- [x] L7 -- `table.add_row(key=book.asin)` (`screens/library.py`) can
+      raise `DuplicateKey` if `book.asin` is empty/missing. `get_library`
+      now skips (and logs) ASIN-less items at parse time.
 - [ ] L8 -- `_reset` (`screens/login.py`) pops its own screen then pushes
       a replacement from inside that screen's button handler -- use
       `switch_screen` instead.
