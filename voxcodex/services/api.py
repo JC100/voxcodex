@@ -122,6 +122,19 @@ def parse_audible_timestamp(raw: Any) -> datetime | None:
         return None
 
 
+_VALID_QUALITIES = ("high", "normal")
+
+
+def _api_quality(quality: str) -> str:
+    """Maps our lowercase `quality` argument to the API's capitalized
+    value, raising on anything else -- `"High" if quality != "normal"
+    else "Normal"` silently mapped a typo (or any other unrecognized
+    value) to "High" instead."""
+    if quality not in _VALID_QUALITIES:
+        raise ValueError(f"quality must be one of {_VALID_QUALITIES!r}, got {quality!r}")
+    return "High" if quality == "high" else "Normal"
+
+
 class AudibleAPI:
     def __init__(self, auth: audible.Authenticator) -> None:
         self._auth = auth
@@ -189,7 +202,7 @@ class AudibleAPI:
     # -- licensing / download -----------------------------------------
 
     def get_license(self, asin: str, quality: str = "high") -> License:
-        api_quality = "High" if quality != "normal" else "Normal"
+        api_quality = _api_quality(quality)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
             "quality": api_quality,
@@ -313,7 +326,7 @@ class AudibleAPI:
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
         """
-        api_quality = "High" if quality != "normal" else "Normal"
+        api_quality = _api_quality(quality)
         params: dict[str, Any] = {
             "response_groups": "chapter_info",
             "quality": api_quality,

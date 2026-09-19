@@ -307,6 +307,26 @@ def test_get_license_posts_to_the_asin_specific_endpoint():
     assert path == "content/B12345/licenserequest"
 
 
+def test_get_license_accepts_normal_quality():
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    api.get_license("B001", quality="normal")
+
+    (_path, kwargs), = client.post_calls
+    assert kwargs["body"]["quality"] == "Normal"
+
+
+def test_get_license_rejects_an_unrecognized_quality():
+    # L12: this used to silently coerce any non-"normal" value (a typo
+    # included) to "High" instead of rejecting it.
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(ValueError, match="quality"):
+        api.get_license("B001", quality="hihg")
+
+
 def test_get_license_defaults_to_zero_position_when_absent():
     client = FakeAudibleClient(post_response=_license_response())
     api = _api_with_fake_client(client)
@@ -452,6 +472,24 @@ def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
     (path, kwargs), = client.calls
     assert path == "content/B12345/metadata"
     assert kwargs["response_groups"] == "chapter_info"
+
+
+def test_get_chapters_accepts_normal_quality():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    api.get_chapters("B001", quality="normal")
+
+    (_path, kwargs), = client.calls
+    assert kwargs["quality"] == "Normal"
+
+
+def test_get_chapters_rejects_an_unrecognized_quality():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(ValueError, match="quality"):
+        api.get_chapters("B001", quality="hihg")
 
 
 # -- push_last_position + set_finished ------------------------------------

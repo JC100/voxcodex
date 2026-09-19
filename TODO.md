@@ -49,9 +49,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       with a `_loading_theme` flag.
 - [x] L11 -- `import webbrowser` (`screens/login.py`,
       `_external_url_prompt`) is inside a function. Moved to module scope.
-- [ ] L12 -- `quality` (`services/api.py`, two call sites) silently
-      coerces any non-"normal" value to "High". Validate against the two
-      accepted values.
+- [x] L12 -- `quality` (`services/api.py`, two call sites) silently
+      coerced any non-"normal" value to "High". Added `_api_quality`,
+      shared by both, which raises `ValueError` on anything else.
 - [ ] L13 -- `downloads/` has no UI affordance for total size, bulk
       cleanup, or per-item size display.
 
