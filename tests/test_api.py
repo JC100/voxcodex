@@ -131,25 +131,30 @@ class FakeAudibleClient:
 
 def test_get_library_returns_parsed_books_for_a_single_page():
     client = FakeAudibleClient(
-        get_pages=[FakeJsonResponse({"items": [{"asin": "B001", "title": "Book One"}]})]
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "B001", "title": "Book One"}]}),
+            FakeJsonResponse({"items": []}),
+        ]
     )
     api = _api_with_fake_client(client)
 
     books = api.get_library()
 
     assert [b.asin for b in books] == ["B001"]
-    assert len(client.get_calls) == 1
+    assert len(client.get_calls) == 2
 
 
-def test_get_library_paginates_until_a_short_page():
-    # First page full of exactly num_results (1000) items triggers another
-    # fetch; the loop only stops once a page comes back shorter than that.
+def test_get_library_paginates_until_an_empty_page():
+    # M4: the loop only stops on a genuinely *empty* page -- a short-but-
+    # nonempty page (a server capping page size below `num_results`, say)
+    # must not be mistaken for "no more data" and silently truncate.
     full_page_items = [{"asin": f"B{i:04d}"} for i in range(1000)]
     short_page_items = [{"asin": "LAST"}]
     client = FakeAudibleClient(
         get_pages=[
             FakeJsonResponse({"items": full_page_items}),
             FakeJsonResponse({"items": short_page_items}),
+            FakeJsonResponse({"items": []}),
         ]
     )
     api = _api_with_fake_client(client)
@@ -158,9 +163,56 @@ def test_get_library_paginates_until_a_short_page():
 
     assert len(books) == 1001
     assert books[-1].asin == "LAST"
-    assert len(client.get_calls) == 2
+    assert len(client.get_calls) == 3
     assert client.get_calls[0][1]["page"] == 1
     assert client.get_calls[1][1]["page"] == 2
+    assert client.get_calls[2][1]["page"] == 3
+
+
+def test_get_library_stops_on_a_short_nonempty_final_page_too():
+    # The common case: the last page is short but still nonempty, and the
+    # *next* page comes back empty -- still just one extra request, not a
+    # truncation.
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "ONLY"}]}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert [b.asin for b in books] == ["ONLY"]
+    assert len(client.get_calls) == 2
+
+
+def test_get_library_stops_at_the_page_safety_limit_if_pages_never_go_empty():
+    from voxcodex.services import api as api_module
+
+    # Every page comes back "full" (a misbehaving server that never signals
+    # the end) -- the hard page cap is what stops this from looping forever.
+    pages = [
+        FakeJsonResponse({"items": [{"asin": f"P{page}-{i}"} for i in range(1000)]})
+        for page in range(api_module._MAX_LIBRARY_PAGES + 5)
+    ]
+    client = FakeAudibleClient(get_pages=pages)
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert len(client.get_calls) == api_module._MAX_LIBRARY_PAGES
+    assert len(books) == api_module._MAX_LIBRARY_PAGES * 1000
+
+
+def test_get_library_returns_empty_list_for_an_empty_library():
+    client = FakeAudibleClient(get_pages=[FakeJsonResponse({"items": []})])
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert books == []
+    assert len(client.get_calls) == 1
 
 
 # -- get_license -------------------------------------------------------

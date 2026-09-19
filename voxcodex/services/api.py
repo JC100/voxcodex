@@ -6,6 +6,7 @@ anywhere here.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,14 @@ from audible.aescipher import decrypt_voucher_from_licenserequest
 from audible.client import raise_for_status
 
 from voxcodex.models import Book
+
+logger = logging.getLogger(__name__)
+
+# Hard ceiling on library pages fetched in one go (at 1000 titles/page, a
+# 100,000-title library) -- if the server's pagination ever misbehaves such
+# that no page comes back empty, this is what stops get_library() looping
+# forever instead of a truncated-but-finite library.
+_MAX_LIBRARY_PAGES = 100
 
 LIBRARY_RESPONSE_GROUPS = (
     "contributors, customer_rights, media, product_attrs, product_desc, "
@@ -121,8 +130,25 @@ class AudibleAPI:
             )
             data = resp.json()
             items = data.get("items", [])
+            # An empty page -- not merely a short one -- is the only reliable
+            # "no more data" signal: a server that caps page size below
+            # `num_results` would otherwise make a short-but-nonempty page
+            # look like the end, silently truncating the library.
+            if not items:
+                break
+            if len(items) != num_results:
+                logger.debug(
+                    "library page %d returned %d items (requested %d)",
+                    page, len(items), num_results,
+                )
             books.extend(_book_from_item(item) for item in items)
-            if len(items) < num_results:
+            if page >= _MAX_LIBRARY_PAGES:
+                logger.warning(
+                    "library pagination hit the %d-page safety limit "
+                    "(%d titles fetched so far); stopping even though the "
+                    "last page wasn't empty",
+                    _MAX_LIBRARY_PAGES, len(books),
+                )
                 break
             page += 1
         return books
