@@ -90,7 +90,14 @@ _PROGRESS_DISPLAY_LABELS = {
 # best-effort push back to Audible's finished state. Audible's own clients mark
 # a title finished a hair before the very end too; 0.98 leaves room for
 # trailing credits/silence without needing a hard 100%.
+#
+# The "Finished"/"In progress" library filter uses this same threshold (as a
+# percent) rather than its own hardcoded 100% -- they used to disagree, so a
+# book synced at 98-99% complete (percent_complete from the library API, but
+# never actually played to the end *in this app*) showed as "in progress"
+# even though this app's own is_finished rule would call that finished.
 _FINISHED_FRACTION = 0.98
+_FINISHED_PCT = round(_FINISHED_FRACTION * 100)
 
 
 def _reached_end(position_ms: int, duration_ms: int) -> bool:
@@ -514,9 +521,9 @@ class LibraryScreen(Screen[None]):
         if self._filter_key == "downloaded":
             return book.is_downloaded
         if self._filter_key == "in_progress":
-            return not book.is_finished and 0 < book.progress_pct < 100
+            return not book.is_finished and 0 < book.progress_pct < _FINISHED_PCT
         if self._filter_key == "finished":
-            return book.is_finished or book.progress_pct >= 100
+            return book.is_finished or book.progress_pct >= _FINISHED_PCT
         if self._filter_key == "not_started":
             return not book.is_finished and book.progress_pct == 0
         return True  # "all"

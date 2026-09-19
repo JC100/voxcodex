@@ -40,9 +40,10 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L8 -- `_reset` (`screens/login.py`) pops its own screen then pushes
       a replacement from inside that screen's button handler. Switched to
       `switch_screen`.
-- [ ] L9 -- "Finished" is defined two ways: the library filter uses
+- [x] L9 -- "Finished" is defined two ways: the library filter used
       `progress_pct >= 100`, `_reached_end` uses `_FINISHED_FRACTION`
-      (98%). Use one constant in both.
+      (98%). Filter now uses `_FINISHED_PCT` (98), derived from the same
+      constant.
 - [ ] L10 -- `watch_theme` (`app.py`) writes to disk during `__init__`, so
       every launch does a settings write before the UI renders. Guard
       with a loading flag.

@@ -722,6 +722,28 @@ async def test_filter_in_progress_excludes_finished_and_not_started():
         assert [b.title for b in screen._filtered] == ["In progress"]
 
 
+async def test_filter_finished_includes_a_book_at_98_percent_never_played_here():
+    """L9: a book synced at 98% complete via the library API's own
+    percent_complete (but never actually played to the end *in this app*,
+    so is_finished is still False) used to fall through the "Finished"
+    filter's `>= 100` check and land in "In progress" instead -- despite
+    98% being this app's own definition of finished everywhere else
+    (_reached_end / _FINISHED_FRACTION)."""
+    almost_done = Book(asin="B1", title="Almost done", progress_ms=980, duration_ms=1000)
+    screen = LibraryScreen(FakeAPI([almost_done]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("f")
+        await pilot.press("f")
+        await pilot.press("f")  # all -> downloaded -> in_progress -> finished
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["Almost done"]
+
+
 async def test_filter_and_search_combine(monkeypatch):
     from textual.widgets import Input
 
