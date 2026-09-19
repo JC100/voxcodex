@@ -38,12 +38,12 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from voxcodex import config
-from voxcodex.services.api import AudibleAPI
+from voxcodex.services.api import AudibleAPI, parse_audible_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def positions_with_updated_at_from_annotations(
         if existing is None:
             continue
         asin, lph = existing
-        updated_at = _parse_last_updated(lph.get("last_updated"))
+        updated_at = parse_audible_timestamp(lph.get("last_updated"))
         if updated_at is None:
             continue
         try:
@@ -170,21 +170,12 @@ def most_recent_external_play(
         if existing is None:
             continue
         asin, lph = existing
-        updated_at = _parse_last_updated(lph.get("last_updated"))
+        updated_at = parse_audible_timestamp(lph.get("last_updated"))
         if updated_at is None:
             continue
         if best is None or updated_at > best[1]:
             best = (asin, updated_at)
     return best
-
-
-def _parse_last_updated(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
 
 
 def _existing_last_position_heard(

@@ -99,6 +99,7 @@ class FakeAPI:
     def __init__(
         self, books, chapters=None, chapters_exc=None, annotations_response=None,
         get_library_exc=None, license_acr="", license_exc=None,
+        license_last_position_ms=0, license_last_position_updated_at=None,
         push_position_exc=None, set_finished_exc=None,
     ):
         self._books = books
@@ -110,6 +111,8 @@ class FakeAPI:
         self._get_library_exc = get_library_exc
         self._license_acr = license_acr
         self._license_exc = license_exc
+        self._license_last_position_ms = license_last_position_ms
+        self._license_last_position_updated_at = license_last_position_updated_at
         self._push_position_exc = push_position_exc
         self._set_finished_exc = set_finished_exc
         self.push_position_calls = []
@@ -127,6 +130,8 @@ class FakeAPI:
         return License(
             asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
             acr=self._license_acr,
+            last_position_ms=self._license_last_position_ms,
+            last_position_updated_at=self._license_last_position_updated_at,
         )
 
     def push_last_position(self, asin, acr, position_ms):
@@ -976,6 +981,65 @@ async def test_playback_progress_is_persisted_when_the_player_is_closed(monkeypa
 
     assert screen.progress_store.get_position_ms("B1") == 512_000
     assert book.progress_ms == 512_000
+
+
+# -- license position at play time (L2) -------------------------------------
+
+
+async def test_play_uses_the_license_position_when_it_is_newer_than_local(monkeypatch):
+    """License.last_position_ms is fetched fresh at the moment of playback
+    -- more authoritative than whatever the library table showed from the
+    last full load. A book never played in this app (no local record at
+    all) should still pick it up."""
+    from voxcodex.screens import player_screen as player_screen_module
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.progress_ms = 0  # what the library table showed at load time
+    api = FakeAPI(
+        [book],
+        license_last_position_ms=250_000,
+        license_last_position_updated_at=time.time(),
+    )
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(lambda: book.progress_ms == 250_000)
+
+
+async def test_play_keeps_the_newer_local_position_over_an_older_license_position(
+    monkeypatch,
+):
+    from voxcodex.screens import player_screen as player_screen_module
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.progress_ms = 0
+    api = FakeAPI(
+        [book],
+        license_last_position_ms=900_000,
+        license_last_position_updated_at=1_000.0,  # older
+    )
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 100_000, updated_at=time.time())  # newer
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(lambda: len(api.license_calls) == 1)
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert book.progress_ms == 100_000
 
 
 # -- sync-failure status (M6) ----------------------------------------------

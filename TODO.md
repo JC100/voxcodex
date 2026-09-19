@@ -15,8 +15,10 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 
 - [x] L1 -- `MessageModal` (`screens/modals.py`) is dead code: defined and
       tested, never instantiated in production. Deleted it and its test.
-- [ ] L2 -- `License.last_position_ms` (`services/api.py`) is fetched but
-      never read. Use it in `_launch_player`, or drop the field.
+- [x] L2 -- `License.last_position_ms` (`services/api.py`) is fetched but
+      never read. Resolved against the local position by recency (same
+      `_resolve_progress_ms` M5 added) right before opening a streaming
+      title in `_open_player`.
 - [ ] L3 -- `set_finished(asin, False)` (`screens/library.py`) is
       unreachable -- no UI un-finishes a book.
 - [ ] L4 -- `on_authenticated` (`app.py`) is a plain method called

@@ -218,7 +218,10 @@ def test_get_library_returns_empty_list_for_an_empty_library():
 # -- get_license -------------------------------------------------------
 
 
-def _license_response(status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None):
+def _license_response(
+    status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None,
+    last_updated=None,
+):
     content_license = {
         "status_code": status_code,
         "content_metadata": {
@@ -227,7 +230,10 @@ def _license_response(status_code="Granted", content_url="https://cdn/x.aaxc", p
         },
     }
     if position_ms is not None:
-        content_license["last_position_heard"] = {"position_ms": position_ms}
+        lph = {"position_ms": position_ms}
+        if last_updated is not None:
+            lph["last_updated"] = last_updated
+        content_license["last_position_heard"] = lph
     return {"content_license": content_license}
 
 
@@ -282,6 +288,34 @@ def test_get_license_defaults_to_zero_position_when_absent():
     license_ = api.get_license("B001")
 
     assert license_.last_position_ms == 0
+    assert license_.last_position_updated_at is None
+
+
+def test_get_license_extracts_last_position_updated_at():
+    import datetime
+
+    client = FakeAudibleClient(
+        post_response=_license_response(
+            position_ms=221_643, last_updated="2026-08-30 10:54:00.671"
+        )
+    )
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    expected = datetime.datetime(
+        2026, 8, 30, 10, 54, 0, 671000, tzinfo=datetime.timezone.utc
+    )
+    assert license_.last_position_updated_at == expected.timestamp()
+
+
+def test_get_license_position_updated_at_none_without_a_timestamp():
+    client = FakeAudibleClient(post_response=_license_response(position_ms=1000))
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.last_position_updated_at is None
 
 
 def test_get_license_extracts_acr_from_content_reference():

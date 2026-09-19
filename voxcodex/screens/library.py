@@ -656,6 +656,19 @@ class LibraryScreen(Screen[None]):
                 license_ = self.api.get_license(book.asin)
                 source, key, iv = license_.content_url, license_.key, license_.iv
                 acr = license_.acr
+                # The license response's own last_position_heard is the
+                # most authoritative resume position available -- fetched
+                # fresh at the moment of playback, not at library-load
+                # time. Resolve it against the local position the same way
+                # _apply_local_state does on load: by recency, not by
+                # magnitude (see _resolve_progress_ms).
+                book.progress_ms = _resolve_progress_ms(
+                    book.progress_ms,
+                    self.progress_store.get_position_ms(book.asin),
+                    self.progress_store.get_updated_at(book.asin),
+                    license_.last_position_ms,
+                    license_.last_position_updated_at,
+                )
         except _PLAYER_OPEN_ERRORS as exc:
             self.app.call_from_thread(self._player_open_failed, str(exc))
             return

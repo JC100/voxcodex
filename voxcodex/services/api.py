@@ -85,6 +85,11 @@ class License:
     key: str
     iv: str
     last_position_ms: int = 0
+    # Unix timestamp `last_position_ms` was recorded, or None if the
+    # response didn't include one -- lets a caller compare this against a
+    # locally-tracked position by recency (see LibraryScreen._open_player),
+    # the same way progress.py resolves local vs. remote on library load.
+    last_position_updated_at: float | None = None
     # Per-content identifier `push_last_position` needs to write a position
     # back to Audible's cross-device sync. Empty when a response doesn't
     # include it -- callers must treat that as "can't push for this title".
@@ -101,6 +106,20 @@ class Chapter:
 def _full_response(resp: httpx.Response) -> httpx.Response:
     raise_for_status(resp)
     return resp
+
+
+def parse_audible_timestamp(raw: Any) -> datetime | None:
+    """Parses the timestamp format Audible uses for `last_updated` fields
+    (e.g. on a `last_position_heard` record), or None if `raw` is missing
+    or doesn't match. Shared with services.progress, which compares these
+    against a local ProgressStore timestamp to resolve a position by
+    recency rather than by magnitude."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
 
 
 class AudibleAPI:
@@ -194,9 +213,12 @@ class AudibleAPI:
             iv = voucher.get("iv", "")
 
         last_position_ms = 0
+        last_position_updated_at = None
         lph = content_license.get("last_position_heard") or {}
         if isinstance(lph, dict) and "position_ms" in lph:
             last_position_ms = int(lph["position_ms"])
+            parsed = parse_audible_timestamp(lph.get("last_updated"))
+            last_position_updated_at = parsed.timestamp() if parsed is not None else None
 
         return License(
             asin=asin,
@@ -205,6 +227,7 @@ class AudibleAPI:
             key=key,
             iv=iv,
             last_position_ms=last_position_ms,
+            last_position_updated_at=last_position_updated_at,
             acr=acr,
         )
 
