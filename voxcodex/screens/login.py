@@ -164,8 +164,7 @@ class LoginScreen(Screen[None]):
     @on(Button.Pressed, "#reset")
     def _reset(self) -> None:
         auth.logout()
-        self.app.pop_screen()
-        self.app.push_screen(LoginScreen(unlock_only=False))
+        self.app.switch_screen(LoginScreen(unlock_only=False))
 
     @on(Button.Pressed, "#quit")
     def _quit_pressed(self) -> None:

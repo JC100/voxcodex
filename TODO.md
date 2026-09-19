@@ -37,9 +37,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L7 -- `table.add_row(key=book.asin)` (`screens/library.py`) can
       raise `DuplicateKey` if `book.asin` is empty/missing. `get_library`
       now skips (and logs) ASIN-less items at parse time.
-- [ ] L8 -- `_reset` (`screens/login.py`) pops its own screen then pushes
-      a replacement from inside that screen's button handler -- use
-      `switch_screen` instead.
+- [x] L8 -- `_reset` (`screens/login.py`) pops its own screen then pushes
+      a replacement from inside that screen's button handler. Switched to
+      `switch_screen`.
 - [ ] L9 -- "Finished" is defined two ways: the library filter uses
       `progress_pct >= 100`, `_reached_end` uses `_FINISHED_FRACTION`
       (98%). Use one constant in both.

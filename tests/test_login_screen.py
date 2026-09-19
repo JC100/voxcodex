@@ -202,10 +202,21 @@ async def test_reset_logs_out_and_shows_a_fresh_login_form(monkeypatch):
     app = HostApp(screen)
 
     async with app.run_test() as pilot:
+        depth_before = len(app.screen_stack)
+
         await pilot.click("#reset")
         await pilot.pause()
 
         assert logout_calls == [1]
+        # L8: switch_screen replaces the top of the stack -- a pop followed
+        # by a push (the old code) nets out to the same depth too, but only
+        # switch_screen does it as one atomic step with no frame in between
+        # where the stack is briefly empty (or, from another thread, could
+        # be acted on mid-swap).
+        assert len(app.screen_stack) == depth_before
+        assert isinstance(app.screen, LoginScreen)
+        assert app.screen is not screen  # a genuinely fresh LoginScreen
+        assert not app.screen._unlock_only  # logging out always resets to full login
         new_screen = app.screen
         assert isinstance(new_screen, LoginScreen)
         assert new_screen is not screen
