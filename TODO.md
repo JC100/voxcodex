@@ -56,6 +56,17 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       downloaded size in the sort/filter label, and a "X" (delete finished
       downloads) bulk-cleanup keybinding.
 
+## Known flaky tests
+
+- `tests/test_player_screen.py::test_poll_worker_reads_mpv_off_the_event_loop_and_renders`
+  failed once in CI on Python 3.10 (`assert True is False` at
+  `test_player_screen.py:872`), on a run from before this session's L-item
+  work -- not reproduced locally or on any other CI run seen so far.
+  Pre-existing, unrelated to the 2026-08-31 review. If it recurs: it's
+  timing-sensitive (event-loop-vs-thread-poll ordering), so look there
+  first rather than assuming a fresh regression. Not investigated further
+  yet because it's a single occurrence.
+
 ## Keeping this file current
 
 Whenever a task here is finished, check it off (or delete it) in the same

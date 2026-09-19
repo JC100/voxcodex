@@ -22,6 +22,10 @@ finding, doesn't matter which:
 5. If this closes, advances, or contradicts anything in `TODO.md`, update
    `TODO.md` in the same commit — never a separate "update the TODO" pass.
 6. Commit, then push.
+7. Check that CI actually went green (`gh run list` / `gh run view` on the
+   branch) — a clean local run does not guarantee this (see Dev environment
+   below). Don't consider the work item done on the strength of the local
+   run alone.
 
 ## Testing
 - Tests are allowed to fail — a failing test is a signal of real work still
@@ -46,6 +50,20 @@ finding, doesn't matter which:
   (`.venv-dev/bin/pytest`, `.venv-dev/bin/ruff`, `.venv-dev/bin/mypy`) for
   all local checks. The plain `.venv` and the system Python don't have
   these.
+- `.venv-dev` runs Python 3.12, one point release among several in CI's
+  test matrix (currently 3.11-3.13; see `.github/workflows/tests.yml`). A
+  dependency can resolve to a *different* version per interpreter (pip
+  picks the newest release compatible with that specific Python) — so a
+  clean local run does not prove every CI Python version passes. Hit this
+  for real: `audible>=0.11` (needed for `audible.exceptions.AudibleError`,
+  used since the M7 fix) requires Python>=3.11 itself, so at the time 3.10
+  was still in the matrix it silently resolved the two-versions-old
+  `audible==0.10.0` instead — which lacked that class entirely, breaking
+  every 3.10 CI run (and the real app under 3.10) for 18 consecutive
+  commits before anyone checked CI. Python 3.10 support was dropped as the
+  fix (see git log around that date) rather than pinning to the older
+  dependency surface forever. Lesson: check CI (step 7 of Definition of
+  done above), don't just trust a green local run.
 
 ## Project structure
 - `voxcodex/screens/` — Textual screens (UI): library, login, player,
