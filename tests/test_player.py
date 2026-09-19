@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import stat
 import threading
@@ -161,6 +162,7 @@ class FakeMpv:
     handling, teardown) without a real mpv binary."""
 
     def __init__(self, cmd):
+        self.cmd = cmd
         socket_path = next(
             arg.split("=", 1)[1] for arg in cmd if arg.startswith("--input-ipc-server=")
         )
@@ -253,6 +255,35 @@ def test_start_uses_a_private_0700_temp_dir_and_removes_it_on_stop(fake_mpv):
     assert not tmp_dir.exists()
     assert p._dir is None and p._socket_path is None
     assert p.is_running is False
+
+
+# -- key/iv never on the command line (M8) ---------------------------------
+
+
+def test_start_never_puts_the_key_or_iv_on_the_command_line(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "top-secret-key", "top-secret-iv")
+
+    cmd_str = " ".join(fake_mpv[-1].cmd)
+    assert "top-secret-key" not in cmd_str
+    assert "top-secret-iv" not in cmd_str
+
+    p.stop()
+
+
+def test_start_passes_the_key_and_iv_via_a_private_include_file(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "thekey", "theiv")
+
+    include_arg = next(arg for arg in fake_mpv[-1].cmd if arg.startswith("--include="))
+    options_path = include_arg.split("=", 1)[1]
+    assert stat.S_IMODE(os.stat(options_path).st_mode) == 0o600
+    contents = open(options_path).read()
+    assert "audible_key=thekey" in contents
+    assert "audible_iv=theiv" in contents
+
+    p.stop()
+    assert not os.path.exists(options_path)  # cleaned up with the rest of _dir
 
 
 def test_commands_round_trip_over_the_real_socket(fake_mpv):

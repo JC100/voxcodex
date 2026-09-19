@@ -8,13 +8,17 @@ decrypt-to-disk step is needed for either streaming or local playback.
 The IPC socket lives in a private, per-instance `mkdtemp` directory (mode
 0700) rather than a guessable path in shared `/tmp` -- mpv's JSON IPC can
 run arbitrary programs, so anyone able to connect to the socket would get
-code execution as the user running VoxCodex.
+code execution as the user running VoxCodex. The same directory holds the
+key/iv themselves: `/proc/<pid>/cmdline` is world-readable, so they're
+written to a private (0600) mpv config file and handed to mpv via
+`--include=` rather than ever appearing in argv.
 """
 
 from __future__ import annotations
 
 import itertools
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -30,6 +34,15 @@ class MpvNotFoundError(Exception):
 
 class MpvError(Exception):
     pass
+
+
+def _write_private_file(path: Path, text: str) -> None:
+    """Writes `text` to `path`, created (or truncated) at 0600 -- the parent
+    mkdtemp directory is already 0700, but this is written defensively in
+    case that ever changes."""
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
 
 
 class MpvPlayer:
@@ -66,7 +79,12 @@ class MpvPlayer:
         self._dir = Path(tempfile.mkdtemp(prefix="voxcodex-mpv-"))
         self._socket_path = self._dir / "mpv.sock"
 
-        lavf_opts = f"audible_key={key},audible_iv={iv}"
+        # The key/iv never touch argv (see module docstring): they go in a
+        # private mpv config file instead, in the same directory as the IPC
+        # socket so it's cleaned up by the same rmtree in stop().
+        options_path = self._dir / "options.conf"
+        _write_private_file(options_path, f"demuxer-lavf-o=audible_key={key},audible_iv={iv}\n")
+
         cmd = [
             "mpv",
             "--no-video",
@@ -76,7 +94,7 @@ class MpvPlayer:
             "--idle=once",
             "--force-seekable=yes",
             f"--input-ipc-server={self._socket_path}",
-            f"--demuxer-lavf-o={lavf_opts}",
+            f"--include={options_path}",
             source,
         ]
         if start_seconds > 0:
