@@ -1,0 +1,717 @@
+<title>VoxCodex Code Review</title>
+<meta name="description" content="Outside-eye review of VoxCodex v0.3.0: 4 critical, 10 high, and further findings, mostly at the thread-worker boundary." />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap');
+
+  :root {
+    --ground: #f7f5f1;
+    --surface: #fffefb;
+    --sunken: #efece4;
+    --ink: #201e19;
+    --ink-soft: #5a544a;
+    --ink-faint: #8b8577;
+    --rule: #e2ddd1;
+    --rule-strong: #cfc8b8;
+    --accent: #9c5f28;
+    --accent-ink: #7f4d20;
+    --accent-soft: #f3e8d9;
+
+    --sev-critical: #b02a1f;
+    --sev-high: #b46310;
+    --sev-medium: #86691d;
+    --sev-low: #4d7350;
+    --sev-info: #37696e;
+
+    --sev-critical-bg: #f7e2df;
+    --sev-high-bg: #f6e7d5;
+    --sev-medium-bg: #f2ebd6;
+    --sev-low-bg: #e4ede2;
+    --sev-info-bg: #dfebec;
+
+    --shadow: 0 1px 2px rgba(31, 27, 18, .04), 0 6px 20px -12px rgba(31, 27, 18, .18);
+
+    --measure: 68ch;
+    --step--1: clamp(.82rem, .8rem + .1vw, .88rem);
+    --step-0: 1.02rem;
+    --step-1: 1.24rem;
+    --step-2: 1.6rem;
+    --step-3: 2.1rem;
+    --step-4: clamp(2.4rem, 1.9rem + 2.2vw, 3.4rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #161511;
+      --surface: #1e1c17;
+      --sunken: #13120e;
+      --ink: #ece7db;
+      --ink-soft: #b1a996;
+      --ink-faint: #837c6b;
+      --rule: #322e25;
+      --rule-strong: #443f33;
+      --accent: #db984f;
+      --accent-ink: #e7ac68;
+      --accent-soft: #2f2619;
+
+      --sev-critical: #e46b5c;
+      --sev-high: #e0953f;
+      --sev-medium: #cdb356;
+      --sev-low: #7fae7c;
+      --sev-info: #63a9af;
+
+      --sev-critical-bg: #35211d;
+      --sev-high-bg: #33271a;
+      --sev-medium-bg: #302a19;
+      --sev-low-bg: #1f2a1f;
+      --sev-info-bg: #1a2a2b;
+
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -16px rgba(0, 0, 0, .6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #161511;
+    --surface: #1e1c17;
+    --sunken: #13120e;
+    --ink: #ece7db;
+    --ink-soft: #b1a996;
+    --ink-faint: #837c6b;
+    --rule: #322e25;
+    --rule-strong: #443f33;
+    --accent: #db984f;
+    --accent-ink: #e7ac68;
+    --accent-soft: #2f2619;
+
+    --sev-critical: #e46b5c;
+    --sev-high: #e0953f;
+    --sev-medium: #cdb356;
+    --sev-low: #7fae7c;
+    --sev-info: #63a9af;
+
+    --sev-critical-bg: #35211d;
+    --sev-high-bg: #33271a;
+    --sev-medium-bg: #302a19;
+    --sev-low-bg: #1f2a1f;
+    --sev-info-bg: #1a2a2b;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -16px rgba(0, 0, 0, .6);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 78ch;
+    margin: 0 auto;
+    padding: 0 clamp(1.1rem, 5vw, 3.2rem) 6rem;
+  }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    line-height: 1.18;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .mono {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  /* ---- masthead ---- */
+
+  header.masthead {
+    padding: clamp(3rem, 8vw, 5.5rem) 0 2.2rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0 0 1rem;
+  }
+
+  h1 {
+    font-size: var(--step-4);
+    font-weight: 700;
+    letter-spacing: -.02em;
+  }
+
+  .dek {
+    margin: 1.1rem 0 0;
+    max-width: var(--measure);
+    color: var(--ink-soft);
+    font-size: var(--step-1);
+    line-height: 1.5;
+  }
+
+  .runline {
+    margin-top: 1.8rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1.4rem;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    color: var(--ink-faint);
+  }
+  .runline b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---- generic prose ---- */
+
+  section.prose { margin-top: 3.4rem; }
+  section.prose > p { max-width: var(--measure); }
+  p { margin: 0 0 1.1rem; }
+
+  h2 {
+    font-size: var(--step-2);
+    font-weight: 600;
+    letter-spacing: -.01em;
+    padding-bottom: .5rem;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 1.6rem;
+  }
+
+  a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+  /* ---- method note ---- */
+
+  .note {
+    margin-top: 2.4rem;
+    background: var(--sunken);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1.2rem 1.4rem;
+    font-size: var(--step--1);
+    line-height: 1.6;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+  }
+  .note b { color: var(--ink); font-family: "IBM Plex Sans", sans-serif; }
+
+  /* ---- summary table ---- */
+
+  .summary {
+    margin-top: 1.4rem;
+    width: 100%;
+    border-collapse: collapse;
+    font-family: "IBM Plex Sans", sans-serif;
+  }
+  .summary th, .summary td {
+    text-align: left;
+    padding: .7rem .8rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .summary thead th {
+    font-size: var(--step--1);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .summary td.count {
+    font-family: "IBM Plex Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    width: 3.5rem;
+  }
+  .summary td.what { color: var(--ink-soft); font-size: var(--step--1); line-height: 1.5; }
+  .summary tr:last-child td { border-bottom: none; }
+
+  /* ---- severity chip ---- */
+
+  .chip {
+    display: inline-block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: .18em .6em;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip.critical { background: var(--sev-critical-bg); color: var(--sev-critical); }
+  .chip.high     { background: var(--sev-high-bg);     color: var(--sev-high); }
+  .chip.medium   { background: var(--sev-medium-bg);   color: var(--sev-medium); }
+  .chip.low      { background: var(--sev-low-bg);      color: var(--sev-low); }
+  .chip.info     { background: var(--sev-info-bg);     color: var(--sev-info); }
+
+  /* ---- findings ---- */
+
+  .findings { margin-top: 1.2rem; display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--bar, var(--rule-strong));
+    border-radius: 3px;
+    padding: 1.3rem 1.4rem 1.4rem;
+    box-shadow: var(--shadow);
+  }
+  .finding.crit { --bar: var(--sev-critical); }
+  .finding.hi   { --bar: var(--sev-high); }
+  .finding.med  { --bar: var(--sev-medium); }
+  .finding.lo   { --bar: var(--sev-low); }
+
+  .finding-head {
+    display: flex;
+    align-items: baseline;
+    gap: .7rem;
+    flex-wrap: wrap;
+    margin-bottom: .2rem;
+  }
+  .finding-id {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: var(--step--1);
+    color: var(--ink-faint);
+  }
+  .finding h3 {
+    font-size: var(--step-1);
+    font-weight: 600;
+    flex: 1 1 20ch;
+    letter-spacing: -.005em;
+  }
+
+  .loc {
+    display: block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    color: var(--accent-ink);
+    margin: .55rem 0 .9rem;
+    word-break: break-word;
+  }
+
+  .finding p { margin: 0 0 .8rem; font-size: .96rem; line-height: 1.58; }
+  .finding p:last-child { margin-bottom: 0; }
+
+  .fix {
+    margin-top: .9rem;
+    padding-top: .8rem;
+    border-top: 1px dashed var(--rule-strong);
+    font-size: .93rem;
+  }
+  .fix b {
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: .72rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin-bottom: .25rem;
+  }
+
+  code {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .86em;
+    background: var(--sunken);
+    padding: .1em .35em;
+    border-radius: 2px;
+    border: 1px solid var(--rule);
+  }
+
+  /* ---- compact list sections (low / nits) ---- */
+
+  ul.tight { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .9rem; }
+  ul.tight li {
+    padding-left: 1.1rem;
+    position: relative;
+    max-width: var(--measure);
+    font-size: .96rem;
+    line-height: 1.55;
+  }
+  ul.tight li::before {
+    content: "";
+    position: absolute;
+    left: 0; top: .62em;
+    width: .4rem; height: .4rem;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  ul.tight li .tag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    color: var(--accent-ink);
+  }
+
+  /* ---- solid / positives ---- */
+
+  .solid {
+    background: var(--sev-low-bg);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1.3rem 1.5rem;
+    max-width: var(--measure);
+  }
+  .solid ul { margin: .6rem 0 0; padding-left: 1.1rem; }
+  .solid li { margin-bottom: .5rem; font-size: .94rem; line-height: 1.5; }
+
+  /* ---- ordered plan ---- */
+
+  ol.plan { margin: 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 1rem; }
+  ol.plan li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2.2rem 1fr;
+    gap: .9rem;
+    max-width: var(--measure);
+    font-size: .96rem;
+    line-height: 1.55;
+  }
+  ol.plan li::before {
+    content: counter(step);
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-radius: 3px;
+    height: 2.2rem;
+    display: grid;
+    place-items: center;
+  }
+  ol.plan li b { font-family: "IBM Plex Sans", sans-serif; }
+
+  hr.div { border: none; border-top: 1px solid var(--rule); margin: 3.4rem 0 0; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  @media (max-width: 560px) {
+    ol.plan li { grid-template-columns: 1.8rem 1fr; }
+    .summary th:nth-child(3), .summary td:nth-child(3) { display: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Outside-eye review</p>
+    <h1>VoxCodex Code Review</h1>
+    <p class="dek">A terminal UI for an existing Audible library. The architecture is clean and the pure-logic layer is genuinely well tested &mdash; nearly every finding below lives at the <b>thread-worker boundary</b> or in the <b>on-disk artifacts</b>, the two areas the test suite does not reach.</p>
+    <div class="runline">
+      <span><b>commit</b> 42cb8d5</span>
+      <span><b>version</b> 0.3.0</span>
+      <span><b>reviewed</b> 2026-08-31</span>
+      <span><b>tests</b> 248 passing (~60s)</span>
+      <span><b>scope</b> ~1,900 LoC app / ~3,400 LoC test</span>
+    </div>
+  </header>
+
+  <section class="prose">
+    <p class="note"><b>How this was done.</b> Two independent passes read every file in <code>voxcodex/</code> plus the tests and <code>docs/</code>: a primary review and a second pass on a different model that verified claims against the installed <code>textual&nbsp;8.2.8</code> / <code>audible&nbsp;0.12.0</code> sources and against the live install under <code>~/.local/share/voxcodex/</code>. Findings are merged and de-duplicated here, ordered by severity. IDs (C1, H3&hellip;) are just labels for reference in follow-up work.</p>
+  </section>
+
+  <section class="prose" id="summary">
+    <h2>Summary</h2>
+    <table class="summary">
+      <thead>
+        <tr><th>Severity</th><th>Count</th><th>Character of the findings</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="chip critical">Critical</span></td>
+          <td class="count">4</td>
+          <td class="what">Data/credential exposure in logs; worker cancellation that doesn't cancel; app-killing exceptions; an orphaned mpv process.</td>
+        </tr>
+        <tr>
+          <td><span class="chip high">High</span></td>
+          <td class="count">10</td>
+          <td class="what">Guessable IPC socket with code-exec reach; racing settings writers; lost playback progress; fd/process leaks; blocking the event loop; a hang-on-exit; an unsatisfiable dependency floor.</td>
+        </tr>
+        <tr>
+          <td><span class="chip medium">Medium</span></td>
+          <td class="count">10</td>
+          <td class="what">O(N&sup2;) background refresh; loose file permissions; orphan <code>.part</code> files; fragile pagination; monotonic progress; invisible sync failures; no linter / type-checker / concurrency tests.</td>
+        </tr>
+        <tr>
+          <td><span class="chip low">Low</span></td>
+          <td class="count">13</td>
+          <td class="what">Dead code, an unused authoritative value, unreachable branches, per-keystroke table rebuilds, small correctness seams.</td>
+        </tr>
+        <tr>
+          <td><span class="chip info">Nits</span></td>
+          <td class="count">8</td>
+          <td class="what">Committed scratch code with personal paths, a live account identifier in docs, README drift, deprecation warnings.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ CRITICAL ============ -->
+  <section class="prose" id="critical">
+    <h2>Critical</h2>
+    <div class="findings">
+
+      <article class="finding crit">
+        <div class="finding-head"><span class="finding-id">C1</span><h3>DEBUG logging writes full API response bodies to a world-readable, never-rotated file</h3></div>
+        <span class="loc">voxcodex/app.py:57&ndash;68 &nbsp;&middot;&nbsp; _setup_logging()</span>
+        <p>The logger tree turns on <code>DEBUG</code> for <code>audible.client</code>, which logs the <em>entire response body of every request</em>. That puts the <code>content/{asin}/licenserequest</code> response &mdash; carrying the encrypted AES voucher (<code>license_response</code>) and the signed CDN <code>offline_url</code> &mdash; in plaintext on disk, next to the complete library JSON and every <code>annotations/lastpositions</code> response. <code>audible.auth</code> at INFO logs the account username; <code>voxcodex.auth._log_cvf_page</code> logs every form input <em>value</em> on Amazon's identity-verification page (where hidden session tokens live).</p>
+        <p>On the live install the file is <code>voxcodex.log</code>, ~767&nbsp;KB and growing, mode <code>0644</code> in a <code>0755</code> directory, with no <code>RotatingFileHandler</code>, no size cap, no off switch, and no mention in the README. The comment at <code>app.py:64</code> &mdash; &ldquo;Nothing here logs credentials in plaintext&rdquo; &mdash; is false as written.</p>
+        <div class="fix"><b>Fix</b>Default the tree to <code>WARNING</code>; gate the <code>audible.*</code> DEBUG behind an explicit opt-in (<code>VOXCODEX_DEBUG=1</code>) that warns the log will contain response bodies. Use <code>RotatingFileHandler(maxBytes=1_000_000, backupCount=2)</code>, create the file via <code>os.open(&hellip;, 0o600)</code>, redact <code>value</code> in <code>_log_cvf_page</code> to a length indicator, and correct the comment.</div>
+      </article>
+
+      <article class="finding crit">
+        <div class="finding-head"><span class="finding-id">C2</span><h3>Three unrelated <code>exclusive=True</code> workers share the default group and cancel each other &mdash; and thread-worker cancellation does nothing</h3></div>
+        <span class="loc">voxcodex/screens/library.py:176 (_fetch_library), :441 (_do_download), :495 (_open_player)</span>
+        <p>All three use <code>@work(thread=True, exclusive=True)</code> with no <code>group=</code>, so they land in Textual's <code>"default"</code> group on the same node. Starting any one cancels the others: pressing <code>p</code> cancels an in-flight download, <code>d</code> cancels a library refresh, <code>r</code> cancels both.</p>
+        <p>And the cancellation is cosmetic &mdash; a thread worker runs in an executor and completes regardless; <code>Worker.cancel()</code> only flags it. No worker here checks <code>get_current_worker().is_cancelled</code>. So pressing <code>p</code> twice quickly pushes <em>two</em> <code>PlayerScreen</code>s and starts two mpv processes playing at once; two quick <code>d</code> presses run two downloads feeding interleaved updates into the single progress bar; <code>r</code> mid-download lets a &ldquo;cancelled&rdquo; worker still flip <code>book.is_downloaded</code> on a <code>Book</code> the refresh already replaced.</p>
+        <div class="fix"><b>Fix</b>Give each worker its own <code>group=</code> (<code>"library"</code>, <code>"download"</code>, <code>"player"</code>). Then add a real <code>if get_current_worker().is_cancelled: return</code> at the top of every loop iteration and before every <code>call_from_thread</code>.</div>
+      </article>
+
+      <article class="finding crit">
+        <div class="finding-head"><span class="finding-id">C3</span><h3>Any uncaught exception in a thread worker tears down the whole app, and every worker has <code>call_from_thread</code> calls outside its <code>try</code></h3></div>
+        <span class="loc">voxcodex/screens/library.py:252, :456, :532 &nbsp;&middot;&nbsp; player_screen.py:115</span>
+        <p><code>@work</code> defaults to <code>exit_on_error=True</code>; on failure Textual calls <code>_handle_exception</code> and shows a traceback. The <code>try</code> blocks in these workers wrap only the network call &mdash; the <code>call_from_thread(self._refresh_table)</code> / <code>_download_succeeded</code> / <code>_launch_player</code> / <code>_start_succeeded</code> that follow are unguarded. If the screen was popped, <code>query_one(&hellip;)</code> raises <code>NoMatches</code> on the worker thread; if the app is shutting down, <code>call_from_thread</code> raises <code>RuntimeError</code>. Quitting while the background chapter fetch walks a large library (one HTTP call <em>per book</em>, minutes of runtime) reliably produces a crash dump instead of a clean exit.</p>
+        <div class="fix"><b>Fix</b>Pass <code>exit_on_error=False</code> and guard each callback with <code>if not self.is_running or get_current_worker().is_cancelled: return</code>, logging failures rather than raising.</div>
+      </article>
+
+      <article class="finding crit">
+        <div class="finding-head"><span class="finding-id">C4</span><h3>mpv is orphaned if the player screen closes while it is still starting &mdash; and <code>--idle=yes</code> means it never exits on its own</h3></div>
+        <span class="loc">voxcodex/screens/player_screen.py:106&ndash;115 &nbsp;&middot;&nbsp; services/player.py:55</span>
+        <p><code>self._player = player</code> is assigned only <em>after</em> <code>player.start()</code>, which blocks up to 8&nbsp;s inside <code>_connect</code>. During that whole window <code>action_close</code> and <code>on_unmount</code> see <code>self._player is None</code> and stop nothing. The worker then finishes, binds the player to a screen that no longer exists, and nobody ever calls <code>stop()</code>. Because the mpv command line carries <code>--idle=yes</code>, mpv does not exit at end-of-file either &mdash; the result is a permanently orphaned process holding the audio device, and the user's only recourse is <code>pkill mpv</code>.</p>
+        <div class="fix"><b>Fix</b>Assign <code>self._player = player</code> <em>before</em> <code>player.start()</code>; have the worker re-check <code>is_cancelled</code> / <code>is_running</code> after <code>start()</code> and call <code>stop()</code> itself if the screen went away. Use <code>--idle=once</code>. In <code>MpvPlayer.start()</code>, wrap <code>_connect()</code> so a failed connect kills the subprocess it just spawned.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ HIGH ============ -->
+  <section class="prose" id="high">
+    <h2>High</h2>
+    <div class="findings">
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H1</span><h3>The mpv IPC socket is a guessable path in shared <code>/tmp</code> with default permissions</h3></div>
+        <span class="loc">voxcodex/services/player.py:38, :47&ndash;48</span>
+        <p><code>Path(tempfile.gettempdir()) / f"voxcodex-mpv-{id(self)}.sock"</code>. <code>id(self)</code> is a CPython address &mdash; low-entropy, repeatable across runs, reused after GC &mdash; never a secret. mpv creates the socket honoring the process umask, so it typically lands <code>srwxr-xr-x</code>, and mpv's JSON IPC includes the <code>run</code> command, which executes arbitrary programs: any local user who connects gets code execution as you. The <code>if exists(): unlink()</code> just above is a TOCTOU on a sticky directory, and the <code>unlink</code> is outside any <code>try</code>.</p>
+        <div class="fix"><b>Fix</b><code>self._dir = tempfile.mkdtemp(prefix="voxcodex-")</code> (0700 by construction), socket inside it, <code>shutil.rmtree(&hellip;, ignore_errors=True)</code> in <code>stop()</code>. Removes the guessability, the exposure, and the TOCTOU together.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H2</span><h3>Three independent <code>Settings()</code> instances each rewrite the whole file &rarr; silent lost updates</h3></div>
+        <span class="loc">voxcodex/app.py:32 &nbsp;&middot;&nbsp; screens/library.py:120 &nbsp;&middot;&nbsp; screens/player_screen.py:86</span>
+        <p>Each <code>Settings</code> loads its own full copy of <code>settings.json</code> at construction, and every setter serializes <em>that</em> copy &mdash; no reload, no merge. The app's copy is loaded once at startup and never refreshed, so: cycle the sort in the library (its copy writes <code>library_sort_key</code>), then change the theme via the command palette &rarr; <code>watch_theme</code> writes the app's <em>stale</em> copy and silently reverts the sort. Same between library and player for <code>playback_speed</code>/<code>volume</code>. Compounding it, <code>_fetch_library</code> calls <code>set_last_played_externally</code> from a worker thread while the main thread may be mid-write &mdash; two <code>Path.write_text</code> calls on one file, non-atomic, can interleave and truncate (recovered as <code>{}</code>, i.e. all settings reset).</p>
+        <div class="fix"><b>Fix</b>One shared <code>Settings</code> owned by the app and passed down. Read-modify-write (or re-read before save) in every setter, guarded by a <code>threading.Lock</code>. Write atomically everywhere (<code>settings.py:44</code>, <code>progress.py:63</code>, <code>library_cache.py:30</code>): temp file + <code>os.replace</code>.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H3</span><h3>Playback position is lost unless you exit the player with <code>q</code>/<code>esc</code></h3></div>
+        <span class="loc">voxcodex/screens/player_screen.py:261 &nbsp;&middot;&nbsp; screens/library.py:550&ndash;563</span>
+        <p><code>dismiss(self._last_position_ms)</code> fires only from <code>action_close</code>, and the <code>_on_close</code> callback is the <em>only</em> writer to <code>ProgressStore</code> and the only thing that pushes to Audible. Quit with <code>ctrl+q</code> (or close the terminal, or crash) and <code>on_unmount</code> stops mpv but <code>dismiss</code> never runs &mdash; the entire session's progress is discarded locally <em>and</em> remotely. There is no periodic checkpoint, so a 4-hour session that ends abnormally loses all 4 hours.</p>
+        <div class="fix"><b>Fix</b>Persist position from <code>_tick</code> on a ~15&nbsp;s interval when it has moved, and from <code>on_unmount</code> &mdash; making <code>_on_close</code> a final flush rather than the sole write path.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H4</span><h3>Socket fd leak in <code>_connect</code>'s retry loop; <code>_sockfile</code> is never closed</h3></div>
+        <span class="loc">voxcodex/services/player.py:76&ndash;85, :164&ndash;167</span>
+        <p>The socket file usually appears before mpv is listening, so <code>sock.connect()</code> fails repeatedly &mdash; and the failed <code>sock</code> is never closed, leaking up to ~160 fds per start attempt over the 8&nbsp;s / 0.05&nbsp;s budget. Separately, <code>stop()</code> closes <code>self._sock</code> but nulls <code>self._sockfile</code> without closing it, skipping the final flush.</p>
+        <div class="fix"><b>Fix</b><code>sock.close()</code> in the <code>except</code> branch (or <code>contextlib.closing</code>); <code>self._sockfile.close()</code> before <code>self._sock.close()</code> in <code>stop()</code>.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H5</span><h3><code>MpvError</code> is not the only exception <code>_command</code> raises, and the unguarded paths crash the app</h3></div>
+        <span class="loc">voxcodex/services/player.py:88&ndash;113 &nbsp;&middot;&nbsp; screens/player_screen.py:159, :209&ndash;256</span>
+        <p>Socket I/O fails as <code>BrokenPipeError</code> / <code>ConnectionResetError</code> / <code>socket.timeout</code> &mdash; all <code>OSError</code>, not <code>MpvError</code> &mdash; so they escape <code>get_property</code>'s <code>except MpvError</code>. <code>if player.eof_reached:</code> at <code>_tick</code> line 159 sits outside the tick's <code>try</code>, and every <code>action_*</code> calls <code>_command</code> with no guard at all: pressing <code>space</code> on a dead mpv crashes the app. Also, <code>sock.makefile()</code> combined with <code>sock.settimeout()</code> is documented-unsafe &mdash; on timeout the buffered object's state is left inconsistent, so later reads can mis-pair request/response.</p>
+        <div class="fix"><b>Fix</b>Catch <code>OSError</code> in <code>_command</code> and re-raise as <code>MpvError</code> so the one exception type actually holds. Guard the action handlers. Replace <code>makefile</code> with manual <code>sendall</code>/<code>recv</code> buffering, or drop the socket timeout for a watchdog.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H6</span><h3>Blocking mpv IPC on the Textual event loop</h3></div>
+        <span class="loc">voxcodex/screens/player_screen.py:128&ndash;174 &nbsp;&middot;&nbsp; services/player.py:156&ndash;180</span>
+        <p><code>_tick</code> runs on the event loop once a second and does four synchronous IPC round-trips (<code>time-pos</code>, <code>duration</code>, <code>pause</code>, <code>eof-reached</code>), each with a 5&nbsp;s timeout &mdash; a stalled mpv freezes the whole TUI for up to 20&nbsp;s per tick. <code>action_close</code> &rarr; <code>stop()</code> issues a <code>quit</code> (2&nbsp;s timeout) plus <code>proc.wait(timeout=3.0)</code> on the loop, so <code>q</code> can hang the UI for 5&nbsp;s. Every <code>action_*</code> is a blocking round-trip too.</p>
+        <div class="fix"><b>Fix</b>Idiomatically: one reader thread using mpv <code>observe_property</code>, pushing changes in via <code>post_message</code>. Failing that, move <code>_tick</code>'s reads into a <code>@work(thread=True, group="poll")</code> worker, make <code>stop()</code> fire-and-forget, and cut the property timeout to ~0.5&nbsp;s.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H7</span><h3><code>_blocking_prompt</code> can hang the process at exit</h3></div>
+        <span class="loc">voxcodex/screens/login.py:250&ndash;266</span>
+        <p><code>event.wait()</code> has no timeout and no cancellation. It runs on a non-daemon thread from asyncio's default executor, which <code>asyncio.run</code> awaits on teardown. If the user hits <code>ctrl+q</code> / <code>ctrl+c</code> while an OTP or CAPTCHA prompt is open, the modal is torn down without <code>_done</code> ever firing, <code>event.wait()</code> blocks forever, and the process hangs on exit.</p>
+        <div class="fix"><b>Fix</b><code>event.wait(timeout=&hellip;)</code> in a loop that also checks a screen-level &ldquo;shutting down&rdquo; flag set from <code>on_unmount</code>; return <code>""</code> when abandoned so the login flow fails cleanly.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H8</span><h3><code>query_one</code> is evaluated on the worker thread during download, once per 256&nbsp;KB chunk</h3></div>
+        <span class="loc">voxcodex/screens/library.py:443&ndash;449</span>
+        <p><code>self.app.call_from_thread(self.query_one("#download-progress", ProgressBar).update, &hellip;)</code> &mdash; the <code>query_one</code> runs in the worker thread, a DOM traversal off the event loop, exactly what <code>call_from_thread</code>'s docs warn against. If the screen was popped it raises <code>NoMatches</code> on the worker thread (crash, per C3) and leaves a <code>.part</code> file. It also fires once per chunk and blocks on the result &mdash; a ~1&nbsp;GB download is thousands of synchronous event-loop round-trips, each stalling the download.</p>
+        <div class="fix"><b>Fix</b>Resolve the widget inside a main-thread callback wrapped in <code>try/except NoMatches</code>, and throttle to ~4 updates/sec.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H9</span><h3>Login workers are not exclusive; a double-submit permanently corrupts the diagnostics monkeypatch and leaks an API client</h3></div>
+        <span class="loc">voxcodex/screens/login.py:160, :185, :221 &nbsp;&middot;&nbsp; services/auth.py:71&ndash;114</span>
+        <p><code>@work(thread=True)</code> with no <code>exclusive</code>, and nothing debounces the button beyond a CSS <code>display:none</code>. Two concurrent <code>_do_login</code> calls both enter <code>_login_flow_diagnostics()</code>, which swaps five functions on <code>audible.login</code>; the second context manager captures the <em>first one's wrappers</em> as its &ldquo;originals&rdquo;, so the outer <code>finally</code> restores a wrapper &mdash; <code>audible.login</code> stays monkeypatched for the life of the process. Both logins also reach <code>app.on_authenticated</code>, which overwrites <code>self.api</code>; the first <code>AudibleAPI</code>'s httpx client is never closed.</p>
+        <div class="fix"><b>Fix</b><code>exclusive=True, group="login"</code> on all three, an explicit <code>if self.has_class("busy"): return</code> guard, and a reentrancy guard (module lock) in <code>_login_flow_diagnostics</code>.</div>
+      </article>
+
+      <article class="finding hi">
+        <div class="finding-head"><span class="finding-id">H10</span><h3><code>textual&gt;=0.60.0</code> is not a satisfiable floor</h3></div>
+        <span class="loc">pyproject.toml:20&ndash;25</span>
+        <p><code>App.theme</code> / <code>App.available_themes</code> (<code>app.py:34&ndash;41</code>) arrived with Textual's theme system in ~0.86; installing against the declared floor throws <code>AttributeError</code> at startup. <code>audible&gt;=0.10.0</code> is likewise optimistic given the code reaches into <code>audible.aescipher.decrypt_voucher_from_licenserequest</code>, <code>audible.client.raise_for_status</code>, and monkeypatches five private <code>audible.login</code> functions. No dependency has an upper bound.</p>
+        <div class="fix"><b>Fix</b><code>textual&gt;=0.86,&lt;9</code>, <code>audible&gt;=0.10,&lt;0.13</code>. Add a smoke test that imports the five <code>audible.login</code> names the diagnostics patch depends on, so a bad bump fails in CI, not at a user's first login.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ MEDIUM ============ -->
+  <section class="prose" id="medium">
+    <h2>Medium</h2>
+    <div class="findings">
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M1</span><h3>The background chapter fetch is O(N&sup2;) in table rebuilds and N in HTTP calls</h3></div>
+        <span class="loc">voxcodex/screens/library.py:235&ndash;252, :263&ndash;289</span>
+        <p>Per book: one HTTP call, then <code>call_from_thread(self._refresh_table)</code>, which clears and re-adds <em>every</em> row and linear-scans <code>_filtered</code> to restore the cursor. A 500-title library is 500 sequential network calls and ~250k <code>add_row</code> calls, every session (the cache is in-memory only). <code>_populate_offline</code> runs it too &mdash; so when the network is down, every call fails slowly against the 30&nbsp;s client timeout.</p>
+        <div class="fix"><b>Fix</b>Batch the refresh (every ~25 books or a 500&nbsp;ms coalescing timer); update only the changed cell via <code>table.update_cell</code>; check <code>is_cancelled</code>; skip entirely in the offline branch; persist chapter <em>totals</em> to disk (they never change) and recompute only the current-chapter number locally.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M2</span><h3>Insecure default permissions on everything except <code>auth.json</code></h3></div>
+        <span class="loc">voxcodex/config.py:22&ndash;25 &nbsp;&middot;&nbsp; services/download.py:63&ndash;80 &nbsp;&middot;&nbsp; services/auth.py:150&ndash;161</span>
+        <p>On the live install: dirs <code>0755</code>; <code>settings.json</code>, <code>progress_cache.json</code>, <code>library_cache.json</code> (your full purchase history), <code>voxcodex.log</code>, and <code>*.voucher.json</code> (the AES key + iv) all <code>0644</code>. <code>auth.save</code> chmods correctly but <em>after</em> <code>to_file</code> returns (a readable window), and the encrypted branch never chmods at all.</p>
+        <div class="fix"><b>Fix</b><code>mkdir(mode=0o700)</code> in <code>ensure_dirs</code>; a shared <code>_write_private()</code> helper using <code>os.open(&hellip;, O_WRONLY|O_CREAT|O_TRUNC, 0o600)</code> for settings/progress/cache/voucher/log; pre-create the auth file at <code>0600</code> in both branches.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M3</span><h3><code>.part</code> files are never cleaned up; a truncated download becomes a &ldquo;downloaded&rdquo; book</h3></div>
+        <span class="loc">voxcodex/services/download.py:37&ndash;60</span>
+        <p>Any exception between <code>open(tmp_path, "wb")</code> and <code>tmp_path.replace(audio_path)</code> leaves the partial file forever &mdash; and <code>test_download.py:169</code> doesn't cover this because its simulated failure is raised <em>before</em> the file is opened. There's also no check that <code>downloaded == total</code> before the rename, so a mid-stream connection drop produces a corrupt <code>.aaxc</code> that <code>is_downloaded()</code> happily reports as present, failing later with a confusing playback error. Two workers on the same ASIN (reachable per C2) interleave into one file.</p>
+        <div class="fix"><b>Fix</b><code>try/except: tmp_path.unlink(missing_ok=True); raise</code>. Verify the byte count against <code>content-length</code> before <code>replace()</code>. Write the voucher <em>before</em> the rename. Sweep stale <code>*.part</code> at startup.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M4</span><h3>Library pagination can truncate silently or loop forever</h3></div>
+        <span class="loc">voxcodex/services/api.py:113&ndash;128</span>
+        <p><code>if len(items) &lt; num_results: break</code> assumes the server honors <code>num_results=1000</code> exactly. If Audible ever caps lower, the loop stops after page 1 and returns a truncated library &mdash; which then overwrites the offline cache at <code>:192</code>. If a full page is always returned, <code>while True</code> never terminates.</p>
+        <div class="fix"><b>Fix</b><code>if not items: break</code>, plus a hard <code>if page &gt; 100: break</code>, plus a log line when the page size comes back unexpected.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M5</span><h3><code>progress_ms</code> is monotonically non-decreasing and can never be corrected</h3></div>
+        <span class="loc">voxcodex/screens/library.py:217</span>
+        <p><code>book.progress_ms = max(book.progress_ms, local_ms, remote_ms)</code>. Restart a book from chapter&nbsp;1 on your phone and VoxCodex keeps showing &mdash; and resuming at &mdash; the old, higher position forever. Only the in-app <code>_on_close</code> write can ever lower it.</p>
+        <div class="fix"><b>Fix</b>Trust the newest by timestamp, not the largest by value. <code>ProgressStore</code> already records <code>updated_at</code> and the remote annotation carries <code>last_updated</code> &mdash; compare those.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M6</span><h3>Sync failures are completely invisible to the user</h3></div>
+        <span class="loc">voxcodex/services/progress.py:169&ndash;205 &nbsp;&middot;&nbsp; screens/library.py:565&ndash;571</span>
+        <p><code>push_position</code> / <code>push_finished</code> swallow every exception into <code>logger.debug</code>, and their callers discard the returned bool. An expired token or revoked device registration looks exactly like success. Given C1 makes the log the only diagnostic &mdash; and undocumented &mdash; a user has no way to notice their progress stopped syncing. The best-effort <em>semantics</em> are right; the silence is not.</p>
+        <div class="fix"><b>Fix</b>Surface a one-line status on failure (&ldquo;Progress saved locally; Audible sync failed&rdquo;). <code>MessageModal</code> (currently dead code, see L1) is the natural home.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M7</span><h3><code>except Exception</code> is too broad in the selection, chapter, and license paths</h3></div>
+        <span class="loc">voxcodex/screens/library.py:247, :295&ndash;298, :519</span>
+        <p><code>coordinate_to_cell_key</code> raises <code>CellDoesNotExist</code> for an out-of-range cursor &mdash; that's the case to handle; catching everything means a genuine bug shows up as &ldquo;pressing <code>d</code> silently does nothing.&rdquo; The chapter/license catches similarly turn an API failure into &ldquo;this book just has no chapters,&rdquo; hiding real breakage.</p>
+        <div class="fix"><b>Fix</b>Narrow to <code>CellDoesNotExist</code> and to <code>httpx.HTTPError</code> / <code>audible.exceptions.*</code> respectively; let the rest propagate to the worker error handler.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M8</span><h3>DRM key, IV, and signed URL are passed on mpv's command line</h3></div>
+        <span class="loc">voxcodex/services/player.py:50&ndash;59</span>
+        <p><code>--demuxer-lavf-o=audible_key=&hellip;,audible_iv=&hellip;</code> plus the URL. <code>/proc/&lt;pid&gt;/cmdline</code> is world-readable, so any local user can read the AES key, the IV, and the CDN URL for as long as mpv runs. Same underlying exposure as M2's <code>0644</code> voucher, but a second copy and a cheap fix.</p>
+        <div class="fix"><b>Fix</b>Write the options to a <code>0600</code> file in the private temp dir (H1) and pass <code>--include=</code>, or start mpv idle and <code>loadfile</code> over IPC with the options as a per-file option dict.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M9</span><h3>No linter, formatter, or type checker &mdash; despite the code being written for them</h3></div>
+        <span class="loc">pyproject.toml &nbsp;&middot;&nbsp; .github/workflows/tests.yml</span>
+        <p>The source carries eleven <code># noqa: BLE001</code> markers (ruff codes) and there's a <code>.ruff_cache/</code> in the worktree &mdash; ruff has been run ad hoc but is not pinned, configured, or enforced. Everything is fully annotated, but there's no mypy, no <code>py.typed</code>, and CI runs <code>pytest</code> only. mypy would immediately flag <code>self._sockfile = None</code> typed as <code>None</code> (then reassigned), the <code>tuple[str, dict] | tuple[None, None]</code> return in <code>progress.py</code> that callers can't narrow, and missing return annotations. The CI matrix is <code>3.10, 3.12, 3.13</code> &mdash; 3.11 is missing though <code>pyproject</code> claims it. Version is duplicated in <code>pyproject.toml</code> and <code>__init__.py</code>.</p>
+        <div class="fix"><b>Fix</b>Add <code>[tool.ruff]</code> (line-length 100; <code>E,F,B,BLE,SIM,UP</code>), <code>[tool.mypy]</code> strict for <code>voxcodex/</code>, a <code>dev</code> extra, <code>py.typed</code>, and lint + typecheck CI jobs. Add 3.11. Make the version <code>dynamic</code>.</div>
+      </article>
+
+      <article class="finding med">
+        <div class="finding-head"><span class="finding-id">M10</span><h3>The risky concurrency paths have no test coverage &mdash; and there is no <code>test_auth.py</code> at all</h3></div>
+        <span class="loc">tests/</span>
+        <p>The 248 tests are strong on parsing and screen keybindings (real Pilot keypresses, not <code>action_*</code> calls) and correctly sandbox user data. But nothing covers: worker cancellation / group collisions (C2); screen-popped-during-worker (C3, C4); <code>MpvPlayer</code>'s socket lifecycle beyond the not-connected branches (H4, H5); a mid-stream download failure (M3); multiple <code>Settings</code> clobbering each other (H2, a two-line test). And <code>services/auth.py</code> &mdash; the monkeypatch/restore, <code>_log_cvf_page</code>, <code>save()</code>'s chmod, among the most fragile and security-relevant code here &mdash; is entirely untested.</p>
+        <div class="fix"><b>Fix</b>Add <code>tests/test_auth.py</code>. Add pilot tests that block a fake API on an <code>Event</code>, fire two actions, and assert one screen / one <code>stop()</code>. Stand up a fake <code>AF_UNIX</code> server in <code>tmp_path</code> to exercise the real socket code.</div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ LOW ============ -->
+  <section class="prose" id="low">
+    <h2>Low</h2>
+    <ul class="tight">
+      <li><span class="tag">L1 &middot; modals.py:77</span> &mdash; <b>MessageModal is dead code.</b> Never instantiated; <code>login.py:14</code> imports it unused. It <em>is</em> tested, so the tests keep dead code alive. Use it for the M6 sync-failure notice, or delete both.</li>
+      <li><span class="tag">L2 &middot; api.py:167</span> &mdash; <b><code>License.last_position_ms</code> is never read.</b> The most authoritative resume position available &mdash; fetched fresh with the license at the moment of playback &mdash; is discarded in favor of the possibly-stale <code>book.progress_ms</code>. Use it in <code>_launch_player</code> or drop the field.</li>
+      <li><span class="tag">L3 &middot; library.py:570</span> &mdash; <b><code>set_finished(asin, False)</code> is unreachable.</b> The API and <code>push_finished</code> support un-finishing, but the call site hardcodes <code>True</code> and there's no UI to undo a mis-detected end (0.98 threshold on a book with long credits). Permanent from inside VoxCodex.</li>
+      <li><span class="tag">L4 &middot; app.py:47</span> &mdash; <b><code>on_authenticated</code> shadows Textual's handler-naming convention.</b> It's a plain method called directly from <code>login.py:274</code>; a future <code>Authenticated(Message)</code> would silently collide. Rename to <code>set_authenticator()</code>, or make it a real <code>Message</code>.</li>
+      <li><span class="tag">L5 &middot; library.py:331</span> &mdash; <b>Search re-sorts and rebuilds the whole table on every keystroke.</b> Noticeable lag on a large library. Debounce with a cancelled-and-reset <code>set_timer(0.15, &hellip;)</code>.</li>
+      <li><span class="tag">L6 &middot; settings.py:32, progress.py:51</span> &mdash; <b><code>Settings(path=config.SETTINGS_FILE)</code> binds the default at import.</b> Tests can't <code>monkeypatch</code> <code>config</code> and work around it by patching the class. Take <code>path: Path | None = None</code> and resolve inside <code>__init__</code>.</li>
+      <li><span class="tag">L7 &middot; library.py:283</span> &mdash; <b><code>add_row(key=book.asin)</code> can raise <code>DuplicateKey</code>.</b> <code>_book_from_item</code> defaults a missing ASIN to <code>""</code>, so two malformed items crash the render. Skip ASIN-less items at parse time.</li>
+      <li><span class="tag">L8 &middot; login.py:138</span> &mdash; <b><code>_reset</code> pops its own screen then pushes a replacement</b> from inside that screen's button handler. <code>self.app.switch_screen(&hellip;)</code> is the single idiomatic operation.</li>
+      <li><span class="tag">L9 &middot; library.py:385 vs :68</span> &mdash; <b>&ldquo;Finished&rdquo; is defined two ways:</b> the filter uses <code>progress_pct &gt;= 100</code>, <code>_reached_end</code> uses <code>&gt;= 98%</code>. A never-played-in-app book at 99% is neither finished nor in-progress. Use <code>_FINISHED_FRACTION</code> in both.</li>
+      <li><span class="tag">L10 &middot; app.py:33&ndash;41</span> &mdash; <b><code>watch_theme</code> writes to disk during <code>__init__</code>.</b> Setting <code>self.theme</code> fires the watcher, so every launch does a settings write before the UI renders. Guard with a <code>self._loading_theme</code> flag.</li>
+      <li><span class="tag">L11 &middot; login.py:233</span> &mdash; <b><code>import webbrowser</code> inside a function.</b> Move to module scope.</li>
+      <li><span class="tag">L12 &middot; api.py:133, :253</span> &mdash; <b><code>quality</code> silently coerces typos.</b> <code>"High" if quality != "normal" else "Normal"</code> maps any bad value to High. Validate against <code>("high", "normal")</code>.</li>
+      <li><span class="tag">L13 &middot; downloads/</span> &mdash; <b>~1.5&nbsp;GB of downloads with no UI affordance:</b> no total-size display, no bulk cleanup, no &ldquo;delete finished,&rdquo; and <code>x</code> deletes one at a time from a table that doesn't show sizes.</li>
+    </ul>
+  </section>
+
+  <!-- ============ NITS ============ -->
+  <section class="prose" id="nits">
+    <h2>Nits</h2>
+    <ul class="tight">
+      <li><span class="tag">N1</span> &mdash; <b><code>scratch/whispersync/probe.py</code> is committed</b> and hardcodes <code>sys.path.insert(0, "/home/jake/Work/&hellip;")</code> (a path absent from any clone), names the developer's marketplace, and references two titles from their personal library. It's excluded from the wheel but not the public repo.</li>
+      <li><span class="tag">N2</span> &mdash; <b><code>scratch-whispersync/</code> (byte-identical duplicate) and empty <code>scratch-ws/</code> are untracked leftovers</b>, and <code>.gitignore</code> covers neither, nor <code>.claude/</code>. Add <code>scratch*/</code> and <code>.claude/</code>; move the probe under <code>tools/</code>.</li>
+      <li><span class="tag">N3</span> &mdash; <b><code>docs/whispersync-research.md</code> contains a live account identifier</b> (<code>guid="CR!&hellip;:116727321"</code>) captured from a real request, plus ASINs/positions from the developer's library. Redact the guid at least &mdash; the research value doesn't need the real value.</li>
+      <li><span class="tag">N4</span> &mdash; <b>README documents a keybinding that doesn't exist:</b> the library table lists <code>q &rarr; Quit</code>, but <code>LibraryScreen.BINDINGS</code> has no <code>q</code> (only <code>ctrl+q</code>, from the app). This interacts with H3 &mdash; on the <em>player</em> screen <code>q</code> saves position and <code>ctrl+q</code> doesn't, so the docs point at the lossy path.</li>
+      <li><span class="tag">N5</span> &mdash; <b>README's &ldquo;Local data&rdquo; never mentions <code>voxcodex.log</code></b>, the largest and most sensitive artifact the app produces (C1).</li>
+      <li><span class="tag">N6</span> &mdash; <b><code>asyncio_mode = "auto"</code> without <code>asyncio_default_fixture_loop_scope</code></b> emits a <code>PytestDeprecationWarning</code> on pytest-asyncio &ge; 0.24 (which the <code>test</code> extra allows). Set it explicitly.</li>
+      <li><span class="tag">N7</span> &mdash; <b><code>_current_chapter_index</code> reads a 1&nbsp;Hz-stale position.</b> Pressing <code>n</code> right after a seek uses the pre-seek chapter. Read <code>player.position_seconds</code> in the action instead of <code>_last_position_ms</code>.</li>
+      <li><span class="tag">N8</span> &mdash; <b>The sleep timer expiring gives no feedback</b> beyond the readout vanishing; <code>eof_reached</code> sets the state text to &ldquo;Finished&rdquo; but does nothing else &mdash; no auto-close, no finish mark, no stop to the 1&nbsp;Hz poll.</li>
+    </ul>
+  </section>
+
+  <!-- ============ WHAT'S SOLID ============ -->
+  <section class="prose" id="solid">
+    <h2>What's already solid</h2>
+    <div class="solid">
+      <p>Deliberately <em>not</em> flagged &mdash; this is real quality worth preserving:</p>
+      <ul>
+        <li>The <code>Book</code> model and its display properties are clean and thoroughly tested; the <code>chapter_current is None</code> vs <code>0</code> distinction is a subtle case handled correctly and covered.</li>
+        <li><code>library_cache.load()</code>'s exception tuple correctly absorbs schema drift after an app update.</li>
+        <li><code>progress.py</code>'s annotation parsing is careful, and its module docstring documenting the previously-silent read bug is exemplary.</li>
+        <li><code>_book_from_item</code>'s <code>or {}</code> / <code>or []</code> defensiveness against Audible's inconsistent response shapes is right.</li>
+        <li><code>subprocess.Popen</code> is called with a list and no shell; <code>push_last_position</code> refuses to fire without a real <code>acr</code> and explains why.</li>
+        <li>The <code>priority=True</code> binding on <code>up</code> with its comment is the correct solution to that focus problem.</li>
+        <li>Tests drive real Textual pilots pressing real keys rather than calling <code>action_*</code> &mdash; the right call, and rare.</li>
+        <li>Comment density is high but almost all of it is load-bearing &ldquo;why,&rdquo; not &ldquo;what.&rdquo;</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ ORDER OF WORK ============ -->
+  <section class="prose" id="order">
+    <h2>Suggested order of work</h2>
+    <ol class="plan">
+      <li><div><b>C1 &mdash; log redaction, rotation, <code>0600</code>.</b> Smallest diff, largest risk reduction, and it's leaking on your own machine right now.</div></li>
+      <li><div><b>C2 + C3 together.</b> Distinct <code>group=</code> per worker, an <code>is_cancelled</code> check atop each callback, <code>exit_on_error=False</code>. One focused pass over <code>library.py</code> that removes most of the crash surface.</div></li>
+      <li><div><b>C4 + H1 + H4 + H5 &mdash; an <code>MpvPlayer</code> lifecycle rewrite.</b> Private temp dir, close every socket, <code>OSError</code>&rarr;<code>MpvError</code>, assign <code>_player</code> before <code>start()</code>, <code>--idle=once</code>. Ship it with the fake-socket-server tests from M10.</div></li>
+      <li><div><b>H2 + H3 &mdash; the two silent data-loss bugs.</b> One shared <code>Settings</code>, atomic writes everywhere, periodic position checkpointing.</div></li>
+      <li><div><b>M9 &mdash; wire up ruff + mypy in CI</b> before the codebase grows further. Several Low items fall out for free.</div></li>
+    </ol>
+  </section>
+
+  <hr class="div" />
+
+</div>

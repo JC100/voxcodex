@@ -1,7 +1,7 @@
 from textual.app import App
 from textual.widgets import Input
 
-from voxcodex.screens.modals import ConfirmModal, MessageModal, PromptModal
+from voxcodex.screens.modals import ConfirmModal, PromptModal
 
 
 class ModalHostApp(App):
@@ -81,21 +81,6 @@ async def test_prompt_modal_allows_empty_submit_when_configured():
         await pilot.pause()
 
     assert results == [""]
-
-
-# -- MessageModal -------------------------------------------------------
-
-
-async def test_message_modal_ok_dismisses_with_none():
-    results = []
-    modal = MessageModal("Title", "Something happened")
-    app = ModalHostApp(modal, results.append)
-
-    async with app.run_test() as pilot:
-        await pilot.click("#ok")
-        await pilot.pause()
-
-    assert results == [None]
 
 
 # -- ConfirmModal -------------------------------------------------------

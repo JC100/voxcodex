@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from collections.abc import Iterator
 from typing import Any
 
 import audible
@@ -19,6 +22,12 @@ from voxcodex import config
 
 Locale = str
 logger = logging.getLogger("voxcodex.auth")
+
+# `_login_flow_diagnostics` swaps five functions on the `audible.login`
+# module. If two logins ran it concurrently, the second would capture the
+# first's *wrappers* as its "originals" and its finally-block would restore
+# a wrapper, leaving audible.login monkeypatched for the life of the process.
+_diagnostics_lock = threading.Lock()
 
 
 @dataclass
@@ -59,17 +68,21 @@ def _log_cvf_page(soup: Any) -> None:
         logger.info("login flow: cvf page has no <form>")
         return
     for field in form.find_all(["input", "select"]):
+        # Deliberately don't log `value` -- hidden inputs on this page carry
+        # session tokens (appActionToken / metadata1 / etc.). The length is
+        # enough to tell "prefilled" from "empty" when debugging.
+        raw_value = field.get("value") or ""
         logger.info(
-            "login flow: cvf field name=%r type=%r value=%r checked=%r",
+            "login flow: cvf field name=%r type=%r value_len=%d checked=%r",
             field.get("name"),
             field.get("type"),
-            field.get("value"),
+            len(raw_value),
             field.has_attr("checked"),
         )
 
 
 @contextlib.contextmanager
-def _login_flow_diagnostics():
+def _login_flow_diagnostics() -> Iterator[None]:
     """Logs which branch of Amazon's login flow fired (captcha / 2FA-method
     choice / OTP / verification-code / approval), and -- for the 2FA method
     choice specifically -- which delivery options the page actually offered.
@@ -79,6 +92,13 @@ def _login_flow_diagnostics():
     if the account has one configured, with no way to ask for SMS instead),
     so this is the only way to see what really happened there.
     """
+    if not _diagnostics_lock.acquire(blocking=False):
+        # Another login already has the patches installed. Don't nest --
+        # just run without our own diagnostics for this one.
+        logger.info("login flow: diagnostics already active on another login, skipping")
+        yield
+        return
+
     names = [
         "check_for_captcha",
         "check_for_choice_mfa",
@@ -112,6 +132,7 @@ def _login_flow_diagnostics():
     finally:
         for name, original in originals.items():
             setattr(_login_internals, name, original)
+        _diagnostics_lock.release()
 
 
 def login(
@@ -149,16 +170,23 @@ def login_external(locale: Locale, callbacks: LoginCallbacks) -> audible.Authent
 
 def save(auth: audible.Authenticator, vault_password: str | None) -> None:
     config.ensure_dirs()
+    # audible's to_file() writes via Path.write_text/write_bytes, which
+    # truncates an existing file in place rather than recreating it -- so
+    # pre-creating the file at 0600 here means it never has a window (nor,
+    # for the encrypted branch, a permanent gap) at the default 0644. The
+    # chmod afterwards is a defensive fallback in case that ever changes.
+    try:
+        fd = os.open(config.AUTH_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except OSError:
+        pass
     auth.to_file(
         config.AUTH_FILE,
         password=vault_password or None,
         encryption="json" if vault_password else False,
     )
-    if not vault_password:
-        try:
-            config.AUTH_FILE.chmod(0o600)
-        except OSError:
-            pass
+    with contextlib.suppress(OSError):
+        config.AUTH_FILE.chmod(0o600)
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:

@@ -62,6 +62,20 @@ async def test_falls_back_to_default_when_saved_theme_is_unrecognized(monkeypatc
         assert app.theme != "some-removed-theme"
 
 
+async def test_applying_the_saved_theme_on_launch_does_not_write_it_back(monkeypatch):
+    """L10: setting self.theme in __init__ to restore the saved theme fires
+    watch_theme synchronously, before the UI has even rendered -- it must
+    not turn straight around and write that same value back to disk on
+    every single launch."""
+    fake_settings = FakeSettings(theme="nord")
+    monkeypatch.setattr(app_module, "Settings", lambda: fake_settings)
+    app = VoxCodexApp()
+
+    async with app.run_test():
+        assert app.theme == "nord"
+        assert fake_settings.theme_calls == []
+
+
 async def test_changing_theme_persists_it(monkeypatch):
     fake_settings = FakeSettings(theme="textual-dark")
     monkeypatch.setattr(app_module, "Settings", lambda: fake_settings)

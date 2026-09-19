@@ -7,7 +7,10 @@ Python methods behind them.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
+import httpx
 import pytest
 from textual.app import App
 from textual.widgets import DataTable, Input
@@ -19,19 +22,32 @@ from voxcodex.screens.library import (
     LibraryScreen,
     _current_chapter_number,
     _reached_end,
+    _resolve_progress_ms,
 )
-from voxcodex.services.api import Chapter, License
+from voxcodex.services.api import Chapter, License, LicenseDenied
 
 
 class FakeProgressStore:
     def __init__(self, *args, **kwargs):
         self._data: dict[str, int] = {}
+        self._updated_at: dict[str, float] = {}
 
     def get_position_ms(self, asin: str) -> int:
         return self._data.get(asin, 0)
 
+    def get_updated_at(self, asin: str) -> float | None:
+        return self._updated_at.get(asin)
+
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
         self._data[asin] = position_ms
+        self._updated_at[asin] = time.time()
+
+    def seed(self, asin: str, position_ms: int, updated_at: float) -> None:
+        """Test-only helper: pre-populate a local position with an explicit
+        timestamp, bypassing set_position_ms's "now" so recency-comparison
+        tests can control which side is newer."""
+        self._data[asin] = position_ms
+        self._updated_at[asin] = updated_at
 
 
 class FakeSettings:
@@ -40,6 +56,12 @@ class FakeSettings:
         self.library_sort_key = "recent"
         self.library_filter_key = "all"
         self.progress_display_mode = "percent"
+        # PlayerScreen surface -- LibraryScreen now passes its Settings
+        # straight through to the player rather than the player building its
+        # own, so one fake has to cover both.
+        self.playback_speed = 1.0
+        self.playback_volume = 100.0
+        self.last_played_in_app_calls = []
 
     def set_last_played_externally(self, asin, updated_at):
         self.last_played_externally_calls.append((asin, updated_at))
@@ -52,6 +74,15 @@ class FakeSettings:
 
     def set_progress_display_mode(self, mode):
         self.progress_display_mode = mode
+
+    def set_playback_speed(self, speed):
+        self.playback_speed = speed
+
+    def set_playback_volume(self, volume):
+        self.playback_volume = volume
+
+    def set_last_played_in_app(self, asin):
+        self.last_played_in_app_calls.append(asin)
 
 
 class FakeAudibleClient:
@@ -67,7 +98,9 @@ class FakeAudibleClient:
 class FakeAPI:
     def __init__(
         self, books, chapters=None, chapters_exc=None, annotations_response=None,
-        get_library_exc=None,
+        get_library_exc=None, license_acr="", license_exc=None,
+        license_last_position_ms=0, license_last_position_updated_at=None,
+        push_position_exc=None, set_finished_exc=None,
     ):
         self._books = books
         self.client = FakeAudibleClient(annotations_response)
@@ -76,6 +109,14 @@ class FakeAPI:
         self._chapters = chapters if chapters is not None else []
         self._chapters_exc = chapters_exc
         self._get_library_exc = get_library_exc
+        self._license_acr = license_acr
+        self._license_exc = license_exc
+        self._license_last_position_ms = license_last_position_ms
+        self._license_last_position_updated_at = license_last_position_updated_at
+        self._push_position_exc = push_position_exc
+        self._set_finished_exc = set_finished_exc
+        self.push_position_calls = []
+        self.set_finished_calls = []
 
     def get_library(self):
         if self._get_library_exc is not None:
@@ -84,7 +125,24 @@ class FakeAPI:
 
     def get_license(self, asin, quality="high"):
         self.license_calls.append((asin, quality))
-        return License(asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i")
+        if self._license_exc is not None:
+            raise self._license_exc
+        return License(
+            asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
+            acr=self._license_acr,
+            last_position_ms=self._license_last_position_ms,
+            last_position_updated_at=self._license_last_position_updated_at,
+        )
+
+    def push_last_position(self, asin, acr, position_ms):
+        self.push_position_calls.append((asin, acr, position_ms))
+        if self._push_position_exc is not None:
+            raise self._push_position_exc
+
+    def set_finished(self, asin, finished):
+        self.set_finished_calls.append((asin, finished))
+        if self._set_finished_exc is not None:
+            raise self._set_finished_exc
 
     def get_chapters(self, asin):
         self.chapter_calls.append(asin)
@@ -105,7 +163,9 @@ class HostApp(App):
 
 
 def _book(asin, title, authors=None, series="", runtime_min=60):
-    return Book(asin=asin, title=title, authors=authors or [], series=series, runtime_min=runtime_min)
+    return Book(
+        asin=asin, title=title, authors=authors or [], series=series, runtime_min=runtime_min
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +200,29 @@ class FakeLibraryCache:
 def _fake_library_cache(monkeypatch):
     instance = FakeLibraryCache()
     monkeypatch.setattr(library_module, "library_cache", instance)
+    return instance
+
+
+class FakeChapterCache:
+    """Stands in for services.chapter_cache -- never touches the real
+    ~/.local/share/voxcodex/chapter_cache.json. `to_return` seeds what
+    `load()` answers with; defaults to "no cache exists yet"."""
+
+    def __init__(self):
+        self.save_calls = []
+        self.to_return: dict = {}
+
+    def save(self, chapters_by_asin):
+        self.save_calls.append(dict(chapters_by_asin))
+
+    def load(self):
+        return self.to_return
+
+
+@pytest.fixture(autouse=True)
+def _fake_chapter_cache(monkeypatch):
+    instance = FakeChapterCache()
+    monkeypatch.setattr(library_module, "chapter_cache", instance)
     return instance
 
 
@@ -254,9 +337,50 @@ async def test_search_filters_by_title():
         # no need to press "/" first here (see test_slash_types_literal_
         # slash_when_search_already_focused for that specific quirk).
         await pilot.press(*"laughter")
-        await pilot.pause()
 
-        assert [b.asin for b in screen._filtered] == ["B2"]
+        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B2"])
+
+
+async def test_search_debounces_rather_than_filtering_on_every_keystroke(monkeypatch):
+    """L5: typing used to clear-and-rebuild the whole table once per
+    keystroke. 8 Input.Changed events landing inside one debounce window
+    should coalesce into a single _apply_filters_and_sort call, not eight.
+
+    Fires _search_changed directly and synchronously (no `await` between
+    calls) rather than via real Pilot keystrokes: real keystrokes go
+    through the actual event loop, so how many land inside one 150ms
+    debounce window depends on how fast the machine running the test is --
+    fine on a quiet dev machine, but this flaked on a loaded CI runner.
+    Firing the handler directly removes that dependency on wall-clock
+    timing entirely while still exercising the same stop-and-reset timer
+    logic. test_search_filters_by_title / _by_author already cover that
+    real typing eventually produces the right filtered result."""
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    apply_calls = 0
+    original_apply = screen._apply_filters_and_sort
+
+    def _counting_apply():
+        nonlocal apply_calls
+        apply_calls += 1
+        original_apply()
+
+    monkeypatch.setattr(screen, "_apply_filters_and_sort", _counting_apply)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        apply_calls_after_load = apply_calls
+
+        for _ in range(8):
+            screen._search_changed(None)  # event argument is unused
+
+        await _wait_until(lambda: apply_calls - apply_calls_after_load == 1)
+        # Confirm it stays at 1 -- no further calls trickling in afterward.
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert apply_calls - apply_calls_after_load == 1
 
 
 async def test_search_filters_by_author():
@@ -270,9 +394,8 @@ async def test_search_filters_by_author():
     async with app.run_test() as pilot:
         await _wait_until(lambda: len(screen._books) == 2)
         await pilot.press(*"carnegie")
-        await pilot.pause()
 
-        assert [b.asin for b in screen._filtered] == ["B1"]
+        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B1"])
 
 
 async def test_clear_search_restores_full_list():
@@ -283,12 +406,10 @@ async def test_clear_search_restores_full_list():
     async with app.run_test() as pilot:
         await _wait_until(lambda: len(screen._books) == 2)
         await pilot.press(*"one")
-        await pilot.pause()
-        assert len(screen._filtered) == 1
+        await _wait_until(lambda: len(screen._filtered) == 1)
 
         await pilot.press("escape")
-        await pilot.pause()
-        assert len(screen._filtered) == 2
+        await _wait_until(lambda: len(screen._filtered) == 2)
 
 
 async def test_slash_types_literal_slash_when_search_already_focused():
@@ -346,7 +467,6 @@ async def test_space_plays_the_selected_book(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     books = [_book("B1", "One")]
     screen = LibraryScreen(FakeAPI(books))
@@ -413,6 +533,57 @@ def test_current_chapter_number_is_one_once_actually_into_chapter_one():
 
 def test_current_chapter_number_none_for_no_chapters():
     assert _current_chapter_number([], position_ms=0) is None
+
+
+# -- progress resolution (M5) -------------------------------------------
+
+
+def test_resolve_progress_ms_prefers_the_newer_timestamp_even_if_smaller():
+    """The regression this guards: restarting a book from chapter 1 on
+    another device must actually lower the position here, not get stuck at
+    the old high-water mark forever."""
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=900_000, local_updated_at=1_000.0,
+        remote_ms=100_000, remote_updated_at=2_000.0,  # newer
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_prefers_local_when_it_is_newer():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=100_000, local_updated_at=2_000.0,  # newer
+        remote_ms=900_000, remote_updated_at=1_000.0,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_remote_when_no_local_record():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=0, local_updated_at=None,
+        remote_ms=100_000, remote_updated_at=2_000.0,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_local_when_no_remote_record():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=100_000, local_updated_at=2_000.0,
+        remote_ms=0, remote_updated_at=None,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_library_value_when_neither_exists():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=0, local_updated_at=None,
+        remote_ms=0, remote_updated_at=None,
+    )
+    assert result == 500_000
 
 
 # -- reached-end detection --------------------------------------------
@@ -545,7 +716,9 @@ async def test_sort_filter_label_shows_plain_count_when_nothing_is_filtered_out(
 async def test_filter_in_progress_excludes_finished_and_not_started():
     not_started = Book(asin="B1", title="Not started", progress_ms=0, duration_ms=1000)
     in_progress = Book(asin="B2", title="In progress", progress_ms=500, duration_ms=1000)
-    finished = Book(asin="B3", title="Finished", progress_ms=1000, duration_ms=1000, is_finished=True)
+    finished = Book(
+        asin="B3", title="Finished", progress_ms=1000, duration_ms=1000, is_finished=True
+    )
     screen = LibraryScreen(FakeAPI([not_started, in_progress, finished]))
     app = HostApp(screen)
 
@@ -557,6 +730,28 @@ async def test_filter_in_progress_excludes_finished_and_not_started():
         await pilot.pause()
 
         assert [b.title for b in screen._filtered] == ["In progress"]
+
+
+async def test_filter_finished_includes_a_book_at_98_percent_never_played_here():
+    """L9: a book synced at 98% complete via the library API's own
+    percent_complete (but never actually played to the end *in this app*,
+    so is_finished is still False) used to fall through the "Finished"
+    filter's `>= 100` check and land in "In progress" instead -- despite
+    98% being this app's own definition of finished everywhere else
+    (_reached_end / _FINISHED_FRACTION)."""
+    almost_done = Book(asin="B1", title="Almost done", progress_ms=980, duration_ms=1000)
+    screen = LibraryScreen(FakeAPI([almost_done]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("f")
+        await pilot.press("f")
+        await pilot.press("f")  # all -> downloaded -> in_progress -> finished
+        await pilot.pause()
+
+        assert [b.title for b in screen._filtered] == ["Almost done"]
 
 
 async def test_filter_and_search_combine(monkeypatch):
@@ -579,9 +774,10 @@ async def test_filter_and_search_combine(monkeypatch):
 
         screen.query_one("#search", Input).focus()
         await pilot.press(*"wanted")  # further narrows to B1 (excludes B2)
-        await pilot.pause()
 
-        assert [b.title for b in screen._filtered] == ["Wanted Downloaded"]
+        await _wait_until(
+            lambda: [b.title for b in screen._filtered] == ["Wanted Downloaded"]
+        )
 
 
 async def test_sort_and_filter_are_restored_from_settings(_fake_settings):
@@ -674,7 +870,7 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
     download_calls = []
     monkeypatch.setattr(
         library_module.download, "download_book",
-        lambda book, api, on_progress=None: download_calls.append(book.asin),
+        lambda book, api, on_progress=None, cancel_check=None: download_calls.append(book.asin),
     )
 
     books = [_book("B1", "One")]
@@ -694,7 +890,7 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
 async def test_download_success_updates_status_and_table(monkeypatch):
     download_calls = []
 
-    def fake_download_book(book, api, on_progress=None):
+    def fake_download_book(book, api, on_progress=None, cancel_check=None):
         download_calls.append(book.asin)
         return "/tmp/fake.aaxc"
 
@@ -716,7 +912,7 @@ async def test_download_success_updates_status_and_table(monkeypatch):
 
 
 async def test_download_failure_shows_error_and_book_stays_not_downloaded(monkeypatch):
-    def fake_download_book(book, api, on_progress=None):
+    def fake_download_book(book, api, on_progress=None, cancel_check=None):
         raise RuntimeError("403 Forbidden")
 
     monkeypatch.setattr(library_module.download, "download_book", fake_download_book)
@@ -790,6 +986,209 @@ async def test_delete_confirmed_removes_download(monkeypatch):
         assert screen._books[0].is_downloaded is False
 
 
+# -- download size column, total, and bulk cleanup (L13) --------------------
+
+
+def test_format_size_formats_bytes_kb_mb_gb():
+    from voxcodex.screens.library import _format_size
+
+    assert _format_size(500) == "500 B"
+    assert _format_size(2_048) == "2 KB"
+    assert _format_size(5 * 1024 * 1024) == "5 MB"
+    assert _format_size(int(1.5 * 1024 * 1024 * 1024)) == "1.5 GB"
+
+
+async def test_size_column_shows_size_for_downloaded_books_blank_otherwise(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin == "B1")
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size",
+        lambda asin: 245 * 1024 * 1024 if asin == "B1" else None,
+    )
+    books = [_book("B1", "Downloaded"), _book("B2", "Not downloaded")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 2)
+
+        from textual.coordinate import Coordinate
+
+        size_column = COLUMNS.index("Size")
+        table = screen.query_one(DataTable)
+        assert table.get_cell_at(Coordinate(0, size_column)) == "245 MB"
+        assert table.get_cell_at(Coordinate(1, size_column)) == ""
+
+
+async def test_sort_filter_label_shows_total_downloaded_size(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2"))
+    sizes = {"B1": 1024 * 1024 * 1024, "B2": 512 * 1024 * 1024}
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size", lambda asin: sizes.get(asin)
+    )
+    books = [_book("B1", "One"), _book("B2", "Two"), _book("B3", "Three")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 3)
+
+        label = str(screen.query_one("#sort-filter").content)
+        assert "1.5 GB downloaded" in label
+
+
+async def test_sort_filter_label_omits_size_when_nothing_downloaded():
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+
+        label = str(screen.query_one("#sort-filter").content)
+        assert "downloaded" not in label
+
+
+async def test_delete_finished_downloads_requires_confirmation_and_removes_matching(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2")
+    )
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size", lambda asin: 100 * 1024 * 1024
+    )
+    delete_calls = []
+    monkeypatch.setattr(
+        library_module.download, "delete_download", lambda asin: delete_calls.append(asin)
+    )
+
+    finished_downloaded = _book("B1", "Finished, downloaded")
+    finished_downloaded.is_downloaded = True
+    finished_downloaded.is_finished = True
+    in_progress_downloaded = _book("B2", "In progress, downloaded")
+    in_progress_downloaded.is_downloaded = True
+    finished_not_downloaded = _book("B3", "Finished, not downloaded")
+    finished_not_downloaded.is_finished = True
+
+    books = [finished_downloaded, in_progress_downloaded, finished_not_downloaded]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+
+        # A confirmation modal should be blocking -- nothing deleted yet.
+        assert delete_calls == []
+
+        await pilot.click("#yes")
+        await pilot.pause()
+
+        assert delete_calls == ["B1"]
+        assert finished_downloaded.is_downloaded is False
+        assert in_progress_downloaded.is_downloaded is True  # untouched: not finished
+        assert "Removed 1 finished download (100 MB)" in str(
+            screen.query_one("#status").content
+        )
+
+
+async def test_delete_finished_downloads_cancelled_removes_nothing(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
+    monkeypatch.setattr(library_module.download, "downloaded_size", lambda asin: 1024)
+    delete_calls = []
+    monkeypatch.setattr(
+        library_module.download, "delete_download", lambda asin: delete_calls.append(asin)
+    )
+
+    book = _book("B1", "One")
+    book.is_downloaded = True
+    book.is_finished = True
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+        await pilot.click("#no")
+        await pilot.pause()
+
+        assert delete_calls == []
+        assert screen._books[0].is_downloaded is True
+
+
+async def test_delete_finished_downloads_is_a_no_op_when_none_match():
+    book = _book("B1", "One")  # not downloaded, not finished
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+
+        assert "No finished downloads to remove" in str(screen.query_one("#status").content)
+
+
+# -- unmark finished (L3) ---------------------------------------------------
+
+
+async def test_unmark_finished_clears_the_flag_and_pushes_the_change():
+    book = _book("B1", "One")
+    book.is_finished = True
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+        assert screen._books[0].is_finished is False
+        assert "Unmarked as finished" in str(screen.query_one("#status").content)
+
+
+async def test_unmark_finished_is_a_no_op_when_not_finished():
+    book = _book("B1", "One")
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+        await pilot.pause()
+
+        assert api.set_finished_calls == []
+        assert screen._books[0].is_finished is False
+
+
+async def test_unmark_finished_shows_a_status_when_the_push_fails():
+    book = _book("B1", "One")
+    book.is_finished = True
+    api = FakeAPI([book], set_finished_exc=RuntimeError("boom"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+
+        await _wait_until(
+            lambda: "Un-finished status saved locally; Audible sync failed"
+            in str(screen.query_one("#status").content)
+        )
+        assert screen._books[0].is_finished is False  # local state still updated
+
+
 # -- playback / chapters -------------------------------------------------
 
 
@@ -797,6 +1196,10 @@ class _FakeMpvPlayer:
     """Stands in for MpvPlayer so `p` never spawns a real mpv subprocess."""
 
     volume = 100.0
+    position_seconds = 0.0
+    duration_seconds = 0.0
+    paused = False
+    eof_reached = False
 
     def start(self, *args, **kwargs):
         pass
@@ -815,15 +1218,216 @@ class _FakeMpvPlayer:
         return True
 
 
-class _FakeSettingsForLibraryTests:
-    """Stands in for services.settings.Settings inside PlayerScreen, so these
-    library-screen tests never touch the real config dir either."""
+async def test_playback_progress_is_persisted_when_the_player_is_closed(monkeypatch):
+    """The player hands its final position back to LibraryScreen, which
+    writes it to the progress store and updates the in-memory Book."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
 
-    playback_speed = 1.0
-    playback_volume = 100.0
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
 
-    def set_last_played_in_app(self, asin):
-        pass
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert screen.progress_store.get_position_ms("B1") == 512_000
+    assert book.progress_ms == 512_000
+
+
+# -- license position at play time (L2) -------------------------------------
+
+
+async def test_play_uses_the_license_position_when_it_is_newer_than_local(monkeypatch):
+    """License.last_position_ms is fetched fresh at the moment of playback
+    -- more authoritative than whatever the library table showed from the
+    last full load. A book never played in this app (no local record at
+    all) should still pick it up."""
+    from voxcodex.screens import player_screen as player_screen_module
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.progress_ms = 0  # what the library table showed at load time
+    api = FakeAPI(
+        [book],
+        license_last_position_ms=250_000,
+        license_last_position_updated_at=time.time(),
+    )
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(lambda: book.progress_ms == 250_000)
+
+
+async def test_play_keeps_the_newer_local_position_over_an_older_license_position(
+    monkeypatch,
+):
+    from voxcodex.screens import player_screen as player_screen_module
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.progress_ms = 0
+    api = FakeAPI(
+        [book],
+        license_last_position_ms=900_000,
+        license_last_position_updated_at=1_000.0,  # older
+    )
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 100_000, updated_at=time.time())  # newer
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(lambda: len(api.license_calls) == 1)
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert book.progress_ms == 100_000
+
+
+# -- sync-failure status (M6) ----------------------------------------------
+
+
+async def test_playback_close_shows_a_status_when_the_position_push_fails(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_acr="CR!ABC", push_position_exc=RuntimeError("token expired"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(
+            lambda: "Audible sync failed" in str(screen.query_one("#status").content)
+        )
+        assert api.push_position_calls == [("B1", "CR!ABC", 512_000)]
+
+
+async def test_playback_close_shows_no_status_when_the_position_push_succeeds(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_acr="CR!ABC")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await _wait_until(lambda: api.push_position_calls == [("B1", "CR!ABC", 512_000)])
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert "sync failed" not in str(screen.query_one("#status").content)
+
+
+async def test_playback_close_does_not_warn_when_there_is_no_acr_to_push_with(monkeypatch):
+    """A voucher saved before `acr` existed is a known compatibility gap,
+    not a sync failure -- nothing was attempted, so nothing should warn."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book])  # license_acr defaults to ""
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert api.push_position_calls == []
+        assert "sync failed" not in str(screen.query_one("#status").content)
+
+
+async def test_playback_close_shows_a_status_when_the_finished_push_fails(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 995.0  # past the 0.98 finished threshold
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.duration_ms = 1_000_000  # matches PlayingMpv's duration_seconds so _reached_end fires
+    api = FakeAPI([book], license_acr="CR!ABC", set_finished_exc=RuntimeError("boom"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(
+            lambda: "Finished status saved locally; Audible sync failed"
+            in str(screen.query_one("#status").content)
+        )
+        assert api.set_finished_calls == [("B1", True)]
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
@@ -831,7 +1435,6 @@ async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     chapters = [Chapter(title="Chapter 1", start_ms=0, length_ms=60_000)]
     books = [_book("B1", "One")]
@@ -854,10 +1457,9 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     books = [_book("B1", "One")]
-    api = FakeAPI(books, chapters_exc=RuntimeError("metadata endpoint exploded"))
+    api = FakeAPI(books, chapters_exc=httpx.HTTPError("metadata endpoint exploded"))
     screen = LibraryScreen(api)
     app = HostApp(screen)
 
@@ -869,6 +1471,117 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
 
         # Chapter navigation is degraded, not the whole play action.
         assert app.screen._chapters == []
+
+
+# -- narrowed exception handling on the license path (M7) -----------------
+
+
+async def test_play_shows_the_denial_message_when_the_license_is_denied():
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=LicenseDenied("Not entitled to this title"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Not entitled to this title" in str(screen.query_one("#status").content)
+        )
+
+
+async def test_play_surfaces_a_network_error_from_get_license():
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=httpx.HTTPError("connection reset"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Could not start playback" in str(screen.query_one("#status").content)
+        )
+
+
+async def test_play_does_not_mask_an_unexpected_bug_as_a_playback_failure(monkeypatch):
+    """An exception type nobody anticipated (a real bug, not a known
+    failure mode) must not be swallowed and relabeled -- it should
+    propagate to the worker's error handler instead of quietly showing
+    "Could not start playback" for something that isn't a license/network
+    problem at all."""
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=ValueError("this is a bug, not a license failure"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert "Could not start playback" not in str(screen.query_one("#status").content)
+
+
+# -- worker group collisions (C2/M10) --------------------------------------
+
+
+async def test_pressing_play_twice_quickly_opens_only_one_player_screen(monkeypatch):
+    """_open_player runs with group="player", exclusive=True -- starting a
+    second one is meant to cancel the first rather than have both race to
+    push a PlayerScreen. Regression test for C2 (all three background
+    workers used to share Textual's *default* group, so any one of them
+    starting cancelled the others outright)."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    unblock_first_call = threading.Event()
+    entered_calls = []
+
+    class BlockingFirstCallAPI(FakeAPI):
+        def get_license(self, asin, quality="high"):
+            # The first call blocks until released below, standing in for a
+            # slow network response -- long enough for a second "p" press to
+            # land and start a second worker in the same exclusive group.
+            # Recorded on entry (not via the base class's license_calls,
+            # which only grows once a call actually returns) so the test can
+            # detect that worker #1 has started, not just that it finished.
+            is_first = len(entered_calls) == 0
+            entered_calls.append((asin, quality))
+            if is_first:
+                unblock_first_call.wait(timeout=5)
+            return super().get_license(asin, quality)
+
+    book = _book("B1", "One")
+    api = BlockingFirstCallAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+
+        await pilot.press("p")  # worker #1: enters get_license, blocks
+        await _wait_until(lambda: len(entered_calls) == 1)
+        await pilot.press("p")  # worker #2: exclusive=True cancels #1
+
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        unblock_first_call.set()  # let worker #1 resume and hit is_cancelled
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+
+        assert len(api.license_calls) == 2  # both workers did call get_license...
+        player_screens = [s for s in app.screen_stack if isinstance(s, PlayerScreen)]
+        assert len(player_screens) == 1  # ...but only the second ever opened a player
 
 
 async def test_library_load_fetches_chapter_counts_in_the_background():
@@ -920,7 +1633,7 @@ async def test_background_chapter_fetch_does_not_disturb_current_selection():
 
 
 async def test_chapter_fetch_failure_leaves_chapter_column_blank():
-    api = FakeAPI([_book("B1", "One")], chapters_exc=RuntimeError("boom"))
+    api = FakeAPI([_book("B1", "One")], chapters_exc=httpx.HTTPError("boom"))
     screen = LibraryScreen(api)
     app = HostApp(screen)
 
@@ -938,7 +1651,6 @@ async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monke
     from voxcodex.screens.player_screen import PlayerScreen
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
-    monkeypatch.setattr(player_screen_module, "Settings", _FakeSettingsForLibraryTests)
 
     chapters = [Chapter(title="Ch1", start_ms=0, length_ms=60_000)]
     api = FakeAPI([_book("B1", "One")], chapters=chapters)
@@ -954,6 +1666,74 @@ async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monke
         await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
 
         assert api.chapter_calls == ["B1"]  # not fetched again for playback
+
+
+async def test_chapter_counts_seeded_from_disk_cache_skip_the_network_call(
+    _fake_chapter_cache,
+):
+    chapters = [
+        Chapter(title="Ch1", start_ms=0, length_ms=1000),
+        Chapter(title="Ch2", start_ms=1000, length_ms=1000),
+    ]
+    _fake_chapter_cache.to_return = {"B1": chapters}
+    book = _book("B1", "One")
+    book.progress_ms = 1500  # inside "Ch2" -> chapter 2 of 2
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        # Give the background worker a moment; there's nothing left to fetch.
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+        assert api.chapter_calls == []
+        assert screen._books[0].chapter_total == 2
+        assert screen._books[0].chapter_current == 2
+
+
+async def test_offline_populate_does_not_fetch_chapter_counts(_fake_library_cache):
+    book = _book("B1", "One")
+    _fake_library_cache.to_return = ([book], 12345.0)
+    api = FakeAPI([book], get_library_exc=RuntimeError("offline"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+        assert api.chapter_calls == []  # never even tried while offline
+
+
+async def test_chapter_count_fetch_batches_table_rebuilds(monkeypatch):
+    """Regression test for the O(n) call_from_thread(_refresh_table) per
+    book: a large library should rebuild the table a handful of times, not
+    once per title."""
+    books = [_book(f"B{i}", f"Title {i}") for i in range(60)]
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=1000)]
+    api = FakeAPI(books, chapters=chapters)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    refresh_calls = 0
+    original_refresh = screen._refresh_table
+
+    def _counting_refresh():
+        nonlocal refresh_calls
+        refresh_calls += 1
+        original_refresh()
+
+    monkeypatch.setattr(screen, "_refresh_table", _counting_refresh)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 60)
+        await _wait_until(lambda: all(b.chapter_total is not None for b in screen._books))
+
+        # 60 books at a batch size of 25 -> at most 3 rebuilds from the
+        # chapter-count worker, plus whatever _apply_filters_and_sort did on
+        # load -- nowhere near one per book.
+        assert refresh_calls <= 5
 
 
 # -- last played externally -----------------------------------------------
@@ -1007,3 +1787,48 @@ async def test_library_load_does_not_record_anything_when_nothing_was_ever_playe
     async with app.run_test():
         await _wait_until(lambda: len(screen._books) == 1)
         assert _fake_settings.last_played_externally_calls == []
+
+
+# -- progress merge on load (M5) -------------------------------------------
+
+
+def _existing_at(asin, last_updated, position_ms):
+    return {
+        "asin": asin,
+        "last_position_heard": {
+            "status": "Exists", "position_ms": position_ms, "last_updated": last_updated,
+        },
+    }
+
+
+async def test_library_load_prefers_the_newer_remote_position_over_a_larger_local_one():
+    """Regression test for the plain-max() bug: restarting a book from
+    chapter 1 on another device is a genuinely newer, lower position -- it
+    must not lose to a higher position left over locally from before."""
+    response = _annotations_response(
+        [_existing_at("B1", "2026-08-27 08:56:11.849", position_ms=100_000)]
+    )
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 900_000, updated_at=1_000.0)  # older, larger
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._books[0].progress_ms == 100_000
+
+
+async def test_library_load_keeps_the_newer_local_position_over_a_larger_remote_one():
+    response = _annotations_response(
+        [_existing_at("B1", "2019-01-24 09:21:16.892", position_ms=900_000)]
+    )
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 100_000, updated_at=time.time())  # newer, smaller
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._books[0].progress_ms == 100_000

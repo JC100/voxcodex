@@ -36,44 +36,62 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from voxcodex import config
-from voxcodex.services.api import AudibleAPI
+from voxcodex.services.api import AudibleAPI, parse_audible_timestamp
 
 logger = logging.getLogger(__name__)
 
+_FILE_LOCK = threading.RLock()
+
 
 class ProgressStore:
-    def __init__(self, path: Path = config.PROGRESS_CACHE_FILE) -> None:
-        self._path = path
-        self._data: dict[str, dict[str, Any]] = {}
-        self._load()
+    def __init__(self, path: Path | None = None) -> None:
+        # A `Path = config.PROGRESS_CACHE_FILE` default is evaluated once,
+        # at import time -- resolving it here instead means a test that
+        # monkeypatches `config.PROGRESS_CACHE_FILE` before constructing a
+        # ProgressStore() actually takes effect, rather than needing to
+        # monkeypatch the class itself as a workaround.
+        self._path = path if path is not None else config.PROGRESS_CACHE_FILE
+        with _FILE_LOCK:
+            self._data: dict[str, dict[str, Any]] = self._read_file()
 
-    def _load(self) -> None:
-        if self._path.exists():
-            try:
-                self._data = json.loads(self._path.read_text())
-            except (json.JSONDecodeError, OSError):
-                self._data = {}
-
-    def save(self) -> None:
-        config.ensure_dirs()
-        self._path.write_text(json.dumps(self._data, indent=2))
+    def _read_file(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads(self._path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def get_position_ms(self, asin: str) -> int:
         return int(self._data.get(asin, {}).get("position_ms", 0))
 
+    def get_updated_at(self, asin: str) -> float | None:
+        """Unix timestamp of the last local write for `asin`, or None if
+        there isn't one -- lets a caller compare recency against Audible's
+        own `last_updated` for the same title (see
+        `positions_with_updated_at_from_annotations`)."""
+        value = self._data.get(asin, {}).get("updated_at")
+        return float(value) if isinstance(value, (int, float)) else None
+
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
-        entry = self._data.setdefault(asin, {})
-        entry["position_ms"] = int(position_ms)
-        if duration_ms:
-            entry["duration_ms"] = int(duration_ms)
-        entry["updated_at"] = time.time()
-        self.save()
+        # Reload-modify-write atomically: the player screen checkpoints
+        # position on a timer as well as on close, so writes land often and
+        # must not truncate the file or drop another title's entry.
+        with _FILE_LOCK:
+            data = self._read_file()
+            entry = data.setdefault(asin, {})
+            entry["position_ms"] = int(position_ms)
+            if duration_ms:
+                entry["duration_ms"] = int(duration_ms)
+            entry["updated_at"] = time.time()
+            config.atomic_write_text(self._path, json.dumps(data, indent=2))
+            self._data = data
 
 
 def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str, Any]]:
@@ -88,7 +106,10 @@ def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str
     if not asins:
         return []
     try:
-        resp = api.client.get("annotations/lastpositions", asins=",".join(asins))
+        # See api.py's get_library for why this goes through a dict[str, Any]
+        # rather than a plain kwarg -- audible.Client.get's **kwargs stub.
+        params: dict[str, Any] = {"asins": ",".join(asins)}
+        resp = api.client.get("annotations/lastpositions", **params)
         records = resp.get("asin_last_position_heard_annots") if isinstance(resp, dict) else None
         return records if isinstance(records, list) else []
     except Exception:
@@ -100,14 +121,43 @@ def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
     """asin -> position_ms for every record with an actual recorded position."""
     positions: dict[str, int] = {}
     for record in records:
-        asin, lph = _existing_last_position_heard(record)
-        if asin is None:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
             continue
+        asin, lph = existing
         try:
             positions[asin] = int(lph.get("position_ms", 0))
         except (TypeError, ValueError):
             continue
     return positions
+
+
+def positions_with_updated_at_from_annotations(
+    records: list[dict[str, Any]],
+) -> dict[str, tuple[int, float]]:
+    """asin -> (position_ms, updated_at as a Unix timestamp), for every
+    record with both a recorded position and a parseable timestamp.
+
+    The timestamp is what lets `LibraryScreen` resolve a local vs. remote
+    position by *recency* rather than by magnitude -- a plain position_ms
+    can only ever grow, which gets a book started over elsewhere stuck
+    showing (and resuming at) the old, higher position forever.
+    """
+    result: dict[str, tuple[int, float]] = {}
+    for record in records:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
+            continue
+        asin, lph = existing
+        updated_at = parse_audible_timestamp(lph.get("last_updated"))
+        if updated_at is None:
+            continue
+        try:
+            position_ms = int(lph.get("position_ms", 0))
+        except (TypeError, ValueError):
+            continue
+        result[asin] = (position_ms, updated_at.timestamp())
+    return result
 
 
 def most_recent_external_play(
@@ -121,17 +171,12 @@ def most_recent_external_play(
     """
     best: tuple[str, datetime] | None = None
     for record in records:
-        asin, lph = _existing_last_position_heard(record)
-        if asin is None:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
             continue
-        raw_updated = lph.get("last_updated")
-        if not raw_updated:
-            continue
-        try:
-            updated_at = datetime.strptime(raw_updated, "%Y-%m-%d %H:%M:%S.%f").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
+        asin, lph = existing
+        updated_at = parse_audible_timestamp(lph.get("last_updated"))
+        if updated_at is None:
             continue
         if best is None or updated_at > best[1]:
             best = (asin, updated_at)
@@ -140,19 +185,23 @@ def most_recent_external_play(
 
 def _existing_last_position_heard(
     record: Any,
-) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+) -> tuple[str, dict[str, Any]] | None:
     """Pulls (asin, last_position_heard) out of one annotation record, but
     only if it actually has a recorded position -- Audible returns a record
     with status "DoesNotExist" (no `position_ms`/`last_updated` at all) for
     titles that have never been played anywhere, which is not an error, just
     nothing to report.
+
+    A single Optional return (rather than a `(None, None)` sentinel pair)
+    is what lets callers narrow both elements together with one `is None`
+    check, instead of asin's check leaving `lph` statically `dict | None`.
     """
     if not isinstance(record, dict):
-        return None, None
+        return None
     asin = record.get("asin")
     lph = record.get("last_position_heard")
     if not asin or not isinstance(lph, dict) or lph.get("status") != "Exists":
-        return None, None
+        return None
     return asin, lph
 
 

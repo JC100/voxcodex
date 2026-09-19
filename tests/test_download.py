@@ -1,4 +1,5 @@
 import json
+import stat
 
 import pytest
 
@@ -98,6 +99,18 @@ def test_is_downloaded_true_when_both_files_exist():
     assert download.is_downloaded("B001") is True
 
 
+def test_downloaded_size_returns_the_audio_file_size():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"x" * 12_345)
+    download.voucher_path_for("B001").write_text("{}")
+
+    assert download.downloaded_size("B001") == 12_345
+
+
+def test_downloaded_size_none_when_not_downloaded():
+    assert download.downloaded_size("B001") is None
+
+
 def test_delete_download_removes_both_files():
     config.DOWNLOADS_DIR.mkdir(parents=True)
     download.audio_path_for("B001").write_bytes(b"data")
@@ -155,6 +168,22 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
     assert progress_calls == [(6, 11), (11, 11)]
 
 
+def test_download_book_writes_the_voucher_private():
+    """M2: the voucher holds the AES key + iv, so it should never be left
+    at the process's default umask (typically 0644)."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="thekey", iv="theiv", acr="CR!ABC",
+    )
+    response = FakeResponse([b"hello world"], headers={"content-length": "11"})
+    api = FakeAPI(license_, response)
+
+    download.download_book(_book("B001"), api)
+
+    mode = stat.S_IMODE(download.voucher_path_for("B001").stat().st_mode)
+    assert mode == 0o600
+
+
 def test_download_book_propagates_license_denied():
     from voxcodex.services.api import LicenseDenied
 
@@ -185,6 +214,45 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
     assert not download.voucher_path_for("B001").exists()
 
 
+def test_download_book_rejects_a_truncated_stream_and_cleans_up():
+    # Server promises 100 bytes, connection delivers 4 -- the old code renamed
+    # the short file into place and it looked downloaded until playback failed.
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"abcd"], headers={"content-length": "100"})
+    api = FakeAPI(license_, response)
+
+    with pytest.raises(OSError, match="truncated"):
+        download.download_book(_book("B001"), api)
+
+    assert not download.audio_path_for("B001").exists()
+    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert not download.voucher_path_for("B001").exists()
+
+
+def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"one", b"two", b"three"], headers={"content-length": "11"})
+    api = FakeAPI(license_, response)
+
+    seen = []
+
+    def cancel_after_first_chunk():
+        seen.append(1)
+        return len(seen) > 1  # let the first chunk through, then bail
+
+    with pytest.raises(download.DownloadCancelled):
+        download.download_book(_book("B001"), api, cancel_check=cancel_after_first_chunk)
+
+    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert not download.audio_path_for("B001").exists()
+
+
 def test_download_book_passes_content_url_and_uses_get_method():
     license_ = License(
         asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
@@ -198,3 +266,60 @@ def test_download_book_passes_content_url_and_uses_get_method():
     (method, url, _kwargs), = api.client.session.calls
     assert method == "GET"
     assert url == "https://cdn.example/x.aaxc"
+
+
+def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
+    """M3: is_downloaded() requires both files, so writing the voucher
+    first means a crash between the two writes leaves a `.part` + an
+    orphaned voucher -- never a "downloaded" audio file with no voucher to
+    decrypt it."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    seen_audio_exists_when_voucher_written = None
+    original_write_voucher = download._write_voucher
+
+    def _spy(asin, license_arg):
+        nonlocal seen_audio_exists_when_voucher_written
+        seen_audio_exists_when_voucher_written = download.audio_path_for(asin).exists()
+        original_write_voucher(asin, license_arg)
+
+    download._write_voucher = _spy
+    try:
+        download.download_book(_book("B001"), api)
+    finally:
+        download._write_voucher = original_write_voucher
+
+    assert seen_audio_exists_when_voucher_written is False
+
+
+# -- sweep_stale_downloads (M3) -------------------------------------------
+
+
+def test_sweep_stale_downloads_removes_orphaned_part_files():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    stale = download.audio_path_for("B001").with_suffix(".part")
+    stale.write_bytes(b"partial")
+
+    download.sweep_stale_downloads()
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_downloads_leaves_completed_downloads_alone():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"data")
+    download.voucher_path_for("B001").write_text("{}")
+
+    download.sweep_stale_downloads()
+
+    assert download.audio_path_for("B001").exists()
+    assert download.voucher_path_for("B001").exists()
+
+
+def test_sweep_stale_downloads_is_a_no_op_when_the_dir_does_not_exist_yet():
+    download.sweep_stale_downloads()  # must not raise

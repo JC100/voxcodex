@@ -89,9 +89,13 @@ class FakePlayer:
 class FailingPlayer:
     def __init__(self, exc):
         self._exc = exc
+        self.stopped = False
 
     def start(self, *args, **kwargs):
         raise self._exc
+
+    def stop(self):
+        self.stopped = True
 
 
 class FakeSettings:
@@ -638,17 +642,30 @@ async def test_chapter_navigation_is_a_no_op_without_chapters(fake_player):
         assert fake_player.seek_absolute_calls == []
 
 
-async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
-    """If a transport key is pressed in the brief window before the mpv
-    worker thread finishes starting, there's no player yet to control --
-    these must no-op rather than raise (e.g. on a None _player)."""
+async def test_actions_are_safe_while_player_is_still_starting(monkeypatch):
+    """The player handle is published before the blocking start() so the
+    screen can stop mpv if it closes mid-startup -- but that handle isn't
+    connected yet, so a transport keypress in that window must be swallowed
+    (a real MpvPlayer raises MpvError('Player is not running')) rather than
+    crash the app."""
     import threading
 
     release = threading.Event()
 
     class BlocksUntilReleased:
+        def __init__(self):
+            self.stopped = False
+
         def start(self, *a, **k):
             release.wait(timeout=5)  # released below; timeout is just a safety net
+
+        def stop(self):
+            self.stopped = True
+
+        def _not_running(self, *a, **k):
+            raise MpvError("Player is not running")
+
+        toggle_pause = seek_relative = set_speed = set_volume = _not_running
 
     monkeypatch.setattr(player_screen_module, "MpvPlayer", BlocksUntilReleased)
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
@@ -656,7 +673,6 @@ async def test_actions_are_no_ops_before_player_has_started(monkeypatch):
 
     try:
         async with app.run_test() as pilot:
-            assert screen._player is None
             await pilot.press("space")
             await pilot.press("left")
             await pilot.press("up")
@@ -713,6 +729,23 @@ async def test_tick_shows_finished_state_on_eof(fake_player):
         assert screen.query_one("#state", Static).content == "Finished"
 
 
+async def test_tick_shows_finished_when_mpv_has_exited(fake_player):
+    """With --idle=once mpv quits at end-of-file, so a tick that finds the
+    process gone should land on 'Finished' rather than stay on 'Playing'."""
+    screen = PlayerScreen(_book(duration_ms=100_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(
+            lambda: screen.query_one("#state", Static).content == "Playing"
+        )
+        fake_player.stopped = True  # is_running -> False
+
+        screen._tick()
+
+        assert screen.query_one("#state", Static).content == "Finished"
+
+
 # -- close / dismiss ------------------------------------------------------
 
 
@@ -745,3 +778,123 @@ async def test_escape_also_closes(fake_player):
 
         assert fake_player.stopped is True
         assert len(results) == 1
+
+
+# -- progress checkpointing (H3) ----------------------------------------------
+
+
+async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 123.0
+
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick()
+
+        assert saved == [(123_000, False)]  # exactly one, and not "final"
+
+
+async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=10_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # right where the book was already left
+
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS * 2):
+            screen._tick()
+
+        assert saved == []
+
+
+async def test_final_progress_is_flushed_on_unmount_even_without_an_explicit_close(fake_player):
+    """A ctrl+q / closed terminal never runs action_close -- on_unmount is
+    the backstop so the session isn't lost."""
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=5_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 42.0
+        screen._tick()
+
+    assert saved[-1] == (42_000, True)
+
+
+async def test_closing_with_q_flushes_a_final_checkpoint(fake_player):
+    saved = []
+    screen = PlayerScreen(
+        _book(progress_ms=1_000, duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 88.0
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert (88_000, True) in saved
+
+
+async def test_poll_worker_reads_mpv_off_the_event_loop_and_renders(fake_player):
+    screen = PlayerScreen(_book(duration_ms=200_000), "s", "k", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 61.0
+        fake_player.duration = 200.0
+
+        screen._poll()  # would normally be the 1 Hz interval
+
+        await _wait_until(
+            lambda: "1:01" in str(screen.query_one("#time-row", Static).content)
+        )
+        assert screen._last_position_ms == 61_000
+        assert screen._poll_inflight is False  # reset so the next tick can run
+
+
+async def test_poll_does_not_stack_reads_while_one_is_in_flight(fake_player):
+    screen = PlayerScreen(_book(duration_ms=200_000), "s", "k", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._poll_inflight = True  # pretend a read is already running
+        screen._poll()  # must be a no-op, not a second worker
+        # nothing to assert beyond "did not raise / did not clear the flag"
+        assert screen._poll_inflight is True
+
+
+async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
+    def boom(pos, *, final):
+        raise RuntimeError("owner blew up")
+
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv", on_progress=boom,
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 30.0
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick()  # must not raise despite the callback raising

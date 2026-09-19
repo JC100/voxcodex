@@ -9,7 +9,7 @@ Audible app or website.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - [mpv](https://mpv.io/) on your `PATH` (used for playback; not required for
   browsing/downloading only). `ffmpeg` itself isn't required at runtime --
   mpv typically links against libavformat internally to read/decrypt AAXC,
@@ -156,7 +156,8 @@ than merged into one "last played".
 - Downloads use Audible's content-licensing flow (`content/{asin}/licenserequest`)
   to get a CDN URL plus an AES key/iv, which is saved alongside the AAXC file
   as a small voucher JSON.
-- Playback runs `mpv` as a subprocess, controlled over its JSON IPC socket,
+- Playback runs `mpv` as a subprocess, controlled over its JSON IPC socket
+  (kept in a private `0700` temp dir, since mpv's IPC can execute programs),
   handing the AAXC key/iv straight to ffmpeg's demuxer (`-audible_key`/
   `-audible_iv`) so it can play/stream directly with no separate decrypt step.
 - **Browsing and playing downloaded books works offline.** Every successful

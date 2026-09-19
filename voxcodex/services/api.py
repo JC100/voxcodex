@@ -6,9 +6,10 @@ anywhere here.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 import audible
@@ -17,6 +18,14 @@ from audible.aescipher import decrypt_voucher_from_licenserequest
 from audible.client import raise_for_status
 
 from voxcodex.models import Book
+
+logger = logging.getLogger(__name__)
+
+# Hard ceiling on library pages fetched in one go (at 1000 titles/page, a
+# 100,000-title library) -- if the server's pagination ever misbehaves such
+# that no page comes back empty, this is what stops get_library() looping
+# forever instead of a truncated-but-finite library.
+_MAX_LIBRARY_PAGES = 100
 
 LIBRARY_RESPONSE_GROUPS = (
     "contributors, customer_rights, media, product_attrs, product_desc, "
@@ -76,6 +85,11 @@ class License:
     key: str
     iv: str
     last_position_ms: int = 0
+    # Unix timestamp `last_position_ms` was recorded, or None if the
+    # response didn't include one -- lets a caller compare this against a
+    # locally-tracked position by recency (see LibraryScreen._open_player),
+    # the same way progress.py resolves local vs. remote on library load.
+    last_position_updated_at: float | None = None
     # Per-content identifier `push_last_position` needs to write a position
     # back to Audible's cross-device sync. Empty when a response doesn't
     # include it -- callers must treat that as "can't push for this title".
@@ -92,6 +106,33 @@ class Chapter:
 def _full_response(resp: httpx.Response) -> httpx.Response:
     raise_for_status(resp)
     return resp
+
+
+def parse_audible_timestamp(raw: Any) -> datetime | None:
+    """Parses the timestamp format Audible uses for `last_updated` fields
+    (e.g. on a `last_position_heard` record), or None if `raw` is missing
+    or doesn't match. Shared with services.progress, which compares these
+    against a local ProgressStore timestamp to resolve a position by
+    recency rather than by magnitude."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return None
+
+
+_VALID_QUALITIES = ("high", "normal")
+
+
+def _api_quality(quality: str) -> str:
+    """Maps our lowercase `quality` argument to the API's capitalized
+    value, raising on anything else -- `"High" if quality != "normal"
+    else "Normal"` silently mapped a typo (or any other unrecognized
+    value) to "High" instead."""
+    if quality not in _VALID_QUALITIES:
+        raise ValueError(f"quality must be one of {_VALID_QUALITIES!r}, got {quality!r}")
+    return "High" if quality == "high" else "Normal"
 
 
 class AudibleAPI:
@@ -111,18 +152,49 @@ class AudibleAPI:
         page = 1
         num_results = 1000
         while True:
-            resp = self.client.get(
-                "library",
-                response_callback=_full_response,
-                response_groups=LIBRARY_RESPONSE_GROUPS,
-                num_results=num_results,
-                page=page,
-                sort_by="-PurchaseDate",
-            )
+            # audible.Client.get's **kwargs is typed as dict[str, Any] (a
+            # stub bug -- it should type each *value*, not require every
+            # extra kwarg to itself be a dict); routing the actual params
+            # through one dict[str, Any] and unpacking satisfies it cleanly.
+            params: dict[str, Any] = {
+                "response_groups": LIBRARY_RESPONSE_GROUPS,
+                "num_results": num_results,
+                "page": page,
+                "sort_by": "-PurchaseDate",
+            }
+            resp = self.client.get("library", response_callback=_full_response, **params)
             data = resp.json()
             items = data.get("items", [])
-            books.extend(_book_from_item(item) for item in items)
-            if len(items) < num_results:
+            # An empty page -- not merely a short one -- is the only reliable
+            # "no more data" signal: a server that caps page size below
+            # `num_results` would otherwise make a short-but-nonempty page
+            # look like the end, silently truncating the library.
+            if not items:
+                break
+            if len(items) != num_results:
+                logger.debug(
+                    "library page %d returned %d items (requested %d)",
+                    page, len(items), num_results,
+                )
+            for item in items:
+                if not item.get("asin"):
+                    # DataTable rows are keyed by asin (see LibraryScreen.
+                    # _refresh_table); a missing one would default to "" and
+                    # crash add_row with DuplicateKey the moment a second
+                    # ASIN-less item showed up. Better to drop the item (and
+                    # say so) than lose the whole library load to it.
+                    logger.warning(
+                        "library item missing asin, skipping: %r", item.get("title")
+                    )
+                    continue
+                books.append(_book_from_item(item))
+            if page >= _MAX_LIBRARY_PAGES:
+                logger.warning(
+                    "library pagination hit the %d-page safety limit "
+                    "(%d titles fetched so far); stopping even though the "
+                    "last page wasn't empty",
+                    _MAX_LIBRARY_PAGES, len(books),
+                )
                 break
             page += 1
         return books
@@ -130,7 +202,7 @@ class AudibleAPI:
     # -- licensing / download -----------------------------------------
 
     def get_license(self, asin: str, quality: str = "high") -> License:
-        api_quality = "High" if quality != "normal" else "Normal"
+        api_quality = _api_quality(quality)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
             "quality": api_quality,
@@ -165,9 +237,12 @@ class AudibleAPI:
             iv = voucher.get("iv", "")
 
         last_position_ms = 0
+        last_position_updated_at = None
         lph = content_license.get("last_position_heard") or {}
         if isinstance(lph, dict) and "position_ms" in lph:
             last_position_ms = int(lph["position_ms"])
+            parsed = parse_audible_timestamp(lph.get("last_updated"))
+            last_position_updated_at = parsed.timestamp() if parsed is not None else None
 
         return License(
             asin=asin,
@@ -176,6 +251,7 @@ class AudibleAPI:
             key=key,
             iv=iv,
             last_position_ms=last_position_ms,
+            last_position_updated_at=last_position_updated_at,
             acr=acr,
         )
 
@@ -217,7 +293,7 @@ class AudibleAPI:
         should use `services.progress.push_finished` rather than calling this
         directly.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload = {
             "stats": [
                 {
@@ -250,14 +326,14 @@ class AudibleAPI:
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
         """
-        api_quality = "High" if quality != "normal" else "Normal"
-        resp = self.client.get(
-            f"content/{asin}/metadata",
-            response_groups="chapter_info",
-            quality=api_quality,
-            drm_type="Adrm",
-            chapter_titles_type="Flat",
-        )
+        api_quality = _api_quality(quality)
+        params: dict[str, Any] = {
+            "response_groups": "chapter_info",
+            "quality": api_quality,
+            "drm_type": "Adrm",
+            "chapter_titles_type": "Flat",
+        }
+        resp = self.client.get(f"content/{asin}/metadata", **params)
         content_metadata = resp.get("content_metadata") or {}
         chapter_info = content_metadata.get("chapter_info") or {}
         raw_chapters = chapter_info.get("chapters") or []

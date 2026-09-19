@@ -131,25 +131,30 @@ class FakeAudibleClient:
 
 def test_get_library_returns_parsed_books_for_a_single_page():
     client = FakeAudibleClient(
-        get_pages=[FakeJsonResponse({"items": [{"asin": "B001", "title": "Book One"}]})]
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "B001", "title": "Book One"}]}),
+            FakeJsonResponse({"items": []}),
+        ]
     )
     api = _api_with_fake_client(client)
 
     books = api.get_library()
 
     assert [b.asin for b in books] == ["B001"]
-    assert len(client.get_calls) == 1
+    assert len(client.get_calls) == 2
 
 
-def test_get_library_paginates_until_a_short_page():
-    # First page full of exactly num_results (1000) items triggers another
-    # fetch; the loop only stops once a page comes back shorter than that.
+def test_get_library_paginates_until_an_empty_page():
+    # M4: the loop only stops on a genuinely *empty* page -- a short-but-
+    # nonempty page (a server capping page size below `num_results`, say)
+    # must not be mistaken for "no more data" and silently truncate.
     full_page_items = [{"asin": f"B{i:04d}"} for i in range(1000)]
     short_page_items = [{"asin": "LAST"}]
     client = FakeAudibleClient(
         get_pages=[
             FakeJsonResponse({"items": full_page_items}),
             FakeJsonResponse({"items": short_page_items}),
+            FakeJsonResponse({"items": []}),
         ]
     )
     api = _api_with_fake_client(client)
@@ -158,15 +163,91 @@ def test_get_library_paginates_until_a_short_page():
 
     assert len(books) == 1001
     assert books[-1].asin == "LAST"
-    assert len(client.get_calls) == 2
+    assert len(client.get_calls) == 3
     assert client.get_calls[0][1]["page"] == 1
     assert client.get_calls[1][1]["page"] == 2
+    assert client.get_calls[2][1]["page"] == 3
+
+
+def test_get_library_stops_on_a_short_nonempty_final_page_too():
+    # The common case: the last page is short but still nonempty, and the
+    # *next* page comes back empty -- still just one extra request, not a
+    # truncation.
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "ONLY"}]}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert [b.asin for b in books] == ["ONLY"]
+    assert len(client.get_calls) == 2
+
+
+def test_get_library_stops_at_the_page_safety_limit_if_pages_never_go_empty():
+    from voxcodex.services import api as api_module
+
+    # Every page comes back "full" (a misbehaving server that never signals
+    # the end) -- the hard page cap is what stops this from looping forever.
+    pages = [
+        FakeJsonResponse({"items": [{"asin": f"P{page}-{i}"} for i in range(1000)]})
+        for page in range(api_module._MAX_LIBRARY_PAGES + 5)
+    ]
+    client = FakeAudibleClient(get_pages=pages)
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert len(client.get_calls) == api_module._MAX_LIBRARY_PAGES
+    assert len(books) == api_module._MAX_LIBRARY_PAGES * 1000
+
+
+def test_get_library_returns_empty_list_for_an_empty_library():
+    client = FakeAudibleClient(get_pages=[FakeJsonResponse({"items": []})])
+    api = _api_with_fake_client(client)
+
+    books = api.get_library()
+
+    assert books == []
+    assert len(client.get_calls) == 1
+
+
+def test_get_library_skips_items_with_no_asin(caplog):
+    # L7: DataTable rows are keyed by asin -- two items defaulting to ""
+    # would crash add_row with DuplicateKey the moment the second one
+    # rendered. Dropping them here is what keeps the rest of the library
+    # loading instead of losing the whole page to one bad item.
+    items = [
+        {"asin": "B001", "title": "Has an ASIN"},
+        {"asin": "", "title": "Missing ASIN"},
+        {"title": "No asin key at all"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "Missing ASIN" in caplog.text
+    assert "No asin key at all" in caplog.text
 
 
 # -- get_license -------------------------------------------------------
 
 
-def _license_response(status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None):
+def _license_response(
+    status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None,
+    last_updated=None,
+):
     content_license = {
         "status_code": status_code,
         "content_metadata": {
@@ -175,7 +256,10 @@ def _license_response(status_code="Granted", content_url="https://cdn/x.aaxc", p
         },
     }
     if position_ms is not None:
-        content_license["last_position_heard"] = {"position_ms": position_ms}
+        lph = {"position_ms": position_ms}
+        if last_updated is not None:
+            lph["last_updated"] = last_updated
+        content_license["last_position_heard"] = lph
     return {"content_license": content_license}
 
 
@@ -223,6 +307,26 @@ def test_get_license_posts_to_the_asin_specific_endpoint():
     assert path == "content/B12345/licenserequest"
 
 
+def test_get_license_accepts_normal_quality():
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    api.get_license("B001", quality="normal")
+
+    (_path, kwargs), = client.post_calls
+    assert kwargs["body"]["quality"] == "Normal"
+
+
+def test_get_license_rejects_an_unrecognized_quality():
+    # L12: this used to silently coerce any non-"normal" value (a typo
+    # included) to "High" instead of rejecting it.
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(ValueError, match="quality"):
+        api.get_license("B001", quality="hihg")
+
+
 def test_get_license_defaults_to_zero_position_when_absent():
     client = FakeAudibleClient(post_response=_license_response())
     api = _api_with_fake_client(client)
@@ -230,6 +334,34 @@ def test_get_license_defaults_to_zero_position_when_absent():
     license_ = api.get_license("B001")
 
     assert license_.last_position_ms == 0
+    assert license_.last_position_updated_at is None
+
+
+def test_get_license_extracts_last_position_updated_at():
+    import datetime
+
+    client = FakeAudibleClient(
+        post_response=_license_response(
+            position_ms=221_643, last_updated="2026-08-30 10:54:00.671"
+        )
+    )
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    expected = datetime.datetime(
+        2026, 8, 30, 10, 54, 0, 671000, tzinfo=datetime.UTC
+    )
+    assert license_.last_position_updated_at == expected.timestamp()
+
+
+def test_get_license_position_updated_at_none_without_a_timestamp():
+    client = FakeAudibleClient(post_response=_license_response(position_ms=1000))
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.last_position_updated_at is None
 
 
 def test_get_license_extracts_acr_from_content_reference():
@@ -340,6 +472,24 @@ def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
     (path, kwargs), = client.calls
     assert path == "content/B12345/metadata"
     assert kwargs["response_groups"] == "chapter_info"
+
+
+def test_get_chapters_accepts_normal_quality():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    api.get_chapters("B001", quality="normal")
+
+    (_path, kwargs), = client.calls
+    assert kwargs["quality"] == "Normal"
+
+
+def test_get_chapters_rejects_an_unrecognized_quality():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(ValueError, match="quality"):
+        api.get_chapters("B001", quality="hihg")
 
 
 # -- push_last_position + set_finished ------------------------------------

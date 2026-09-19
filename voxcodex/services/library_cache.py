@@ -24,10 +24,9 @@ logger = logging.getLogger(__name__)
 def save(books: list[Book]) -> None:
     """Best-effort write; a failure here shouldn't interrupt a successful
     live fetch, so it's logged rather than raised."""
-    config.ensure_dirs()
     data = {"cached_at": time.time(), "books": [asdict(book) for book in books]}
     try:
-        config.LIBRARY_CACHE_FILE.write_text(json.dumps(data))
+        config.atomic_write_text(config.LIBRARY_CACHE_FILE, json.dumps(data))
     except OSError:
         logger.debug("failed to write library cache", exc_info=True)
 

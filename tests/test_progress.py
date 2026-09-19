@@ -1,3 +1,5 @@
+import time
+
 from voxcodex.services import progress
 
 
@@ -54,6 +56,22 @@ def test_progress_store_set_position_without_duration_does_not_error(tmp_path):
     store = progress.ProgressStore(path=tmp_path / "progress.json")
     store.set_position_ms("B001", 500)
     assert store.get_position_ms("B001") == 500
+
+
+def test_progress_store_write_does_not_drop_another_titles_entry(tmp_path):
+    """The player checkpoints position on a timer now, so two stores over the
+    same file (or the same store after an external write) must merge, not
+    overwrite -- a stale in-memory copy can't wipe B002."""
+    path = tmp_path / "progress.json"
+    a = progress.ProgressStore(path=path)
+    b = progress.ProgressStore(path=path)
+
+    a.set_position_ms("B001", 1_000)
+    b.set_position_ms("B002", 2_000)  # b never saw a's B001 write
+
+    reloaded = progress.ProgressStore(path=path)
+    assert reloaded.get_position_ms("B001") == 1_000
+    assert reloaded.get_position_ms("B002") == 2_000
 
 
 # -- fetch_remote_annotations / positions_from_annotations --------------
@@ -128,6 +146,45 @@ def test_fetch_remote_positions_end_to_end():
     records = [_existing("B001", 4242), _does_not_exist("B002")]
     api = FakeAPI(response=_annotations_response(records))
     assert progress.fetch_remote_positions(api, ["B001", "B002"]) == {"B001": 4242}
+
+
+# -- positions_with_updated_at_from_annotations (M5) ----------------------
+
+
+def test_positions_with_updated_at_includes_the_timestamp():
+    records = [_existing("B001", 4242, last_updated="2026-08-20 23:35:05.608")]
+    result = progress.positions_with_updated_at_from_annotations(records)
+    assert result.keys() == {"B001"}
+    position_ms, updated_at = result["B001"]
+    assert position_ms == 4242
+    import datetime
+    expected = datetime.datetime(2026, 8, 20, 23, 35, 5, 608000, tzinfo=datetime.UTC)
+    assert updated_at == expected.timestamp()
+
+
+def test_positions_with_updated_at_excludes_titles_never_played():
+    assert progress.positions_with_updated_at_from_annotations([_does_not_exist("B001")]) == {}
+
+
+def test_positions_with_updated_at_excludes_an_unparseable_timestamp():
+    record = _existing("B001", 4242, last_updated="not-a-timestamp")
+    assert progress.positions_with_updated_at_from_annotations([record]) == {}
+
+
+# -- ProgressStore.get_updated_at (M5) -------------------------------------
+
+
+def test_get_updated_at_is_none_for_unknown_asin(tmp_path):
+    store = progress.ProgressStore(path=tmp_path / "progress.json")
+    assert store.get_updated_at("UNKNOWN") is None
+
+
+def test_get_updated_at_reflects_the_last_set_position_ms_call(tmp_path):
+    store = progress.ProgressStore(path=tmp_path / "progress.json")
+    before = time.time()
+    store.set_position_ms("B001", 1_000)
+    after = time.time()
+    assert before <= store.get_updated_at("B001") <= after
 
 
 # -- most_recent_external_play -------------------------------------------
@@ -217,3 +274,21 @@ def test_push_finished_passes_through_unfinished_too():
 def test_push_finished_swallows_failure_and_reports_it():
     api = FakePushAPI(exc=RuntimeError("network exploded"))
     assert progress.push_finished(api, "B001", True) is False
+
+
+# -- default path resolution (L6) -------------------------------------------
+
+
+def test_default_path_is_resolved_at_construction_not_at_import(tmp_path, monkeypatch):
+    """ProgressStore(path=config.PROGRESS_CACHE_FILE) as a default argument
+    would bind whatever config.PROGRESS_CACHE_FILE was at import time --
+    monkeypatching config afterwards wouldn't be seen without also patching
+    the ProgressStore class itself. Resolving the default inside __init__
+    instead means this monkeypatch on `config` alone is enough."""
+    patched_path = tmp_path / "progress_cache.json"
+    monkeypatch.setattr(progress.config, "PROGRESS_CACHE_FILE", patched_path)
+
+    progress.ProgressStore().set_position_ms("B001", 5_000)
+
+    assert patched_path.exists()
+    assert progress.ProgressStore().get_position_ms("B001") == 5_000

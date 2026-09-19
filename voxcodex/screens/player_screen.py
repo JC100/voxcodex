@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import Footer, ProgressBar, Static
+from textual.worker import get_current_worker
 
 from voxcodex.models import Book
 from voxcodex.services.api import Chapter
 from voxcodex.services.player import MpvNotFoundError, MpvError, MpvPlayer
 from voxcodex.services.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -21,6 +30,26 @@ def _fmt_hms(seconds: float) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+@dataclass
+class _Playback:
+    """A snapshot of mpv's state, read in one place so the four IPC round
+    trips happen off the Textual event loop (see _poll_player)."""
+
+    position: float
+    duration: float
+    paused: bool
+    eof: bool
+
+    @classmethod
+    def read(cls, player: MpvPlayer, book_duration_ms: int) -> _Playback:
+        return cls(
+            position=player.position_seconds,
+            duration=player.duration_seconds or (book_duration_ms / 1000),
+            paused=player.paused,
+            eof=player.eof_reached,
+        )
 
 
 class PlayerScreen(Screen[int]):
@@ -53,6 +82,11 @@ class PlayerScreen(Screen[int]):
     # last few seconds you already heard instead of going back a chapter.
     _CHAPTER_RESTART_THRESHOLD_MS = 3000
 
+    # _tick fires ~1/s; checkpoint the listening position roughly this often
+    # so an abnormal exit (ctrl+q, closed terminal, crash) loses seconds, not
+    # the whole session. The close/unmount flush is the authoritative write.
+    _CHECKPOINT_EVERY_TICKS = 15
+
     DEFAULT_CSS = """
     PlayerScreen {
         align: center middle;
@@ -73,7 +107,14 @@ class PlayerScreen(Screen[int]):
     """
 
     def __init__(
-        self, book: Book, source: str, key: str, iv: str, chapters: list[Chapter] | None = None
+        self,
+        book: Book,
+        source: str,
+        key: str,
+        iv: str,
+        chapters: list[Chapter] | None = None,
+        settings: Settings | None = None,
+        on_progress: Callable[..., None] | None = None,
     ) -> None:
         super().__init__()
         self.book = book
@@ -83,7 +124,13 @@ class PlayerScreen(Screen[int]):
         self._chapters = chapters or []
         self._player: MpvPlayer | None = None
         self._last_position_ms = book.progress_ms
-        self._settings = Settings()
+        # (position_ms, *, final) -> None. The owner persists it and, when
+        # final, pushes it to Audible. See LibraryScreen._launch_player.
+        self._on_progress = on_progress
+        self._saved_position_ms = book.progress_ms
+        self._ticks_since_checkpoint = 0
+        self._poll_inflight = False
+        self._settings = settings if settings is not None else Settings()
         self._speed = self._settings.playback_speed
         self._volume = self._settings.playback_volume
         self._sleep_preset_index = 0
@@ -103,46 +150,138 @@ class PlayerScreen(Screen[int]):
         start_seconds = 0.0 if self.book.is_finished else self.book.progress_ms / 1000
         self._start_player(start_seconds)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, exit_on_error=False)
     def _start_player(self, start_seconds: float) -> None:
+        worker = get_current_worker()
         try:
             player = MpvPlayer()
+        except MpvNotFoundError as exc:
+            if not worker.is_cancelled and self.is_mounted:
+                self.app.call_from_thread(self._start_failed, str(exc))
+            return
+
+        # Publish the handle *before* the blocking start() (up to 8s inside
+        # mpv's IPC connect): if the screen is dismissed or the app quits
+        # mid-startup, action_close / on_unmount need something to stop, and
+        # MpvPlayer.stop() breaks a concurrent start() out of its connect loop.
+        self._player = player
+        try:
             player.start(self._source, self._key, self._iv, start_seconds=start_seconds)
         except (MpvNotFoundError, MpvError) as exc:
-            self.app.call_from_thread(self._start_failed, str(exc))
+            player.stop()
+            self._player = None
+            if not worker.is_cancelled and self.is_mounted:
+                self.app.call_from_thread(self._start_failed, str(exc))
             return
-        self._player = player
+
+        # If the screen went away during start(), on_unmount already called
+        # stop() (a no-op to repeat) -- but cover the race where it read
+        # self._player before we assigned it and stopped nothing.
+        if worker.is_cancelled or not self.is_mounted:
+            player.stop()
+            self._player = None
+            return
+
         self.app.call_from_thread(self._start_succeeded)
 
     def _start_failed(self, message: str) -> None:
-        self.query_one("#state", Static).update(f"[red]{message}[/red]")
+        with contextlib.suppress(NoMatches):
+            self.query_one("#state", Static).update(f"[red]{message}[/red]")
 
     def _start_succeeded(self) -> None:
-        self.query_one("#state", Static).update("Playing")
-        if self._player:
-            self._player.set_speed(self._speed)
-            self._player.set_volume(self._volume)
+        try:
+            self.query_one("#state", Static).update("Playing")
+        except NoMatches:
+            # Screen went away between the is_mounted check and here.
+            if self._player:
+                self._player.stop()
+            return
+        self._control(lambda p: p.set_speed(self._speed))
+        self._control(lambda p: p.set_volume(self._volume))
         self._settings.set_last_played_in_app(self.book.asin)
-        self.set_interval(1.0, self._tick)
+        self.set_interval(1.0, self._poll)
 
-    def _tick(self) -> None:
+    def _control(self, fn: Callable[[MpvPlayer], object]) -> None:
+        """Run a transport command against the player, swallowing an
+        MpvError from a dead or stalled socket so a keypress can't take the
+        whole app down. The next poll notices `is_running` went False."""
         player = self._player
-        if player is None or not player.is_running:
+        if player is None:
             return
         try:
-            position = player.position_seconds
-            duration = player.duration_seconds or (self.book.duration_ms / 1000)
-            paused = player.paused
-        except Exception:  # noqa: BLE001
+            fn(player)
+        except MpvError as exc:
+            logger.warning("mpv command failed: %s", exc)
+
+    def _poll(self) -> None:
+        """Event-loop timer: kick a background read of mpv's state. The reads
+        themselves (4 IPC round trips) must not run here -- a wedged mpv would
+        freeze the whole TUI for the length of their timeouts."""
+        if self._poll_inflight or self._player is None:
             return
+        self._poll_inflight = True
+        self._poll_player()
+
+    @work(thread=True, exclusive=True, group="poll", exit_on_error=False)
+    def _poll_player(self) -> None:
+        try:
+            player = self._player
+            if player is None or not self.is_mounted:
+                return
+            if not player.is_running:
+                self._from_thread(self._render_finished)
+                return
+            try:
+                snap = _Playback.read(player, self.book.duration_ms)
+            except MpvError:
+                return
+            self._from_thread(self._tick, snap)
+        finally:
+            self._poll_inflight = False
+
+    def _from_thread(self, fn: Callable[..., object], *args: object) -> None:
+        # RuntimeError here means the app is shutting down.
+        with contextlib.suppress(RuntimeError):
+            self.app.call_from_thread(fn, *args)
+
+    def _render_finished(self) -> None:
+        # With --idle=once mpv exits on its own at end-of-file; reflect that
+        # rather than leaving the state stuck on "Playing".
+        with contextlib.suppress(NoMatches):
+            self.query_one("#state", Static).update("Finished")
+
+    def _tick(self, snap: _Playback | None = None) -> None:
+        """Render playback state. `snap` comes from the background poll worker;
+        when called without one (the first render, and tests) it reads mpv
+        directly -- fine off the hot path, not on the 1 Hz timer."""
+        player = self._player
+        if player is None:
+            return
+        if snap is None:
+            if not player.is_running:
+                self._render_finished()
+                return
+            try:
+                snap = _Playback.read(player, self.book.duration_ms)
+            except MpvError:
+                return
+
+        position = snap.position
+        duration = snap.duration or (self.book.duration_ms / 1000)
+        paused = snap.paused
+
         self._last_position_ms = int(position * 1000)
+        self._ticks_since_checkpoint += 1
+        if self._ticks_since_checkpoint >= self._CHECKPOINT_EVERY_TICKS:
+            self._ticks_since_checkpoint = 0
+            self._flush_progress(final=False)
         pct = int(position / duration * 100) if duration else 0
         self.query_one("#bar", ProgressBar).update(total=100, progress=min(100, pct))
 
         if self._sleep_remaining_seconds is not None and not paused:
             self._sleep_remaining_seconds = max(0.0, self._sleep_remaining_seconds - 1.0)
             if self._sleep_remaining_seconds <= 0:
-                player.set_paused(True)
+                self._control(lambda p: p.set_paused(True))
                 paused = True
                 self._sleep_remaining_seconds = None
                 self._sleep_preset_index = 0
@@ -156,7 +295,7 @@ class PlayerScreen(Screen[int]):
             f"{'paused' if paused else 'playing'}   speed {self._speed:.1f}x   "
             f"vol {self._volume:.0f}%{sleep_part}"
         )
-        if player.eof_reached:
+        if snap.eof:
             self.query_one("#state", Static).update("Finished")
 
         chapter_row = self.query_one("#chapter-row", Static)
@@ -190,7 +329,8 @@ class PlayerScreen(Screen[int]):
             return
         idx = self._current_chapter_index()
         if idx is not None and idx + 1 < len(self._chapters):
-            self._player.seek_absolute(self._chapters[idx + 1].start_ms / 1000)
+            target = self._chapters[idx + 1].start_ms / 1000
+            self._control(lambda p: p.seek_absolute(target))
 
     def action_previous_chapter(self) -> None:
         if not self._player or not self._chapters:
@@ -204,62 +344,87 @@ class PlayerScreen(Screen[int]):
             target = self._chapters[idx - 1]
         else:
             target = chapter
-        self._player.seek_absolute(target.start_ms / 1000)
+        target_s = target.start_ms / 1000
+        self._control(lambda p: p.seek_absolute(target_s))
 
     def action_toggle_pause(self) -> None:
-        if self._player:
-            self._player.toggle_pause()
+        self._control(lambda p: p.toggle_pause())
 
     def action_seek_back(self) -> None:
-        if self._player:
-            self._player.seek_relative(-30)
+        self._control(lambda p: p.seek_relative(-30))
 
     def action_seek_forward(self) -> None:
-        if self._player:
-            self._player.seek_relative(30)
+        self._control(lambda p: p.seek_relative(30))
 
     def action_seek_back_long(self) -> None:
-        if self._player:
-            self._player.seek_relative(-60)
+        self._control(lambda p: p.seek_relative(-60))
 
     def action_seek_forward_long(self) -> None:
-        if self._player:
-            self._player.seek_relative(60)
+        self._control(lambda p: p.seek_relative(60))
 
     def action_speed_up(self) -> None:
-        if self._player:
-            self._speed = min(3.0, round(self._speed + 0.1, 1))
-            self._player.set_speed(self._speed)
-            self._settings.set_playback_speed(self._speed)
+        if self._player is None:
+            return
+        self._speed = min(3.0, round(self._speed + 0.1, 1))
+        self._control(lambda p: p.set_speed(self._speed))
+        self._settings.set_playback_speed(self._speed)
 
     def action_speed_down(self) -> None:
-        if self._player:
-            self._speed = max(0.5, round(self._speed - 0.1, 1))
-            self._player.set_speed(self._speed)
-            self._settings.set_playback_speed(self._speed)
+        if self._player is None:
+            return
+        self._speed = max(0.5, round(self._speed - 0.1, 1))
+        self._control(lambda p: p.set_speed(self._speed))
+        self._settings.set_playback_speed(self._speed)
 
     def action_volume_up(self) -> None:
-        if self._player:
-            self._volume = min(100.0, self._volume + 5)
-            self._player.set_volume(self._volume)
-            self._settings.set_playback_volume(self._volume)
+        if self._player is None:
+            return
+        self._volume = min(100.0, self._volume + 5)
+        self._control(lambda p: p.set_volume(self._volume))
+        self._settings.set_playback_volume(self._volume)
 
     def action_volume_down(self) -> None:
-        if self._player:
-            self._volume = max(0.0, self._volume - 5)
-            self._player.set_volume(self._volume)
-            self._settings.set_playback_volume(self._volume)
+        if self._player is None:
+            return
+        self._volume = max(0.0, self._volume - 5)
+        self._control(lambda p: p.set_volume(self._volume))
+        self._settings.set_playback_volume(self._volume)
 
     def action_cycle_sleep_timer(self) -> None:
         self._sleep_preset_index = (self._sleep_preset_index + 1) % len(self._SLEEP_PRESETS_MIN)
         minutes = self._SLEEP_PRESETS_MIN[self._sleep_preset_index]
         self._sleep_remaining_seconds = float(minutes * 60) if minutes else None
 
+    def _flush_progress(self, *, final: bool) -> None:
+        """Hand the current position to the owner to persist. Periodic
+        (final=False) calls are skipped when nothing moved; the final call
+        (close / unmount) always goes through so the owner can also push it
+        to Audible and run end-of-book detection."""
+        if self._on_progress is None:
+            return
+        if not final and self._last_position_ms == self._saved_position_ms:
+            return
+        try:
+            self._on_progress(self._last_position_ms, final=final)
+        except Exception:  # noqa: BLE001
+            logger.warning("progress checkpoint failed", exc_info=True)
+        self._saved_position_ms = self._last_position_ms
+
     def action_close(self) -> None:
-        if self._player:
+        if self._player and self._player.is_running:
+            # Grab a fresh position before stopping -- the last _tick can be
+            # up to a second stale. Ignore a 0 (a transient IPC read failure
+            # shouldn't rewind the resume point to the start of the book).
+            pos_ms = int(self._player.position_seconds * 1000)
+            if pos_ms > 0:
+                self._last_position_ms = pos_ms
             self._player.stop()
         self.dismiss(self._last_position_ms)
 
     def on_unmount(self) -> None:
         if self._player:
             self._player.stop()
+        # Fires for an explicit q/esc *and* for a hard app quit -- the sole
+        # write path used to be the dismiss() result callback, which a
+        # ctrl+q never reached, losing the whole session.
+        self._flush_progress(final=True)

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
+import webbrowser
+from collections.abc import Callable
 
 import audible
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, LoadingIndicator, Select, Static
 
-from voxcodex.screens.modals import MessageModal, PromptModal
+from voxcodex.screens.modals import PromptModal
 from voxcodex.services import auth
 
 LOCALES = [
@@ -30,6 +34,16 @@ LOCALES = [
 
 class LoginScreen(Screen[None]):
     """Handles both first-run login and unlocking an existing encrypted auth file."""
+
+    class Authenticated(Message):
+        """Posted once login/unlock succeeds. A real Message rather than a
+        plain method called directly on the app -- the latter shadowed
+        Textual's own on_* handler convention and would have silently
+        collided with a real Authenticated message landing here later."""
+
+        def __init__(self, authenticator: audible.Authenticator) -> None:
+            self.authenticator = authenticator
+            super().__init__()
 
     BINDINGS = [("ctrl+q", "quit_app", "Quit"), ("escape", "quit_app", "Cancel / quit")]
 
@@ -66,6 +80,13 @@ class LoginScreen(Screen[None]):
     def __init__(self, unlock_only: bool) -> None:
         super().__init__()
         self._unlock_only = unlock_only
+        # Set on unmount so a login worker parked in _blocking_prompt (waiting
+        # on an OTP/CAPTCHA the user will now never enter) can give up instead
+        # of blocking asyncio's executor forever and hanging the process exit.
+        self._shutting_down = threading.Event()
+
+    def on_unmount(self) -> None:
+        self._shutting_down.set()
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -80,7 +101,10 @@ class LoginScreen(Screen[None]):
                 )
             with Vertical(id="form"):
                 if self._unlock_only:
-                    yield Static("Vault password (blank if you skipped encryption):", classes="field-label")
+                    yield Static(
+                        "Vault password (blank if you skipped encryption):",
+                        classes="field-label",
+                    )
                     yield Input(password=True, id="vault-password")
                 else:
                     yield Static("Marketplace:", classes="field-label")
@@ -122,7 +146,10 @@ class LoginScreen(Screen[None]):
     @on(Input.Submitted)
     def _input_submitted(self, event: Input.Submitted) -> None:
         """Enter in a field advances to the next one, or submits on the last."""
-        order = ["vault-password"] if self._unlock_only else ["username", "password", "vault-password"]
+        order = (
+            ["vault-password"] if self._unlock_only
+            else ["username", "password", "vault-password"]
+        )
         if event.input.id not in order:
             return
         idx = order.index(event.input.id)
@@ -138,8 +165,7 @@ class LoginScreen(Screen[None]):
     @on(Button.Pressed, "#reset")
     def _reset(self) -> None:
         auth.logout()
-        self.app.pop_screen()
-        self.app.push_screen(LoginScreen(unlock_only=False))
+        self.app.switch_screen(LoginScreen(unlock_only=False))
 
     @on(Button.Pressed, "#quit")
     def _quit_pressed(self) -> None:
@@ -152,25 +178,29 @@ class LoginScreen(Screen[None]):
         self.query_one("#status", Static).update(text)
 
     def _start_unlock(self) -> None:
+        if self.has_class("busy"):
+            return
         password = self.query_one("#vault-password", Input).value or None
         self.add_class("busy")
         self._set_status("")
         self._do_unlock(password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_unlock(self, password: str | None) -> None:
         try:
             authenticator = auth.load(password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._unlock_failed, str(exc))
+            self._call_back(self._unlock_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _unlock_failed(self, message: str) -> None:
         self.remove_class("busy")
         self._set_status(f"[red]Could not unlock: {message}[/red]")
 
     def _start_login(self) -> None:
+        if self.has_class("busy"):
+            return
         username = self.query_one("#username", Input).value.strip()
         password = self.query_one("#password", Input).value
         locale = str(self.query_one("#locale", Select).value)
@@ -182,7 +212,7 @@ class LoginScreen(Screen[None]):
         self._set_status("Signing in...")
         self._do_login(username, password, locale, vault_password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_login(
         self, username: str, password: str, locale: str, vault_password: str | None
     ) -> None:
@@ -207,35 +237,33 @@ class LoginScreen(Screen[None]):
             authenticator = auth.login(username, password, locale, callbacks)
             auth.save(authenticator, vault_password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._login_failed, str(exc))
+            self._call_back(self._login_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _start_external_login(self) -> None:
+        if self.has_class("busy"):
+            return
         locale = str(self.query_one("#locale", Select).value)
         vault_password = self.query_one("#vault-password", Input).value or None
         self.add_class("busy")
         self._set_status("Starting browser login...")
         self._do_external_login(locale, vault_password)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
     def _do_external_login(self, locale: str, vault_password: str | None) -> None:
         callbacks = auth.LoginCallbacks(login_url=self._external_url_prompt)
         try:
             authenticator = auth.login_external(locale, callbacks)
             auth.save(authenticator, vault_password)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
-            self.app.call_from_thread(self._login_failed, str(exc))
+            self._call_back(self._login_failed, str(exc))
             return
-        self.app.call_from_thread(self._login_succeeded, authenticator)
+        self._call_back(self._login_succeeded, authenticator)
 
     def _external_url_prompt(self, url: str) -> str:
-        import webbrowser
-
-        try:
+        with contextlib.suppress(Exception):  # noqa: BLE001
             webbrowser.open(url)
-        except Exception:  # noqa: BLE001
-            pass
         message = (
             "Open this URL in any web browser (a tab may have opened for you "
             "already):\n\n"
@@ -247,22 +275,41 @@ class LoginScreen(Screen[None]):
         )
         return self._blocking_prompt("Browser login", message, allow_empty=False)
 
+    def _call_back(self, fn: Callable[..., None], *args: object) -> None:
+        """call_from_thread, but a no-op once the screen is tearing down --
+        the app loop may be gone, and there's nothing left to update."""
+        if self._shutting_down.is_set():
+            return
+        with contextlib.suppress(RuntimeError):
+            self.app.call_from_thread(fn, *args)
+
     def _blocking_prompt(self, title: str, message: str, allow_empty: bool = False) -> str:
-        """Runs on the login worker thread; blocks it until the user answers in the UI."""
+        """Runs on the login worker thread; blocks it until the user answers
+        in the UI -- or until the screen is torn down (ctrl+q during an OTP
+        prompt), in which case it returns "" so the login flow fails cleanly
+        instead of the worker parking here forever and hanging process exit."""
         event = threading.Event()
         result: list[str] = [""]
 
         def _push() -> None:
-            def _done(value: str) -> None:
-                result[0] = value
+            def _done(value: str | None) -> None:
+                result[0] = value or ""
                 event.set()
 
             self.app.push_screen(
                 PromptModal(title, message, password=False, allow_empty=allow_empty), _done
             )
 
-        self.app.call_from_thread(_push)
-        event.wait()
+        if self._shutting_down.is_set():
+            return ""
+        try:
+            self.app.call_from_thread(_push)
+        except RuntimeError:
+            return ""
+
+        while not event.wait(timeout=0.2):
+            if self._shutting_down.is_set():
+                return ""
         return result[0]
 
     def _login_failed(self, message: str) -> None:
@@ -271,4 +318,4 @@ class LoginScreen(Screen[None]):
 
     def _login_succeeded(self, authenticator: audible.Authenticator) -> None:
         self.remove_class("busy")
-        self.app.on_authenticated(authenticator)
+        self.post_message(self.Authenticated(authenticator))
