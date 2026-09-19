@@ -7,6 +7,7 @@ Python methods behind them.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import httpx
@@ -1199,6 +1200,60 @@ async def test_play_does_not_mask_an_unexpected_bug_as_a_playback_failure(monkey
         for _ in range(10):
             await asyncio.sleep(0.02)
         assert "Could not start playback" not in str(screen.query_one("#status").content)
+
+
+# -- worker group collisions (C2/M10) --------------------------------------
+
+
+async def test_pressing_play_twice_quickly_opens_only_one_player_screen(monkeypatch):
+    """_open_player runs with group="player", exclusive=True -- starting a
+    second one is meant to cancel the first rather than have both race to
+    push a PlayerScreen. Regression test for C2 (all three background
+    workers used to share Textual's *default* group, so any one of them
+    starting cancelled the others outright)."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    unblock_first_call = threading.Event()
+    entered_calls = []
+
+    class BlockingFirstCallAPI(FakeAPI):
+        def get_license(self, asin, quality="high"):
+            # The first call blocks until released below, standing in for a
+            # slow network response -- long enough for a second "p" press to
+            # land and start a second worker in the same exclusive group.
+            # Recorded on entry (not via the base class's license_calls,
+            # which only grows once a call actually returns) so the test can
+            # detect that worker #1 has started, not just that it finished.
+            is_first = len(entered_calls) == 0
+            entered_calls.append((asin, quality))
+            if is_first:
+                unblock_first_call.wait(timeout=5)
+            return super().get_license(asin, quality)
+
+    book = _book("B1", "One")
+    api = BlockingFirstCallAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+
+        await pilot.press("p")  # worker #1: enters get_license, blocks
+        await _wait_until(lambda: len(entered_calls) == 1)
+        await pilot.press("p")  # worker #2: exclusive=True cancels #1
+
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        unblock_first_call.set()  # let worker #1 resume and hit is_cancelled
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+
+        assert len(api.license_calls) == 2  # both workers did call get_license...
+        player_screens = [s for s in app.screen_stack if isinstance(s, PlayerScreen)]
+        assert len(player_screens) == 1  # ...but only the second ever opened a player
 
 
 async def test_library_load_fetches_chapter_counts_in_the_background():

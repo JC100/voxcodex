@@ -7,6 +7,7 @@ import logging
 import stat
 from pathlib import Path
 
+import audible
 import audible.login as login_internals
 
 from voxcodex import config
@@ -137,3 +138,48 @@ def test_save_pre_creates_the_auth_file_at_0600_before_writing(tmp_path, monkeyp
     auth.save(_RecordingAuthenticator(), vault_password=None)
 
     assert seen_mode == 0o600
+
+
+# -- load / logout / is_registered (M10) -----------------------------------
+
+
+def test_load_passes_the_auth_file_path_and_vault_password(tmp_path, monkeypatch):
+    _patch_dirs(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        audible.Authenticator,
+        "from_file",
+        lambda filename, password=None: calls.append((filename, password)) or "AUTHENTICATOR",
+    )
+
+    result = auth.load(vault_password="hunter2")
+
+    assert calls == [(config.AUTH_FILE, "hunter2")]
+    assert result == "AUTHENTICATOR"
+
+
+def test_is_registered_false_when_no_auth_file_exists(tmp_path, monkeypatch):
+    _patch_dirs(monkeypatch, tmp_path)
+    assert auth.is_registered() is False
+
+
+def test_is_registered_true_once_saved(tmp_path, monkeypatch):
+    _patch_dirs(monkeypatch, tmp_path)
+    auth.save(_FakeAuthenticator(), vault_password=None)
+    assert auth.is_registered() is True
+
+
+def test_logout_removes_the_auth_file(tmp_path, monkeypatch):
+    _patch_dirs(monkeypatch, tmp_path)
+    auth.save(_FakeAuthenticator(), vault_password=None)
+    assert config.AUTH_FILE.exists()
+
+    auth.logout()
+
+    assert not config.AUTH_FILE.exists()
+    assert auth.is_registered() is False
+
+
+def test_logout_is_a_no_op_when_never_registered(tmp_path, monkeypatch):
+    _patch_dirs(monkeypatch, tmp_path)
+    auth.logout()  # must not raise
