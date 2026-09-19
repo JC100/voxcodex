@@ -22,10 +22,23 @@ DOWNLOADS_DIR = DATA_DIR / "downloads"
 LOG_FILE = DATA_DIR / "voxcodex.log"
 
 
+def _mkdir_private(path: Path) -> None:
+    # mode= only applies at creation -- exist_ok=True silently no-ops on an
+    # already-existing dir, so a directory made before this hardening (or by
+    # some other, laxer umask) needs an explicit chmod too. This directory
+    # holds auth tokens, purchase history, and DRM keys/vouchers; nothing
+    # under it should be group/other-readable.
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
 def ensure_dirs() -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    _mkdir_private(CONFIG_DIR)
+    _mkdir_private(DATA_DIR)
+    _mkdir_private(DOWNLOADS_DIR)
 
 
 def atomic_write_text(path: Path, text: str) -> None:

@@ -1,6 +1,12 @@
+import stat
+
 import pytest
 
 from voxcodex import config
+
+
+def _mode(path):
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 def test_ensure_dirs_creates_config_data_and_downloads_dirs(tmp_path, monkeypatch):
@@ -31,6 +37,42 @@ def test_ensure_dirs_is_idempotent(tmp_path, monkeypatch):
     config.ensure_dirs()  # must not raise on the second call
 
     assert config_dir.is_dir()
+
+
+# -- private permissions (M2) ------------------------------------------
+
+
+def test_ensure_dirs_creates_directories_private(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DOWNLOADS_DIR", data_dir / "downloads")
+
+    config.ensure_dirs()
+
+    assert _mode(config_dir) == 0o700
+    assert _mode(data_dir) == 0o700
+    assert _mode(data_dir / "downloads") == 0o700
+
+
+def test_ensure_dirs_tightens_a_pre_existing_looser_directory(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o755)
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DOWNLOADS_DIR", data_dir / "downloads")
+
+    config.ensure_dirs()
+
+    assert _mode(config_dir) == 0o700
+
+
+def test_atomic_write_text_writes_the_file_private(tmp_path):
+    target = tmp_path / "state.json"
+    config.atomic_write_text(target, '{"a": 1}')
+    assert _mode(target) == 0o600
 
 
 def test_downloads_dir_is_under_data_dir():

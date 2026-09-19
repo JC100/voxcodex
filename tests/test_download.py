@@ -1,4 +1,5 @@
 import json
+import stat
 
 import pytest
 
@@ -153,6 +154,22 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
     }
 
     assert progress_calls == [(6, 11), (11, 11)]
+
+
+def test_download_book_writes_the_voucher_private():
+    """M2: the voucher holds the AES key + iv, so it should never be left
+    at the process's default umask (typically 0644)."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="thekey", iv="theiv", acr="CR!ABC",
+    )
+    response = FakeResponse([b"hello world"], headers={"content-length": "11"})
+    api = FakeAPI(license_, response)
+
+    download.download_book(_book("B001"), api)
+
+    mode = stat.S_IMODE(download.voucher_path_for("B001").stat().st_mode)
+    assert mode == 0o600
 
 
 def test_download_book_propagates_license_denied():

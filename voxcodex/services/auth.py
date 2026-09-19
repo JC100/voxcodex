@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -168,16 +169,25 @@ def login_external(locale: Locale, callbacks: LoginCallbacks) -> audible.Authent
 
 def save(auth: audible.Authenticator, vault_password: str | None) -> None:
     config.ensure_dirs()
+    # audible's to_file() writes via Path.write_text/write_bytes, which
+    # truncates an existing file in place rather than recreating it -- so
+    # pre-creating the file at 0600 here means it never has a window (nor,
+    # for the encrypted branch, a permanent gap) at the default 0644. The
+    # chmod afterwards is a defensive fallback in case that ever changes.
+    try:
+        fd = os.open(config.AUTH_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except OSError:
+        pass
     auth.to_file(
         config.AUTH_FILE,
         password=vault_password or None,
         encryption="json" if vault_password else False,
     )
-    if not vault_password:
-        try:
-            config.AUTH_FILE.chmod(0o600)
-        except OSError:
-            pass
+    try:
+        config.AUTH_FILE.chmod(0o600)
+    except OSError:
+        pass
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:

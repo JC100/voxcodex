@@ -81,7 +81,10 @@ def download_book(
 
 
 def _write_voucher(asin: str, license_: License) -> None:
-    voucher_path_for(asin).write_text(
+    # atomic_write_text's temp-file-then-rename also leaves the voucher at
+    # 0600 -- it holds the AES key and iv needed to decrypt the audio.
+    config.atomic_write_text(
+        voucher_path_for(asin),
         json.dumps(
             {
                 "asin": asin,
@@ -96,7 +99,7 @@ def _write_voucher(asin: str, license_: License) -> None:
                 "acr": license_.acr,
             },
             indent=2,
-        )
+        ),
     )
 
 
