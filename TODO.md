@@ -2,10 +2,9 @@
 
 ## Status
 
-- Critical (C1-C4) and High (H1-H10) findings from the 2026-08-31 code
-  review: done.
-- Medium (M1-M10): done.
-- Low (L1-L13): not started -- see below.
+- Every finding from the 2026-08-31 code review is done: Critical (C1-C4),
+  High (H1-H10), Medium (M1-M10), and Low (L1-L13) below.
+- No open items right now. Next work goes here when it starts.
 
 Full finding detail (rationale, suggested fix) lives in
 `docs/code-review-2026-08-31.html`. Its line numbers are stale after the
@@ -52,8 +51,10 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L12 -- `quality` (`services/api.py`, two call sites) silently
       coerced any non-"normal" value to "High". Added `_api_quality`,
       shared by both, which raises `ValueError` on anything else.
-- [ ] L13 -- `downloads/` has no UI affordance for total size, bulk
-      cleanup, or per-item size display.
+- [x] L13 -- `downloads/` has no UI affordance for total size, bulk
+      cleanup, or per-item size display. Added a "Size" column, a total
+      downloaded size in the sort/filter label, and a "X" (delete finished
+      downloads) bulk-cleanup keybinding.
 
 ## Keeping this file current
 

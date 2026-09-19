@@ -99,6 +99,18 @@ def test_is_downloaded_true_when_both_files_exist():
     assert download.is_downloaded("B001") is True
 
 
+def test_downloaded_size_returns_the_audio_file_size():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"x" * 12_345)
+    download.voucher_path_for("B001").write_text("{}")
+
+    assert download.downloaded_size("B001") == 12_345
+
+
+def test_downloaded_size_none_when_not_downloaded():
+    assert download.downloaded_size("B001") is None
+
+
 def test_delete_download_removes_both_files():
     config.DOWNLOADS_DIR.mkdir(parents=True)
     download.audio_path_for("B001").write_bytes(b"data")

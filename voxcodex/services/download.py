@@ -34,6 +34,16 @@ def is_downloaded(asin: str) -> bool:
     return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
 
 
+def downloaded_size(asin: str) -> int | None:
+    """Size in bytes of `asin`'s downloaded audio file, or None if it isn't
+    downloaded (or the file vanished between the is_downloaded check and
+    this call -- e.g. deleted from another VoxCodex instance)."""
+    try:
+        return audio_path_for(asin).stat().st_size
+    except OSError:
+        return None
+
+
 def sweep_stale_downloads() -> None:
     """Removes any leftover `*.part` file in DOWNLOADS_DIR. Under normal
     operation `download_book` cleans up its own tmp file on every failure

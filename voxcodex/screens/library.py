@@ -30,7 +30,9 @@ from voxcodex.services.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded")
+COLUMNS = (
+    "Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded", "Size",
+)
 
 # Failures a chapter-metadata fetch can actually raise: a network/API
 # problem. Anything else (a real bug -- bad response shape, etc.) should
@@ -44,6 +46,15 @@ _CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError)
 _PLAYER_OPEN_ERRORS = (
     RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, httpx.HTTPError, AudibleError,
 )
+
+
+def _format_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 def _format_age(seconds: float) -> str:
@@ -164,6 +175,7 @@ class LibraryScreen(Screen[None]):
         ("d", "download_selected", "Download"),
         ("p,space", "play_selected", "Play"),
         ("x", "delete_selected", "Delete download"),
+        ("X", "delete_finished_downloads", "Delete finished downloads"),
         ("u", "unmark_finished", "Unmark finished"),
         ("r", "refresh", "Refresh"),
         ("o", "cycle_sort", "Sort"),
@@ -385,6 +397,12 @@ class LibraryScreen(Screen[None]):
             text = f"{book.progress_pct}%"
         return text + (" ✓" if book.is_finished else "")
 
+    def _size_cell(self, book: Book) -> str:
+        if not book.is_downloaded:
+            return ""
+        size = download.downloaded_size(book.asin)
+        return _format_size(size) if size is not None else ""
+
     def _refresh_table(self) -> None:
         # Reached from the background chapter-count worker too, which may
         # outlive the screen.
@@ -410,6 +428,7 @@ class LibraryScreen(Screen[None]):
                 self._progress_cell(book),
                 book.chapter_display,
                 "yes" if book.is_downloaded else "",
+                self._size_cell(book),
                 key=book.asin,
             )
         if selected_asin is not None:
@@ -501,6 +520,15 @@ class LibraryScreen(Screen[None]):
         self._refresh_table()
         self._set_status(f"Progress column: {_PROGRESS_DISPLAY_LABELS[self._progress_display]}")
 
+    def _total_downloaded_size(self) -> int:
+        total = 0
+        for book in self._books:
+            if book.is_downloaded:
+                size = download.downloaded_size(book.asin)
+                if size is not None:
+                    total += size
+        return total
+
     def _update_sort_filter_label(self) -> None:
         # Shown count lives here rather than in #status: #status carries
         # transient messages (download progress, offline banner, etc.) that
@@ -512,9 +540,11 @@ class LibraryScreen(Screen[None]):
             if len(self._filtered) != len(self._books)
             else str(len(self._books))
         )
+        total_size = self._total_downloaded_size()
+        size_suffix = f"   {_format_size(total_size)} downloaded" if total_size else ""
         self.query_one("#sort-filter", Static).update(
             f"Sort: {_SORT_LABELS[self._sort_key]}   Filter: {_FILTER_LABELS[self._filter_key]}"
-            f"   ({count} shown)"
+            f"   ({count} shown){size_suffix}"
         )
 
     def _matches_filter(self, book: Book) -> bool:
@@ -648,6 +678,42 @@ class LibraryScreen(Screen[None]):
 
         self.app.push_screen(
             ConfirmModal("Delete download", f"Delete the local copy of '{book.title}'?"),
+            _confirmed,
+        )
+
+    def action_delete_finished_downloads(self) -> None:
+        """The only bulk cleanup affordance downloads/ has: one-at-a-time
+        via action_delete_selected doesn't scale once you've got a few
+        dozen finished books sitting on disk. Deliberately scoped to
+        is_downloaded AND is_finished -- an in-progress book never gets
+        swept up in this even if you're low on space."""
+        targets = [book for book in self._books if book.is_downloaded and book.is_finished]
+        if not targets:
+            self._set_status("No finished downloads to remove")
+            return
+        total_size = sum(
+            size for book in targets
+            if (size := download.downloaded_size(book.asin)) is not None
+        )
+
+        def _confirmed(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            for book in targets:
+                download.delete_download(book.asin)
+                book.is_downloaded = False
+            self._refresh_table()
+            self._set_status(
+                f"Removed {len(targets)} finished download"
+                f"{'s' if len(targets) != 1 else ''} ({_format_size(total_size)})"
+            )
+
+        self.app.push_screen(
+            ConfirmModal(
+                "Delete finished downloads",
+                f"Delete the local copy of {len(targets)} finished book"
+                f"{'s' if len(targets) != 1 else ''} ({_format_size(total_size)})?",
+            ),
             _confirmed,
         )
 

@@ -976,6 +976,154 @@ async def test_delete_confirmed_removes_download(monkeypatch):
         assert screen._books[0].is_downloaded is False
 
 
+# -- download size column, total, and bulk cleanup (L13) --------------------
+
+
+def test_format_size_formats_bytes_kb_mb_gb():
+    from voxcodex.screens.library import _format_size
+
+    assert _format_size(500) == "500 B"
+    assert _format_size(2_048) == "2 KB"
+    assert _format_size(5 * 1024 * 1024) == "5 MB"
+    assert _format_size(int(1.5 * 1024 * 1024 * 1024)) == "1.5 GB"
+
+
+async def test_size_column_shows_size_for_downloaded_books_blank_otherwise(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin == "B1")
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size",
+        lambda asin: 245 * 1024 * 1024 if asin == "B1" else None,
+    )
+    books = [_book("B1", "Downloaded"), _book("B2", "Not downloaded")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 2)
+
+        from textual.coordinate import Coordinate
+
+        size_column = COLUMNS.index("Size")
+        table = screen.query_one(DataTable)
+        assert table.get_cell_at(Coordinate(0, size_column)) == "245 MB"
+        assert table.get_cell_at(Coordinate(1, size_column)) == ""
+
+
+async def test_sort_filter_label_shows_total_downloaded_size(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2"))
+    sizes = {"B1": 1024 * 1024 * 1024, "B2": 512 * 1024 * 1024}
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size", lambda asin: sizes.get(asin)
+    )
+    books = [_book("B1", "One"), _book("B2", "Two"), _book("B3", "Three")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 3)
+
+        label = str(screen.query_one("#sort-filter").content)
+        assert "1.5 GB downloaded" in label
+
+
+async def test_sort_filter_label_omits_size_when_nothing_downloaded():
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+
+        label = str(screen.query_one("#sort-filter").content)
+        assert "downloaded" not in label
+
+
+async def test_delete_finished_downloads_requires_confirmation_and_removes_matching(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2")
+    )
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size", lambda asin: 100 * 1024 * 1024
+    )
+    delete_calls = []
+    monkeypatch.setattr(
+        library_module.download, "delete_download", lambda asin: delete_calls.append(asin)
+    )
+
+    finished_downloaded = _book("B1", "Finished, downloaded")
+    finished_downloaded.is_downloaded = True
+    finished_downloaded.is_finished = True
+    in_progress_downloaded = _book("B2", "In progress, downloaded")
+    in_progress_downloaded.is_downloaded = True
+    finished_not_downloaded = _book("B3", "Finished, not downloaded")
+    finished_not_downloaded.is_finished = True
+
+    books = [finished_downloaded, in_progress_downloaded, finished_not_downloaded]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 3)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+
+        # A confirmation modal should be blocking -- nothing deleted yet.
+        assert delete_calls == []
+
+        await pilot.click("#yes")
+        await pilot.pause()
+
+        assert delete_calls == ["B1"]
+        assert finished_downloaded.is_downloaded is False
+        assert in_progress_downloaded.is_downloaded is True  # untouched: not finished
+        assert "Removed 1 finished download (100 MB)" in str(
+            screen.query_one("#status").content
+        )
+
+
+async def test_delete_finished_downloads_cancelled_removes_nothing(monkeypatch):
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
+    monkeypatch.setattr(library_module.download, "downloaded_size", lambda asin: 1024)
+    delete_calls = []
+    monkeypatch.setattr(
+        library_module.download, "delete_download", lambda asin: delete_calls.append(asin)
+    )
+
+    book = _book("B1", "One")
+    book.is_downloaded = True
+    book.is_finished = True
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+        await pilot.click("#no")
+        await pilot.pause()
+
+        assert delete_calls == []
+        assert screen._books[0].is_downloaded is True
+
+
+async def test_delete_finished_downloads_is_a_no_op_when_none_match():
+    book = _book("B1", "One")  # not downloaded, not finished
+    screen = LibraryScreen(FakeAPI([book]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+
+        assert "No finished downloads to remove" in str(screen.query_one("#status").content)
+
+
 # -- unmark finished (L3) ---------------------------------------------------
 
 
