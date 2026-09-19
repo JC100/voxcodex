@@ -47,8 +47,8 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L10 -- `watch_theme` (`app.py`) writes to disk during `__init__`, so
       every launch does a settings write before the UI renders. Guarded
       with a `_loading_theme` flag.
-- [ ] L11 -- `import webbrowser` (`screens/login.py`,
-      `_external_url_prompt`) is inside a function. Move to module scope.
+- [x] L11 -- `import webbrowser` (`screens/login.py`,
+      `_external_url_prompt`) is inside a function. Moved to module scope.
 - [ ] L12 -- `quality` (`services/api.py`, two call sites) silently
       coerces any non-"normal" value to "High". Validate against the two
       accepted values.

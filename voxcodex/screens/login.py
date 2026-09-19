@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import webbrowser
 from collections.abc import Callable
 
 import audible
@@ -261,8 +262,6 @@ class LoginScreen(Screen[None]):
         self._call_back(self._login_succeeded, authenticator)
 
     def _external_url_prompt(self, url: str) -> str:
-        import webbrowser
-
         with contextlib.suppress(Exception):  # noqa: BLE001
             webbrowser.open(url)
         message = (
