@@ -66,6 +66,14 @@ class ProgressStore:
     def get_position_ms(self, asin: str) -> int:
         return int(self._data.get(asin, {}).get("position_ms", 0))
 
+    def get_updated_at(self, asin: str) -> float | None:
+        """Unix timestamp of the last local write for `asin`, or None if
+        there isn't one -- lets a caller compare recency against Audible's
+        own `last_updated` for the same title (see
+        `positions_with_updated_at_from_annotations`)."""
+        value = self._data.get(asin, {}).get("updated_at")
+        return float(value) if isinstance(value, (int, float)) else None
+
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
         # Reload-modify-write atomically: the player screen checkpoints
         # position on a timer as well as on close, so writes land often and
@@ -115,6 +123,33 @@ def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
     return positions
 
 
+def positions_with_updated_at_from_annotations(
+    records: list[dict[str, Any]],
+) -> dict[str, tuple[int, float]]:
+    """asin -> (position_ms, updated_at as a Unix timestamp), for every
+    record with both a recorded position and a parseable timestamp.
+
+    The timestamp is what lets `LibraryScreen` resolve a local vs. remote
+    position by *recency* rather than by magnitude -- a plain position_ms
+    can only ever grow, which gets a book started over elsewhere stuck
+    showing (and resuming at) the old, higher position forever.
+    """
+    result: dict[str, tuple[int, float]] = {}
+    for record in records:
+        asin, lph = _existing_last_position_heard(record)
+        if asin is None:
+            continue
+        updated_at = _parse_last_updated(lph.get("last_updated"))
+        if updated_at is None:
+            continue
+        try:
+            position_ms = int(lph.get("position_ms", 0))
+        except (TypeError, ValueError):
+            continue
+        result[asin] = (position_ms, updated_at.timestamp())
+    return result
+
+
 def most_recent_external_play(
     records: list[dict[str, Any]],
 ) -> tuple[str, datetime] | None:
@@ -129,18 +164,21 @@ def most_recent_external_play(
         asin, lph = _existing_last_position_heard(record)
         if asin is None:
             continue
-        raw_updated = lph.get("last_updated")
-        if not raw_updated:
-            continue
-        try:
-            updated_at = datetime.strptime(raw_updated, "%Y-%m-%d %H:%M:%S.%f").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
+        updated_at = _parse_last_updated(lph.get("last_updated"))
+        if updated_at is None:
             continue
         if best is None or updated_at > best[1]:
             best = (asin, updated_at)
     return best
+
+
+def _parse_last_updated(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
 
 
 def _existing_last_position_heard(

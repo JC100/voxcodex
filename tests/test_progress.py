@@ -1,3 +1,5 @@
+import time
+
 from voxcodex.services import progress
 
 
@@ -144,6 +146,45 @@ def test_fetch_remote_positions_end_to_end():
     records = [_existing("B001", 4242), _does_not_exist("B002")]
     api = FakeAPI(response=_annotations_response(records))
     assert progress.fetch_remote_positions(api, ["B001", "B002"]) == {"B001": 4242}
+
+
+# -- positions_with_updated_at_from_annotations (M5) ----------------------
+
+
+def test_positions_with_updated_at_includes_the_timestamp():
+    records = [_existing("B001", 4242, last_updated="2026-08-20 23:35:05.608")]
+    result = progress.positions_with_updated_at_from_annotations(records)
+    assert result.keys() == {"B001"}
+    position_ms, updated_at = result["B001"]
+    assert position_ms == 4242
+    import datetime
+    expected = datetime.datetime(2026, 8, 20, 23, 35, 5, 608000, tzinfo=datetime.timezone.utc)
+    assert updated_at == expected.timestamp()
+
+
+def test_positions_with_updated_at_excludes_titles_never_played():
+    assert progress.positions_with_updated_at_from_annotations([_does_not_exist("B001")]) == {}
+
+
+def test_positions_with_updated_at_excludes_an_unparseable_timestamp():
+    record = _existing("B001", 4242, last_updated="not-a-timestamp")
+    assert progress.positions_with_updated_at_from_annotations([record]) == {}
+
+
+# -- ProgressStore.get_updated_at (M5) -------------------------------------
+
+
+def test_get_updated_at_is_none_for_unknown_asin(tmp_path):
+    store = progress.ProgressStore(path=tmp_path / "progress.json")
+    assert store.get_updated_at("UNKNOWN") is None
+
+
+def test_get_updated_at_reflects_the_last_set_position_ms_call(tmp_path):
+    store = progress.ProgressStore(path=tmp_path / "progress.json")
+    before = time.time()
+    store.set_position_ms("B001", 1_000)
+    after = time.time()
+    assert before <= store.get_updated_at("B001") <= after
 
 
 # -- most_recent_external_play -------------------------------------------

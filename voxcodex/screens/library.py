@@ -77,6 +77,32 @@ def _reached_end(position_ms: int, duration_ms: int) -> bool:
     return duration_ms > 0 and position_ms >= duration_ms * _FINISHED_FRACTION
 
 
+def _resolve_progress_ms(
+    library_ms: int,
+    local_ms: int,
+    local_updated_at: float | None,
+    remote_ms: int,
+    remote_updated_at: float | None,
+) -> int:
+    """Picks the position to show/resume from -- the *newer* of the local
+    (this app) and remote (Audible's own last-heard record) positions by
+    timestamp, not the larger of the two by value. A plain max() gets stuck
+    at the old high-water mark forever once you restart a book from
+    chapter 1 on another device: only an in-app close can ever lower it.
+
+    Falls back to `library_ms` (the library listing's own percent_complete-
+    derived value, always fresh as of this fetch but untimestamped) when
+    there's no local or remote record to compare at all.
+    """
+    if local_updated_at is not None and remote_updated_at is not None:
+        return local_ms if local_updated_at >= remote_updated_at else remote_ms
+    if local_updated_at is not None:
+        return local_ms
+    if remote_updated_at is not None:
+        return remote_ms
+    return library_ms
+
+
 def _current_chapter_number(chapters: list[Chapter], position_ms: int) -> int | None:
     """1-based number of the chapter containing `position_ms`, or None if
     `chapters` is empty.
@@ -208,7 +234,7 @@ class LibraryScreen(Screen[None]):
         library_cache.save(books)
 
         annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
-        remote_positions = progress.positions_from_annotations(annotations)
+        remote_positions = progress.positions_with_updated_at_from_annotations(annotations)
 
         most_recent = progress.most_recent_external_play(annotations)
         if most_recent is not None:
@@ -221,18 +247,23 @@ class LibraryScreen(Screen[None]):
         self.app.call_from_thread(self._populate, books)
 
     def _apply_local_state(
-        self, books: list[Book], remote_positions: dict[str, int] | None = None
+        self,
+        books: list[Book],
+        remote_positions: dict[str, tuple[int, float]] | None = None,
     ) -> None:
         """Fills in whatever we can know without a network call: local
-        download status and the further-along of the local/remote resume
-        position. Used for both a live fetch and an offline cache fallback
-        -- `remote_positions` is simply empty in the latter case."""
+        download status and the resume position. Used for both a live fetch
+        and an offline cache fallback -- `remote_positions` is simply empty
+        in the latter case."""
         remote_positions = remote_positions or {}
         for book in books:
             book.is_downloaded = download.is_downloaded(book.asin)
             local_ms = self.progress_store.get_position_ms(book.asin)
-            remote_ms = remote_positions.get(book.asin, 0)
-            book.progress_ms = max(book.progress_ms, local_ms, remote_ms)
+            local_updated_at = self.progress_store.get_updated_at(book.asin)
+            remote_ms, remote_updated_at = remote_positions.get(book.asin, (0, None))
+            book.progress_ms = _resolve_progress_ms(
+                book.progress_ms, local_ms, local_updated_at, remote_ms, remote_updated_at
+            )
 
     def _apply_cached_chapters(self, books: list[Book]) -> None:
         """Fills in chapter_total/chapter_current for any book already in

@@ -7,6 +7,7 @@ Python methods behind them.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from textual.app import App
@@ -19,6 +20,7 @@ from voxcodex.screens.library import (
     LibraryScreen,
     _current_chapter_number,
     _reached_end,
+    _resolve_progress_ms,
 )
 from voxcodex.services.api import Chapter, License
 
@@ -26,12 +28,24 @@ from voxcodex.services.api import Chapter, License
 class FakeProgressStore:
     def __init__(self, *args, **kwargs):
         self._data: dict[str, int] = {}
+        self._updated_at: dict[str, float] = {}
 
     def get_position_ms(self, asin: str) -> int:
         return self._data.get(asin, 0)
 
+    def get_updated_at(self, asin: str) -> float | None:
+        return self._updated_at.get(asin)
+
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
         self._data[asin] = position_ms
+        self._updated_at[asin] = time.time()
+
+    def seed(self, asin: str, position_ms: int, updated_at: float) -> None:
+        """Test-only helper: pre-populate a local position with an explicit
+        timestamp, bypassing set_position_ms's "now" so recency-comparison
+        tests can control which side is newer."""
+        self._data[asin] = position_ms
+        self._updated_at[asin] = updated_at
 
 
 class FakeSettings:
@@ -450,6 +464,57 @@ def test_current_chapter_number_is_one_once_actually_into_chapter_one():
 
 def test_current_chapter_number_none_for_no_chapters():
     assert _current_chapter_number([], position_ms=0) is None
+
+
+# -- progress resolution (M5) -------------------------------------------
+
+
+def test_resolve_progress_ms_prefers_the_newer_timestamp_even_if_smaller():
+    """The regression this guards: restarting a book from chapter 1 on
+    another device must actually lower the position here, not get stuck at
+    the old high-water mark forever."""
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=900_000, local_updated_at=1_000.0,
+        remote_ms=100_000, remote_updated_at=2_000.0,  # newer
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_prefers_local_when_it_is_newer():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=100_000, local_updated_at=2_000.0,  # newer
+        remote_ms=900_000, remote_updated_at=1_000.0,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_remote_when_no_local_record():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=0, local_updated_at=None,
+        remote_ms=100_000, remote_updated_at=2_000.0,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_local_when_no_remote_record():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=100_000, local_updated_at=2_000.0,
+        remote_ms=0, remote_updated_at=None,
+    )
+    assert result == 100_000
+
+
+def test_resolve_progress_ms_falls_back_to_library_value_when_neither_exists():
+    result = _resolve_progress_ms(
+        library_ms=500_000,
+        local_ms=0, local_updated_at=None,
+        remote_ms=0, remote_updated_at=None,
+    )
+    assert result == 500_000
 
 
 # -- reached-end detection --------------------------------------------
@@ -1131,3 +1196,48 @@ async def test_library_load_does_not_record_anything_when_nothing_was_ever_playe
     async with app.run_test():
         await _wait_until(lambda: len(screen._books) == 1)
         assert _fake_settings.last_played_externally_calls == []
+
+
+# -- progress merge on load (M5) -------------------------------------------
+
+
+def _existing_at(asin, last_updated, position_ms):
+    return {
+        "asin": asin,
+        "last_position_heard": {
+            "status": "Exists", "position_ms": position_ms, "last_updated": last_updated,
+        },
+    }
+
+
+async def test_library_load_prefers_the_newer_remote_position_over_a_larger_local_one():
+    """Regression test for the plain-max() bug: restarting a book from
+    chapter 1 on another device is a genuinely newer, lower position -- it
+    must not lose to a higher position left over locally from before."""
+    response = _annotations_response(
+        [_existing_at("B1", "2026-08-27 08:56:11.849", position_ms=100_000)]
+    )
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 900_000, updated_at=1_000.0)  # older, larger
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._books[0].progress_ms == 100_000
+
+
+async def test_library_load_keeps_the_newer_local_position_over_a_larger_remote_one():
+    response = _annotations_response(
+        [_existing_at("B1", "2019-01-24 09:21:16.892", position_ms=900_000)]
+    )
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, annotations_response=response)
+    screen = LibraryScreen(api)
+    screen.progress_store.seed("B1", 100_000, updated_at=time.time())  # newer, smaller
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert screen._books[0].progress_ms == 100_000
