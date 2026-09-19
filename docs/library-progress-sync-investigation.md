@@ -195,6 +195,91 @@ capture. Blockers hit, for next time:
   release APK. mitmproxy CA is installed into the conscrypt APEX
   (`c8750f0d.0`) already if the proxy route is retried.
 
+## 2026-09-20: emulator capture attempt, take two — Frida works, wrong layer
+
+Picking up the "Emulator capture attempt this session — blocked, not
+abandoned" thread from above, remotely (no hands-on-glass access to the
+laptop this time, so this session drove the emulator entirely via `adb`).
+
+**What got further than last time:**
+- `whispersync-re` AVD boots clean and stable with `-gpu guest` — the fix
+  noted above held. This machine also had far more free RAM this round
+  (~10GB vs. the ~3GB that plausibly caused the earlier ANRs).
+- `frida-server` (17.17.0, matched to the host's `frida` client version)
+  runs fine on the AVD as root (`adb root` works on this image).
+- Successfully reverse-engineered the app's R8-minified OkHttp usage
+  purely via Frida reflection (no decompiling): `Request`/`RequestBody`/
+  `Response`/`HttpUrl` all have their real getters inlined away, replaced
+  by single-letter-named direct field access (e.g. `Request.a` = url,
+  `.b` = method, `.c` = headers, `.d` = body). Recovered the real mapping
+  by dumping `getDeclaredFields()`/`getDeclaredMethods()` at runtime and
+  matching by type shape. `okhttp3.internal.http.CallServerInterceptor
+  .intercept(Interceptor$Chain)` is the one method name R8 leaves alone
+  (interface override), so it's the actual hook point — not
+  `Request.Builder.build()`, which got fully inlined away.
+- **New, unrelated bug found in this AVD image: touchscreen taps don't
+  register at all** (`input tap` / `input touchscreen swipe`) even though
+  the screen renders and `getevent -pl` shows valid touch devices. Key
+  events (`input keyevent`, including `KEYCODE_TAB`/`DPAD_CENTER` focus
+  navigation and, critically, `KEYCODE_MEDIA_PLAY`/`PAUSE`) all work
+  fine. Worked around it entirely by driving the app via media-session
+  keys instead of touch — confirmed real playback (position advanced,
+  "picking up where you left off" banner shown) without ever tapping the
+  screen. Root cause not investigated (GPU/input driver interaction under
+  `-gpu guest`, guess only) — if a future session has hands-on access,
+  check whether this AVD's touch issue reproduces there too before
+  spending time on it blind.
+- The interceptor hook also had to be widened to **every loaded
+  ClassLoader** (`Java.enumerateClassLoaders` + per-loader
+  `Java.classFactory.use(...)`), not just the default one Frida resolves
+  at attach time — confirmed 5 loaders have `CallServerInterceptor`
+  loaded (the app's own `base.apk`, an androidx window-extensions jar,
+  and three Google Play Services–related loaders). Default resolution
+  without this was silently hooking a copy that's never actually invoked
+  for this app's traffic.
+
+**Where it's blocked now, differently than before:** even with the hook
+correctly installed in all 5 loaders, **zero requests were captured**
+despite 40+ minutes of confirmed real playback. logcat during that window
+showed the app *is* making successful HTTP calls throughout
+(`MetricsTransporter: Successfully uploaded metrics; code: 200`,
+`TokenJobQueue: ... GetActorToken/GetToken ...`, a
+`com.audible.playersdk.common.workmanager.ProxyWorker`) — so the
+app's networking is working fine, it's just not going through
+`okhttp3.internal.http.CallServerInterceptor` at all. Conclusion: the
+SSO/token/metrics/player-SDK traffic layer (everything with
+`com.amazon.dcp.sso.*` token names) uses a separate, non-OkHttp internal
+Amazon HTTP stack, not the app-level OkHttpClient our hook was watching.
+Java-level interceptor hooking is the wrong tool for this specific
+traffic — network-level capture is required instead.
+
+**Why not just proxy it (yet):** the standard "set the system HTTP
+proxy" approach was already ruled out last session — the app doesn't
+honor it at all (see above: zero traffic reached mitmproxy, not even a
+failed CONNECT). The fix for *that* is OS-level transparent redirect
+(`iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT ...` run as
+root inside the guest, `adb reverse` to tunnel the redirected port to a
+transparent-mode proxy on the host) rather than a proxy *setting* the
+app can ignore. That still leaves TLS interception needing a trusted CA:
+this AVD is Android 15, where the system CA store lives in a read-only,
+dm-verity-protected Conscrypt APEX, so the pre-Android-10 "drop a cert
+into /system" trick (referenced above, from the older investigation)
+doesn't apply to this image — the `c8750f0d.0` cert mentioned above is
+**not** present on this AVD (checked; either a different/reset AVD state
+or that note was aspirational). The modern path is: install the proxy's
+CA as a *user* cert, then use Frida to bypass certificate-pinning checks
+at runtime (well-trodden technique, e.g. the various public "frida
+multi-unpinning" scripts) — not attempted yet.
+
+**Plan for next time:** the user is standing up a dedicated Squid
+instance in an LXC container on their Proxmox cluster instead of running
+a proxy on the laptop — sidesteps needing iptables/transparent-proxy
+setup *on the laptop itself*, though the AVD-side iptables REDIRECT (or
+equivalent — pointing the emulator's outbound traffic at that Squid
+instance) and the CA-trust + SSL-unpinning work above are still needed
+regardless of where the proxy itself lives. Session paused here; no
+capture attempted yet against the new Squid box.
+
 ## Open questions / next steps
 
 1. **Capture the real `Listening` payload** (see above) — the one thing
@@ -235,3 +320,14 @@ effect of the synthetic `Listening` events sent during testing — it is
 **cosmetic and hidden** behind the "Finished" badge in every Audible client,
 and opening either book on a real device (or the backend self-correcting) will
 re-derive it. lastpos is back to exactly the pre-investigation values.
+
+**2026-09-20 session:** no synthetic events were sent this time (capture
+never got far enough to replay anything) — the only account activity was
+genuine playback of `B01L790CUU` via the real Android app's own media
+controls, functionally identical to the user actually listening. Checked
+`annotations/lastpositions` after the session: still exactly
+`position_ms: 826234`, `last_updated: 2026-08-31 00:09:36` — unchanged
+from before this session started, so the ~40 minutes of in-app playback
+was never flushed to the server (app process was killed with the
+emulator before it pushed, and/or its push cadence is longer than the
+session). Nothing to restore; no ledger update needed.
