@@ -19,8 +19,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       never read. Resolved against the local position by recency (same
       `_resolve_progress_ms` M5 added) right before opening a streaming
       title in `_open_player`.
-- [ ] L3 -- `set_finished(asin, False)` (`screens/library.py`) is
-      unreachable -- no UI un-finishes a book.
+- [x] L3 -- `set_finished(asin, False)` (`screens/library.py`) is
+      unreachable -- no UI un-finishes a book. Added a "u" (unmark
+      finished) keybinding.
 - [ ] L4 -- `on_authenticated` (`app.py`) is a plain method called
       directly, shadowing Textual's `on_*` handler convention -- collides
       with a future real `Authenticated` message. Rename it, or make it a

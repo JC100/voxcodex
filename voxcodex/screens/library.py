@@ -156,6 +156,7 @@ class LibraryScreen(Screen[None]):
         ("d", "download_selected", "Download"),
         ("p,space", "play_selected", "Play"),
         ("x", "delete_selected", "Delete download"),
+        ("u", "unmark_finished", "Unmark finished"),
         ("r", "refresh", "Refresh"),
         ("o", "cycle_sort", "Sort"),
         ("f", "cycle_filter", "Filter"),
@@ -632,6 +633,20 @@ class LibraryScreen(Screen[None]):
             _confirmed,
         )
 
+    def action_unmark_finished(self) -> None:
+        """The only way to undo a "Finished" flag: the 0.98-of-duration
+        heuristic (`_reached_end`) can mis-fire on a book with long
+        trailing credits, and until now that was permanent from inside
+        VoxCodex -- push_finished(asin, False) was wired up but nothing
+        ever called it."""
+        book = self._selected_book()
+        if book is None or not book.is_finished:
+            return
+        book.is_finished = False
+        self._refresh_table()
+        self._set_status(f"Unmarked as finished: {book.title}")
+        self._push_finished(book.asin, False)
+
     # -- playback ----------------------------------------------------------
 
     def action_play_selected(self) -> None:
@@ -737,7 +752,7 @@ class LibraryScreen(Screen[None]):
                 try:
                     self._push_position(book.asin, acr, position_ms)
                     if newly_finished:
-                        self._push_finished(book.asin)
+                        self._push_finished(book.asin, True)
                 except Exception:  # noqa: BLE001
                     logger.debug("progress push on close failed", exc_info=True)
 
@@ -765,9 +780,10 @@ class LibraryScreen(Screen[None]):
             )
 
     @work(thread=True, exclusive=False, group="push_finished", exit_on_error=False)
-    def _push_finished(self, asin: str) -> None:
-        if not progress.push_finished(self.api, asin, True):
+    def _push_finished(self, asin: str, finished: bool) -> None:
+        if not progress.push_finished(self.api, asin, finished):
+            state = "Finished" if finished else "Un-finished"
             self.app.call_from_thread(
                 self._set_status,
-                "[yellow]Finished status saved locally; Audible sync failed[/yellow]",
+                f"[yellow]{state} status saved locally; Audible sync failed[/yellow]",
             )

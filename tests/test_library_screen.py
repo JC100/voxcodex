@@ -925,6 +925,61 @@ async def test_delete_confirmed_removes_download(monkeypatch):
         assert screen._books[0].is_downloaded is False
 
 
+# -- unmark finished (L3) ---------------------------------------------------
+
+
+async def test_unmark_finished_clears_the_flag_and_pushes_the_change():
+    book = _book("B1", "One")
+    book.is_finished = True
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+        assert screen._books[0].is_finished is False
+        assert "Unmarked as finished" in str(screen.query_one("#status").content)
+
+
+async def test_unmark_finished_is_a_no_op_when_not_finished():
+    book = _book("B1", "One")
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+        await pilot.pause()
+
+        assert api.set_finished_calls == []
+        assert screen._books[0].is_finished is False
+
+
+async def test_unmark_finished_shows_a_status_when_the_push_fails():
+    book = _book("B1", "One")
+    book.is_finished = True
+    api = FakeAPI([book], set_finished_exc=RuntimeError("boom"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+
+        await _wait_until(
+            lambda: "Un-finished status saved locally; Audible sync failed"
+            in str(screen.query_one("#status").content)
+        )
+        assert screen._books[0].is_finished is False  # local state still updated
+
+
 # -- playback / chapters -------------------------------------------------
 
 
