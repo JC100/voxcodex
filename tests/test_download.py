@@ -254,3 +254,60 @@ def test_download_book_passes_content_url_and_uses_get_method():
     (method, url, _kwargs), = api.client.session.calls
     assert method == "GET"
     assert url == "https://cdn.example/x.aaxc"
+
+
+def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
+    """M3: is_downloaded() requires both files, so writing the voucher
+    first means a crash between the two writes leaves a `.part` + an
+    orphaned voucher -- never a "downloaded" audio file with no voucher to
+    decrypt it."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    seen_audio_exists_when_voucher_written = None
+    original_write_voucher = download._write_voucher
+
+    def _spy(asin, license_arg):
+        nonlocal seen_audio_exists_when_voucher_written
+        seen_audio_exists_when_voucher_written = download.audio_path_for(asin).exists()
+        original_write_voucher(asin, license_arg)
+
+    download._write_voucher = _spy
+    try:
+        download.download_book(_book("B001"), api)
+    finally:
+        download._write_voucher = original_write_voucher
+
+    assert seen_audio_exists_when_voucher_written is False
+
+
+# -- sweep_stale_downloads (M3) -------------------------------------------
+
+
+def test_sweep_stale_downloads_removes_orphaned_part_files():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    stale = download.audio_path_for("B001").with_suffix(".part")
+    stale.write_bytes(b"partial")
+
+    download.sweep_stale_downloads()
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_downloads_leaves_completed_downloads_alone():
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"data")
+    download.voucher_path_for("B001").write_text("{}")
+
+    download.sweep_stale_downloads()
+
+    assert download.audio_path_for("B001").exists()
+    assert download.voucher_path_for("B001").exists()
+
+
+def test_sweep_stale_downloads_is_a_no_op_when_the_dir_does_not_exist_yet():
+    download.sweep_stale_downloads()  # must not raise

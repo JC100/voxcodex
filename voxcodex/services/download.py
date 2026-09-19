@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 from voxcodex import config
 from voxcodex.models import Book
 from voxcodex.services.api import AudibleAPI, License
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], None]
 CancelCheck = Callable[[], bool]
@@ -28,6 +31,23 @@ def audio_path_for(asin: str) -> Path:
 
 def is_downloaded(asin: str) -> bool:
     return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
+
+
+def sweep_stale_downloads() -> None:
+    """Removes any leftover `*.part` file in DOWNLOADS_DIR. Under normal
+    operation `download_book` cleans up its own tmp file on every failure
+    path, but a hard kill (SIGKILL, power loss, an unclean container exit)
+    skips that finally-equivalent cleanup entirely -- so a stale `.part`
+    from a previous run is swept once at startup, before it can be mistaken
+    for an in-progress download by anything else that walks this directory.
+    """
+    if not config.DOWNLOADS_DIR.is_dir():
+        return
+    for part_file in config.DOWNLOADS_DIR.glob("*.part"):
+        try:
+            part_file.unlink()
+        except OSError:
+            logger.debug("failed to remove stale .part file %s", part_file, exc_info=True)
 
 
 def download_book(
@@ -75,8 +95,12 @@ def download_book(
         tmp_path.unlink(missing_ok=True)
         raise
 
-    tmp_path.replace(audio_path)
+    # Voucher before rename: is_downloaded() requires both files, so a crash
+    # in between leaves `.part` (swept at next startup) and a voucher with
+    # no audio yet -- never an audio file reported as downloaded with no
+    # voucher to decrypt it.
     _write_voucher(book.asin, license_)
+    tmp_path.replace(audio_path)
     return audio_path
 
 

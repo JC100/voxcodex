@@ -10,7 +10,7 @@ from textual.app import App
 from voxcodex import config
 from voxcodex.screens.library import LibraryScreen
 from voxcodex.screens.login import LoginScreen
-from voxcodex.services import auth
+from voxcodex.services import auth, download
 from voxcodex.services.api import AudibleAPI
 from voxcodex.services.settings import Settings
 
@@ -47,6 +47,7 @@ class VoxCodexApp(App[None]):
 
     def on_mount(self) -> None:
         config.ensure_dirs()
+        download.sweep_stale_downloads()
         self.push_screen(LoginScreen(unlock_only=auth.is_registered()))
 
     def on_authenticated(self, authenticator: audible.Authenticator) -> None:
