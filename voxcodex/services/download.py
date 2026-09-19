@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from voxcodex import config
 from voxcodex.models import Book
@@ -131,7 +132,7 @@ def load_voucher(asin: str) -> dict[str, str] | None:
     path = voucher_path_for(asin)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return cast("dict[str, str]", json.loads(path.read_text()))
 
 
 def delete_download(asin: str) -> None:

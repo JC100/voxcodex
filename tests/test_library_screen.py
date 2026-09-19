@@ -157,7 +157,9 @@ class HostApp(App):
 
 
 def _book(asin, title, authors=None, series="", runtime_min=60):
-    return Book(asin=asin, title=title, authors=authors or [], series=series, runtime_min=runtime_min)
+    return Book(
+        asin=asin, title=title, authors=authors or [], series=series, runtime_min=runtime_min
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -670,7 +672,9 @@ async def test_sort_filter_label_shows_plain_count_when_nothing_is_filtered_out(
 async def test_filter_in_progress_excludes_finished_and_not_started():
     not_started = Book(asin="B1", title="Not started", progress_ms=0, duration_ms=1000)
     in_progress = Book(asin="B2", title="In progress", progress_ms=500, duration_ms=1000)
-    finished = Book(asin="B3", title="Finished", progress_ms=1000, duration_ms=1000, is_finished=True)
+    finished = Book(
+        asin="B3", title="Finished", progress_ms=1000, duration_ms=1000, is_finished=True
+    )
     screen = LibraryScreen(FakeAPI([not_started, in_progress, finished]))
     app = HostApp(screen)
 

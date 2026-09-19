@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from pathlib import Path
@@ -29,10 +30,8 @@ def _mkdir_private(path: Path) -> None:
     # holds auth tokens, purchase history, and DRM keys/vouchers; nothing
     # under it should be group/other-readable.
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o700)
-    except OSError:
-        pass
 
 
 def ensure_dirs() -> None:
@@ -53,8 +52,6 @@ def atomic_write_text(path: Path, text: str) -> None:
             f.write(text)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise

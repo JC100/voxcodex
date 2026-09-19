@@ -9,6 +9,7 @@ import pytest
 
 from voxcodex.services import player as player_module
 from voxcodex.services.player import MpvError, MpvNotFoundError, MpvPlayer
+import contextlib
 
 
 def test_raises_when_mpv_not_on_path(monkeypatch):
@@ -185,7 +186,7 @@ class FakeMpv:
             while self.alive:
                 try:
                     chunk = conn.recv(4096)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     break
@@ -212,10 +213,8 @@ class FakeMpv:
 
     def terminate(self):
         self.alive = False
-        try:
+        with contextlib.suppress(OSError):
             self._srv.close()
-        except OSError:
-            pass
 
     def wait(self, timeout=None):
         self._thread.join(timeout)
@@ -278,7 +277,8 @@ def test_start_passes_the_key_and_iv_via_a_private_include_file(fake_mpv):
     include_arg = next(arg for arg in fake_mpv[-1].cmd if arg.startswith("--include="))
     options_path = include_arg.split("=", 1)[1]
     assert stat.S_IMODE(os.stat(options_path).st_mode) == 0o600
-    contents = open(options_path).read()
+    with open(options_path) as f:
+        contents = f.read()
     assert "audible_key=thekey" in contents
     assert "audible_iv=theiv" in contents
 

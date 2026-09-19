@@ -101,7 +101,10 @@ def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str
     if not asins:
         return []
     try:
-        resp = api.client.get("annotations/lastpositions", asins=",".join(asins))
+        # See api.py's get_library for why this goes through a dict[str, Any]
+        # rather than a plain kwarg -- audible.Client.get's **kwargs stub.
+        params: dict[str, Any] = {"asins": ",".join(asins)}
+        resp = api.client.get("annotations/lastpositions", **params)
         records = resp.get("asin_last_position_heard_annots") if isinstance(resp, dict) else None
         return records if isinstance(records, list) else []
     except Exception:
@@ -113,9 +116,10 @@ def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
     """asin -> position_ms for every record with an actual recorded position."""
     positions: dict[str, int] = {}
     for record in records:
-        asin, lph = _existing_last_position_heard(record)
-        if asin is None:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
             continue
+        asin, lph = existing
         try:
             positions[asin] = int(lph.get("position_ms", 0))
         except (TypeError, ValueError):
@@ -136,9 +140,10 @@ def positions_with_updated_at_from_annotations(
     """
     result: dict[str, tuple[int, float]] = {}
     for record in records:
-        asin, lph = _existing_last_position_heard(record)
-        if asin is None:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
             continue
+        asin, lph = existing
         updated_at = _parse_last_updated(lph.get("last_updated"))
         if updated_at is None:
             continue
@@ -161,9 +166,10 @@ def most_recent_external_play(
     """
     best: tuple[str, datetime] | None = None
     for record in records:
-        asin, lph = _existing_last_position_heard(record)
-        if asin is None:
+        existing = _existing_last_position_heard(record)
+        if existing is None:
             continue
+        asin, lph = existing
         updated_at = _parse_last_updated(lph.get("last_updated"))
         if updated_at is None:
             continue
@@ -183,19 +189,23 @@ def _parse_last_updated(raw: Any) -> datetime | None:
 
 def _existing_last_position_heard(
     record: Any,
-) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+) -> tuple[str, dict[str, Any]] | None:
     """Pulls (asin, last_position_heard) out of one annotation record, but
     only if it actually has a recorded position -- Audible returns a record
     with status "DoesNotExist" (no `position_ms`/`last_updated` at all) for
     titles that have never been played anywhere, which is not an error, just
     nothing to report.
+
+    A single Optional return (rather than a `(None, None)` sentinel pair)
+    is what lets callers narrow both elements together with one `is None`
+    check, instead of asin's check leaving `lph` statically `dict | None`.
     """
     if not isinstance(record, dict):
-        return None, None
+        return None
     asin = record.get("asin")
     lph = record.get("last_position_heard")
     if not asin or not isinstance(lph, dict) or lph.get("status") != "Exists":
-        return None, None
+        return None
     return asin, lph
 
 

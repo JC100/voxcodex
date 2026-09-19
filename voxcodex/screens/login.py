@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import audible
 from textual import on, work
@@ -12,8 +14,11 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, LoadingIndicator, Select, Static
 
-from voxcodex.screens.modals import MessageModal, PromptModal
+from voxcodex.screens.modals import PromptModal
 from voxcodex.services import auth
+
+if TYPE_CHECKING:
+    from voxcodex.app import VoxCodexApp
 
 LOCALES = [
     ("United States", "us"),
@@ -88,7 +93,10 @@ class LoginScreen(Screen[None]):
                 )
             with Vertical(id="form"):
                 if self._unlock_only:
-                    yield Static("Vault password (blank if you skipped encryption):", classes="field-label")
+                    yield Static(
+                        "Vault password (blank if you skipped encryption):",
+                        classes="field-label",
+                    )
                     yield Input(password=True, id="vault-password")
                 else:
                     yield Static("Marketplace:", classes="field-label")
@@ -130,7 +138,10 @@ class LoginScreen(Screen[None]):
     @on(Input.Submitted)
     def _input_submitted(self, event: Input.Submitted) -> None:
         """Enter in a field advances to the next one, or submits on the last."""
-        order = ["vault-password"] if self._unlock_only else ["username", "password", "vault-password"]
+        order = (
+            ["vault-password"] if self._unlock_only
+            else ["username", "password", "vault-password"]
+        )
         if event.input.id not in order:
             return
         idx = order.index(event.input.id)
@@ -246,10 +257,8 @@ class LoginScreen(Screen[None]):
     def _external_url_prompt(self, url: str) -> str:
         import webbrowser
 
-        try:
+        with contextlib.suppress(Exception):  # noqa: BLE001
             webbrowser.open(url)
-        except Exception:  # noqa: BLE001
-            pass
         message = (
             "Open this URL in any web browser (a tab may have opened for you "
             "already):\n\n"
@@ -266,10 +275,8 @@ class LoginScreen(Screen[None]):
         the app loop may be gone, and there's nothing left to update."""
         if self._shutting_down.is_set():
             return
-        try:
+        with contextlib.suppress(RuntimeError):
             self.app.call_from_thread(fn, *args)
-        except RuntimeError:
-            pass
 
     def _blocking_prompt(self, title: str, message: str, allow_empty: bool = False) -> str:
         """Runs on the login worker thread; blocks it until the user answers
@@ -280,8 +287,8 @@ class LoginScreen(Screen[None]):
         result: list[str] = [""]
 
         def _push() -> None:
-            def _done(value: str) -> None:
-                result[0] = value
+            def _done(value: str | None) -> None:
+                result[0] = value or ""
                 event.set()
 
             self.app.push_screen(
@@ -306,4 +313,7 @@ class LoginScreen(Screen[None]):
 
     def _login_succeeded(self, authenticator: audible.Authenticator) -> None:
         self.remove_class("busy")
-        self.app.on_authenticated(authenticator)
+        # on_authenticated is app-specific, not part of Textual's own App
+        # API -- see L4 in the code review for the cleanup (a real Message)
+        # this cast is standing in for.
+        cast("VoxCodexApp", self.app).on_authenticated(authenticator)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 from audible.exceptions import AudibleError
@@ -216,10 +219,8 @@ class LibraryScreen(Screen[None]):
     def _set_status(self, text: str) -> None:
         # Called from background workers via call_from_thread; the screen may
         # already have been popped by the time one lands.
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#status", Static).update(text)
-        except NoMatches:
-            pass
 
     def _load_library(self) -> None:
         self._set_status("Loading your library...")
@@ -474,7 +475,9 @@ class LibraryScreen(Screen[None]):
 
     def action_cycle_progress_display(self) -> None:
         idx = _PROGRESS_DISPLAY_OPTIONS.index(self._progress_display)
-        self._progress_display = _PROGRESS_DISPLAY_OPTIONS[(idx + 1) % len(_PROGRESS_DISPLAY_OPTIONS)]
+        self._progress_display = (
+            _PROGRESS_DISPLAY_OPTIONS[(idx + 1) % len(_PROGRESS_DISPLAY_OPTIONS)]
+        )
         self.settings.set_progress_display_mode(self._progress_display)
         self._refresh_table()
         self._set_status(f"Progress column: {_PROGRESS_DISPLAY_LABELS[self._progress_display]}")
@@ -506,7 +509,7 @@ class LibraryScreen(Screen[None]):
             return not book.is_finished and book.progress_pct == 0
         return True  # "all"
 
-    def _sort_key_func(self):
+    def _sort_key_func(self) -> Callable[[Book], Any]:
         if self._sort_key == "title":
             return lambda b: b.title.lower()
         if self._sort_key == "author":
@@ -590,12 +593,10 @@ class LibraryScreen(Screen[None]):
         self.app.call_from_thread(self._download_succeeded, book)
 
     def _update_download_bar(self, done: int, total: int) -> None:
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#download-progress", ProgressBar).update(
                 total=total, progress=done
             )
-        except NoMatches:
-            pass
 
     def _download_failed(self, book: Book, message: str) -> None:
         try:
@@ -618,7 +619,7 @@ class LibraryScreen(Screen[None]):
         if book is None or not book.is_downloaded:
             return
 
-        def _confirmed(confirmed: bool) -> None:
+        def _confirmed(confirmed: bool | None) -> None:
             if not confirmed:
                 return
             download.delete_download(book.asin)

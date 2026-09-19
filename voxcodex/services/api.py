@@ -120,14 +120,17 @@ class AudibleAPI:
         page = 1
         num_results = 1000
         while True:
-            resp = self.client.get(
-                "library",
-                response_callback=_full_response,
-                response_groups=LIBRARY_RESPONSE_GROUPS,
-                num_results=num_results,
-                page=page,
-                sort_by="-PurchaseDate",
-            )
+            # audible.Client.get's **kwargs is typed as dict[str, Any] (a
+            # stub bug -- it should type each *value*, not require every
+            # extra kwarg to itself be a dict); routing the actual params
+            # through one dict[str, Any] and unpacking satisfies it cleanly.
+            params: dict[str, Any] = {
+                "response_groups": LIBRARY_RESPONSE_GROUPS,
+                "num_results": num_results,
+                "page": page,
+                "sort_by": "-PurchaseDate",
+            }
+            resp = self.client.get("library", response_callback=_full_response, **params)
             data = resp.json()
             items = data.get("items", [])
             # An empty page -- not merely a short one -- is the only reliable
@@ -277,13 +280,13 @@ class AudibleAPI:
         empty result here isn't an error, just "nothing to navigate by".
         """
         api_quality = "High" if quality != "normal" else "Normal"
-        resp = self.client.get(
-            f"content/{asin}/metadata",
-            response_groups="chapter_info",
-            quality=api_quality,
-            drm_type="Adrm",
-            chapter_titles_type="Flat",
-        )
+        params: dict[str, Any] = {
+            "response_groups": "chapter_info",
+            "quality": api_quality,
+            "drm_type": "Adrm",
+            "chapter_titles_type": "Flat",
+        }
+        resp = self.client.get(f"content/{asin}/metadata", **params)
         content_metadata = resp.get("content_metadata") or {}
         chapter_info = content_metadata.get("chapter_info") or {}
         raw_chapters = chapter_info.get("chapters") or []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -184,10 +185,8 @@ class PlayerScreen(Screen[int]):
         self.app.call_from_thread(self._start_succeeded)
 
     def _start_failed(self, message: str) -> None:
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#state", Static).update(f"[red]{message}[/red]")
-        except NoMatches:
-            pass
 
     def _start_succeeded(self) -> None:
         try:
@@ -241,18 +240,15 @@ class PlayerScreen(Screen[int]):
             self._poll_inflight = False
 
     def _from_thread(self, fn: Callable[..., object], *args: object) -> None:
-        try:
+        # RuntimeError here means the app is shutting down.
+        with contextlib.suppress(RuntimeError):
             self.app.call_from_thread(fn, *args)
-        except RuntimeError:  # app is shutting down
-            pass
 
     def _render_finished(self) -> None:
         # With --idle=once mpv exits on its own at end-of-file; reflect that
         # rather than leaving the state stuck on "Playing".
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#state", Static).update("Finished")
-        except NoMatches:
-            pass
 
     def _tick(self, snap: _Playback | None = None) -> None:
         """Render playback state. `snap` comes from the background poll worker;

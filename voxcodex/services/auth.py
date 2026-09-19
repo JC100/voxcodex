@@ -12,6 +12,7 @@ import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from collections.abc import Iterator
 from typing import Any
 
 import audible
@@ -81,7 +82,7 @@ def _log_cvf_page(soup: Any) -> None:
 
 
 @contextlib.contextmanager
-def _login_flow_diagnostics():
+def _login_flow_diagnostics() -> Iterator[None]:
     """Logs which branch of Amazon's login flow fired (captcha / 2FA-method
     choice / OTP / verification-code / approval), and -- for the 2FA method
     choice specifically -- which delivery options the page actually offered.
@@ -184,10 +185,8 @@ def save(auth: audible.Authenticator, vault_password: str | None) -> None:
         password=vault_password or None,
         encryption="json" if vault_password else False,
     )
-    try:
+    with contextlib.suppress(OSError):
         config.AUTH_FILE.chmod(0o600)
-    except OSError:
-        pass
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:

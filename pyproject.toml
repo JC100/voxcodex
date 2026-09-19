@@ -1,6 +1,6 @@
 [project]
 name = "voxcodex"
-version = "0.3.0"
+dynamic = ["version"]
 description = "A terminal UI for browsing, downloading, and playing your existing Audible library."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,7 @@ voxcodex = "voxcodex.app:run"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.16,<1", "mypy>=2.0,<3"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -48,6 +49,24 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["voxcodex*"]
 
+[tool.setuptools.package-data]
+voxcodex = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "voxcodex.__version__" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "BLE", "SIM", "UP"]
+
+[tool.mypy]
+files = ["voxcodex"]
+python_version = "3.10"
+strict = true

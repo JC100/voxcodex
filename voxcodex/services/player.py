@@ -16,6 +16,7 @@ written to a private (0600) mpv config file and handed to mpv via
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import os
@@ -26,6 +27,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 
 class MpvNotFoundError(Exception):
@@ -51,7 +53,7 @@ class MpvPlayer:
             raise MpvNotFoundError(
                 "mpv was not found on PATH. Install mpv to enable playback."
             )
-        self._proc: subprocess.Popen | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
         self._recv_buf = b""
         self._dir: Path | None = None
@@ -147,7 +149,7 @@ class MpvPlayer:
         line, self._recv_buf = self._recv_buf.split(b"\n", 1)
         return line
 
-    def _command(self, *args: object, timeout: float = 1.5) -> object:
+    def _command(self, *args: object, timeout: float = 1.5) -> Any:
         with self._io_lock:
             sock = self._sock
             if sock is None:
@@ -179,7 +181,7 @@ class MpvPlayer:
                 # the one exception type callers actually catch.
                 raise MpvError(f"mpv IPC error: {exc}") from exc
 
-    def get_property(self, name: str, default: object = None) -> object:
+    def get_property(self, name: str, default: object = None) -> Any:
         try:
             return self._command("get_property", name)
         except MpvError:
@@ -241,10 +243,8 @@ class MpvPlayer:
                     sock.sendall(b'{"command": ["quit"]}\n')
                 except OSError:
                     pass
-                try:
+                with contextlib.suppress(OSError):
                     sock.close()
-                except OSError:
-                    pass
 
             proc, self._proc = self._proc, None
             if proc is not None and proc.poll() is None:
