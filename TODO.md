@@ -22,11 +22,10 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L3 -- `set_finished(asin, False)` (`screens/library.py`) is
       unreachable -- no UI un-finishes a book. Added a "u" (unmark
       finished) keybinding.
-- [ ] L4 -- `on_authenticated` (`app.py`) is a plain method called
-      directly, shadowing Textual's `on_*` handler convention -- collides
-      with a future real `Authenticated` message. Rename it, or make it a
-      real `Message`. (A `cast` in `login.py`'s `_login_succeeded` is
-      standing in for this fix right now.)
+- [x] L4 -- `on_authenticated` (`app.py`) is a plain method called
+      directly, shadowing Textual's `on_*` handler convention. Made it a
+      real `LoginScreen.Authenticated` message, handled via `@on(...)` on
+      the app.
 - [ ] L5 -- Search (`screens/library.py`, `_apply_filters_and_sort`)
       re-sorts and rebuilds the whole table on every keystroke. Debounce
       it.

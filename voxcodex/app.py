@@ -4,7 +4,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-import audible
+from textual import on
 from textual.app import App
 
 from voxcodex import config
@@ -50,12 +50,13 @@ class VoxCodexApp(App[None]):
         download.sweep_stale_downloads()
         self.push_screen(LoginScreen(unlock_only=auth.is_registered()))
 
-    def on_authenticated(self, authenticator: audible.Authenticator) -> None:
+    @on(LoginScreen.Authenticated)
+    def _authenticated(self, message: LoginScreen.Authenticated) -> None:
         if self.api is not None:
             # A second successful login (e.g. re-auth) would otherwise leak
             # the first Client's httpx connection pool.
             self.api.close()
-        self.api = AudibleAPI(authenticator)
+        self.api = AudibleAPI(message.authenticator)
         self.pop_screen()
         self.push_screen(LibraryScreen(self.api, self.settings))
 

@@ -5,20 +5,17 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
 
 import audible
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, LoadingIndicator, Select, Static
 
 from voxcodex.screens.modals import PromptModal
 from voxcodex.services import auth
-
-if TYPE_CHECKING:
-    from voxcodex.app import VoxCodexApp
 
 LOCALES = [
     ("United States", "us"),
@@ -36,6 +33,16 @@ LOCALES = [
 
 class LoginScreen(Screen[None]):
     """Handles both first-run login and unlocking an existing encrypted auth file."""
+
+    class Authenticated(Message):
+        """Posted once login/unlock succeeds. A real Message rather than a
+        plain method called directly on the app -- the latter shadowed
+        Textual's own on_* handler convention and would have silently
+        collided with a real Authenticated message landing here later."""
+
+        def __init__(self, authenticator: audible.Authenticator) -> None:
+            self.authenticator = authenticator
+            super().__init__()
 
     BINDINGS = [("ctrl+q", "quit_app", "Quit"), ("escape", "quit_app", "Cancel / quit")]
 
@@ -313,7 +320,4 @@ class LoginScreen(Screen[None]):
 
     def _login_succeeded(self, authenticator: audible.Authenticator) -> None:
         self.remove_class("busy")
-        # on_authenticated is app-specific, not part of Textual's own App
-        # API -- see L4 in the code review for the cleanup (a real Message)
-        # this cast is standing in for.
-        cast("VoxCodexApp", self.app).on_authenticated(authenticator)
+        self.post_message(self.Authenticated(authenticator))

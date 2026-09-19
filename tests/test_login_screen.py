@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import threading
 
+from textual import on
 from textual.app import App
 from textual.widgets import Input, Static
 
@@ -31,8 +32,9 @@ class HostApp(App):
     def on_mount(self) -> None:
         self.push_screen(self._screen)
 
-    def on_authenticated(self, authenticator) -> None:
-        self.authenticated_with = authenticator
+    @on(LoginScreen.Authenticated)
+    def _authenticated(self, message: LoginScreen.Authenticated) -> None:
+        self.authenticated_with = message.authenticator
 
 
 async def _wait_until(condition, timeout=2.0, step=0.02):
