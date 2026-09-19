@@ -274,3 +274,21 @@ def test_push_finished_passes_through_unfinished_too():
 def test_push_finished_swallows_failure_and_reports_it():
     api = FakePushAPI(exc=RuntimeError("network exploded"))
     assert progress.push_finished(api, "B001", True) is False
+
+
+# -- default path resolution (L6) -------------------------------------------
+
+
+def test_default_path_is_resolved_at_construction_not_at_import(tmp_path, monkeypatch):
+    """ProgressStore(path=config.PROGRESS_CACHE_FILE) as a default argument
+    would bind whatever config.PROGRESS_CACHE_FILE was at import time --
+    monkeypatching config afterwards wouldn't be seen without also patching
+    the ProgressStore class itself. Resolving the default inside __init__
+    instead means this monkeypatch on `config` alone is enough."""
+    patched_path = tmp_path / "progress_cache.json"
+    monkeypatch.setattr(progress.config, "PROGRESS_CACHE_FILE", patched_path)
+
+    progress.ProgressStore().set_position_ms("B001", 5_000)
+
+    assert patched_path.exists()
+    assert progress.ProgressStore().get_position_ms("B001") == 5_000

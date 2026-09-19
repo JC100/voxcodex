@@ -47,10 +47,15 @@ def _read_file(path: Path) -> dict[str, Any]:
 
 
 class Settings:
-    def __init__(self, path: Path = config.SETTINGS_FILE) -> None:
-        self._path = path
+    def __init__(self, path: Path | None = None) -> None:
+        # A `Path = config.SETTINGS_FILE` default is evaluated once, at
+        # import time -- resolving it here instead means a test that
+        # monkeypatches `config.SETTINGS_FILE` before constructing a
+        # Settings() actually takes effect, rather than needing to
+        # monkeypatch the Settings class itself as a workaround.
+        self._path = path if path is not None else config.SETTINGS_FILE
         with _FILE_LOCK:
-            self._data: dict[str, Any] = _read_file(path)
+            self._data: dict[str, Any] = _read_file(self._path)
 
     def _set(self, key: str, value: Any) -> None:
         """Read the current file, apply just this one key, write it back

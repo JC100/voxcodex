@@ -51,8 +51,13 @@ _FILE_LOCK = threading.RLock()
 
 
 class ProgressStore:
-    def __init__(self, path: Path = config.PROGRESS_CACHE_FILE) -> None:
-        self._path = path
+    def __init__(self, path: Path | None = None) -> None:
+        # A `Path = config.PROGRESS_CACHE_FILE` default is evaluated once,
+        # at import time -- resolving it here instead means a test that
+        # monkeypatches `config.PROGRESS_CACHE_FILE` before constructing a
+        # ProgressStore() actually takes effect, rather than needing to
+        # monkeypatch the class itself as a workaround.
+        self._path = path if path is not None else config.PROGRESS_CACHE_FILE
         with _FILE_LOCK:
             self._data: dict[str, dict[str, Any]] = self._read_file()
 

@@ -29,10 +29,11 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 - [x] L5 -- Search (`screens/library.py`, `_apply_filters_and_sort`)
       re-sorts and rebuilds the whole table on every keystroke. Debounced
       with a 150ms `set_timer`.
-- [ ] L6 -- `Settings(path=config.SETTINGS_FILE)` (`services/settings.py`,
+- [x] L6 -- `Settings(path=config.SETTINGS_FILE)` (`services/settings.py`,
       and the equivalent in `progress.py`) binds the default path at
-      import, not at call time -- tests can't `monkeypatch` `config` and
-      work around it by patching the class instead.
+      import, not at call time. Both now take `path: Path | None = None`
+      and resolve `config.SETTINGS_FILE`/`config.PROGRESS_CACHE_FILE`
+      inside `__init__`.
 - [ ] L7 -- `table.add_row(key=book.asin)` (`screens/library.py`) can
       raise `DuplicateKey` if `book.asin` is empty/missing. Skip
       ASIN-less items at parse time.

@@ -185,3 +185,21 @@ def test_a_failed_write_keeps_the_previous_settings_intact(tmp_path, monkeypatch
 
     monkeypatch.undo()
     assert settings.Settings(path=path).theme == "gruvbox"
+
+
+# -- default path resolution (L6) -------------------------------------------
+
+
+def test_default_path_is_resolved_at_construction_not_at_import(tmp_path, monkeypatch):
+    """Settings(path=config.SETTINGS_FILE) as a default argument would bind
+    whatever config.SETTINGS_FILE was at import time -- monkeypatching
+    config afterwards wouldn't be seen without also patching the Settings
+    class itself. Resolving the default inside __init__ instead means this
+    monkeypatch on `config` alone is enough."""
+    patched_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings.config, "SETTINGS_FILE", patched_path)
+
+    settings.Settings().set_theme("nord")
+
+    assert patched_path.exists()
+    assert settings.Settings().theme == "nord"
