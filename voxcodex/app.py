@@ -35,11 +35,19 @@ class VoxCodexApp(App[None]):
         # than each constructing its own over the same file (which meant a
         # write from one silently reverting the others' unseen changes).
         self.settings = Settings()
+        # Setting self.theme below fires watch_theme synchronously (still
+        # inside __init__, before the message loop exists) -- without this
+        # guard, every launch would write the theme straight back to disk,
+        # unchanged, before the UI has even rendered.
+        self._loading_theme = True
         saved_theme = self.settings.theme
         if saved_theme in self.available_themes:
             self.theme = saved_theme
+        self._loading_theme = False
 
     def watch_theme(self, theme_name: str) -> None:
+        if self._loading_theme:
+            return
         # Textual's own App.theme doesn't persist across runs by itself --
         # save whatever the command palette's theme picker (or anything
         # else) sets it to, so next launch starts back where you left it.

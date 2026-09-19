@@ -44,9 +44,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       `progress_pct >= 100`, `_reached_end` uses `_FINISHED_FRACTION`
       (98%). Filter now uses `_FINISHED_PCT` (98), derived from the same
       constant.
-- [ ] L10 -- `watch_theme` (`app.py`) writes to disk during `__init__`, so
-      every launch does a settings write before the UI renders. Guard
-      with a loading flag.
+- [x] L10 -- `watch_theme` (`app.py`) writes to disk during `__init__`, so
+      every launch does a settings write before the UI renders. Guarded
+      with a `_loading_theme` flag.
 - [ ] L11 -- `import webbrowser` (`screens/login.py`,
       `_external_url_prompt`) is inside a function. Move to module scope.
 - [ ] L12 -- `quality` (`services/api.py`, two call sites) silently
