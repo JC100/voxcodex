@@ -4,11 +4,35 @@
 
 - Every finding from the 2026-08-31 code review is done: Critical (C1-C4),
   High (H1-H10), Medium (M1-M10), and Low (L1-L13) below.
-- No open items right now. Next work goes here when it starts.
+- One open item: library-page progress sync (see "Open work" below). This
+  is the thing standing between here and a public 1.0 release.
 
 Full finding detail (rationale, suggested fix) lives in
 `docs/code-review-2026-08-31.html`. Its line numbers are stale after the
 M1-M10 rewrites -- relocate a finding by file/description, not by line.
+
+## Open work
+
+- [ ] **Mid-book progress doesn't sync to Audible's own library tile.**
+      `percent_complete` / `time_remaining_seconds` on the *official*
+      Audible app/website's library view don't update from a VoxCodex
+      play -- root cause found: they're driven by `PUT /1.0/stats/events`
+      `Listening` events, whose exact accepted payload shape was never
+      pinned down. A guessed shape was tried and made it *worse* (drove
+      the percentage to 0% instead of the real value), so VoxCodex
+      deliberately does not send `Listening` events at all right now.
+      Needs a packet capture of the real Android app's own `Listening`
+      traffic (exact field set, position mapping, batching, cadence) to
+      move forward -- an emulator capture attempt was blocked on tooling
+      (AVD instability under `-gpu guest`; the app doesn't honor the
+      system HTTP proxy, so mitmproxy never saw any Audible traffic).
+      Doesn't affect VoxCodex's own library view (reads from
+      `annotations/lastpositions` + the local cache, unaffected) or the
+      "Finished" badge (a separate field, already synced both ways and
+      working). Full writeup:
+      `docs/library-progress-sync-investigation.md`,
+      `docs/whispersync-research.md`; also noted in `CHANGELOG.md` and
+      `README.md`.
 
 ## Low-priority findings (L1-L13)
 
