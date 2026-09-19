@@ -337,9 +337,40 @@ async def test_search_filters_by_title():
         # no need to press "/" first here (see test_slash_types_literal_
         # slash_when_search_already_focused for that specific quirk).
         await pilot.press(*"laughter")
-        await pilot.pause()
 
-        assert [b.asin for b in screen._filtered] == ["B2"]
+        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B2"])
+
+
+async def test_search_debounces_rather_than_filtering_on_every_keystroke(monkeypatch):
+    """L5: typing used to clear-and-rebuild the whole table once per
+    keystroke. Typing "laughter" (8 keystrokes) quickly enough that they
+    land inside one debounce window should coalesce into a single
+    _apply_filters_and_sort call, not eight."""
+    books = [
+        _book("B1", "How to Win Friends", authors=["Dale Carnegie"]),
+        _book("B2", "Before & Laughter", authors=["Jimmy Carr"]),
+    ]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    apply_calls = 0
+    original_apply = screen._apply_filters_and_sort
+
+    def _counting_apply():
+        nonlocal apply_calls
+        apply_calls += 1
+        original_apply()
+
+    monkeypatch.setattr(screen, "_apply_filters_and_sort", _counting_apply)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 2)
+        apply_calls_after_load = apply_calls
+
+        await pilot.press(*"laughter")
+        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B2"])
+
+        assert apply_calls - apply_calls_after_load == 1
 
 
 async def test_search_filters_by_author():
@@ -353,9 +384,8 @@ async def test_search_filters_by_author():
     async with app.run_test() as pilot:
         await _wait_until(lambda: len(screen._books) == 2)
         await pilot.press(*"carnegie")
-        await pilot.pause()
 
-        assert [b.asin for b in screen._filtered] == ["B1"]
+        await _wait_until(lambda: [b.asin for b in screen._filtered] == ["B1"])
 
 
 async def test_clear_search_restores_full_list():
@@ -366,12 +396,10 @@ async def test_clear_search_restores_full_list():
     async with app.run_test() as pilot:
         await _wait_until(lambda: len(screen._books) == 2)
         await pilot.press(*"one")
-        await pilot.pause()
-        assert len(screen._filtered) == 1
+        await _wait_until(lambda: len(screen._filtered) == 1)
 
         await pilot.press("escape")
-        await pilot.pause()
-        assert len(screen._filtered) == 2
+        await _wait_until(lambda: len(screen._filtered) == 2)
 
 
 async def test_slash_types_literal_slash_when_search_already_focused():
@@ -714,9 +742,10 @@ async def test_filter_and_search_combine(monkeypatch):
 
         screen.query_one("#search", Input).focus()
         await pilot.press(*"wanted")  # further narrows to B1 (excludes B2)
-        await pilot.pause()
 
-        assert [b.title for b in screen._filtered] == ["Wanted Downloaded"]
+        await _wait_until(
+            lambda: [b.title for b in screen._filtered] == ["Wanted Downloaded"]
+        )
 
 
 async def test_sort_and_filter_are_restored_from_settings(_fake_settings):

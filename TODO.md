@@ -26,9 +26,9 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       directly, shadowing Textual's `on_*` handler convention. Made it a
       real `LoginScreen.Authenticated` message, handled via `@on(...)` on
       the app.
-- [ ] L5 -- Search (`screens/library.py`, `_apply_filters_and_sort`)
-      re-sorts and rebuilds the whole table on every keystroke. Debounce
-      it.
+- [x] L5 -- Search (`screens/library.py`, `_apply_filters_and_sort`)
+      re-sorts and rebuilds the whole table on every keystroke. Debounced
+      with a 150ms `set_timer`.
 - [ ] L6 -- `Settings(path=config.SETTINGS_FILE)` (`services/settings.py`,
       and the equivalent in `progress.py`) binds the default path at
       import, not at call time -- tests can't `monkeypatch` `config` and

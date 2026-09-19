@@ -16,6 +16,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
 from textual.widgets.data_table import CellDoesNotExist
 from textual.worker import get_current_worker
@@ -171,6 +172,7 @@ class LibraryScreen(Screen[None]):
         self.settings = settings if settings is not None else Settings()
         self._books: list[Book] = []
         self._filtered: list[Book] = []
+        self._search_debounce_timer: Timer | None = None
         # Seeded from disk (chapter *lists* never change for a book, so
         # they're safe to persist), then extended in-memory as new titles
         # are fetched this session. chapter_current is never cached here --
@@ -449,9 +451,18 @@ class LibraryScreen(Screen[None]):
             search.value = ""
         self.query_one(DataTable).focus()
 
+    # How long to wait after the last keystroke before actually re-filtering
+    # and re-sorting -- without this, every keystroke cleared and rebuilt
+    # the whole table (noticeable lag on a large library).
+    _SEARCH_DEBOUNCE_S = 0.15
+
     @on(Input.Changed, "#search")
     def _search_changed(self, event: Input.Changed) -> None:
-        self._apply_filters_and_sort()
+        if self._search_debounce_timer is not None:
+            self._search_debounce_timer.stop()
+        self._search_debounce_timer = self.set_timer(
+            self._SEARCH_DEBOUNCE_S, self._apply_filters_and_sort
+        )
 
     @on(Input.Submitted, "#search")
     def _search_submitted(self) -> None:
