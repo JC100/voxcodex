@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+import httpx
 import pytest
 from textual.app import App
 from textual.widgets import DataTable, Input
@@ -22,7 +23,7 @@ from voxcodex.screens.library import (
     _reached_end,
     _resolve_progress_ms,
 )
-from voxcodex.services.api import Chapter, License
+from voxcodex.services.api import Chapter, License, LicenseDenied
 
 
 class FakeProgressStore:
@@ -96,7 +97,7 @@ class FakeAudibleClient:
 class FakeAPI:
     def __init__(
         self, books, chapters=None, chapters_exc=None, annotations_response=None,
-        get_library_exc=None, license_acr="",
+        get_library_exc=None, license_acr="", license_exc=None,
         push_position_exc=None, set_finished_exc=None,
     ):
         self._books = books
@@ -107,6 +108,7 @@ class FakeAPI:
         self._chapters_exc = chapters_exc
         self._get_library_exc = get_library_exc
         self._license_acr = license_acr
+        self._license_exc = license_exc
         self._push_position_exc = push_position_exc
         self._set_finished_exc = set_finished_exc
         self.push_position_calls = []
@@ -119,6 +121,8 @@ class FakeAPI:
 
     def get_license(self, asin, quality="high"):
         self.license_calls.append((asin, quality))
+        if self._license_exc is not None:
+            raise self._license_exc
         return License(
             asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
             acr=self._license_acr,
@@ -1122,7 +1126,7 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
     monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
 
     books = [_book("B1", "One")]
-    api = FakeAPI(books, chapters_exc=RuntimeError("metadata endpoint exploded"))
+    api = FakeAPI(books, chapters_exc=httpx.HTTPError("metadata endpoint exploded"))
     screen = LibraryScreen(api)
     app = HostApp(screen)
 
@@ -1134,6 +1138,63 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
 
         # Chapter navigation is degraded, not the whole play action.
         assert app.screen._chapters == []
+
+
+# -- narrowed exception handling on the license path (M7) -----------------
+
+
+async def test_play_shows_the_denial_message_when_the_license_is_denied():
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=LicenseDenied("Not entitled to this title"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Not entitled to this title" in str(screen.query_one("#status").content)
+        )
+
+
+async def test_play_surfaces_a_network_error_from_get_license():
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=httpx.HTTPError("connection reset"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Could not start playback" in str(screen.query_one("#status").content)
+        )
+
+
+async def test_play_does_not_mask_an_unexpected_bug_as_a_playback_failure(monkeypatch):
+    """An exception type nobody anticipated (a real bug, not a known
+    failure mode) must not be swallowed and relabeled -- it should
+    propagate to the worker's error handler instead of quietly showing
+    "Could not start playback" for something that isn't a license/network
+    problem at all."""
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=ValueError("this is a bug, not a license failure"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert "Could not start playback" not in str(screen.query_one("#status").content)
 
 
 async def test_library_load_fetches_chapter_counts_in_the_background():
@@ -1185,7 +1246,7 @@ async def test_background_chapter_fetch_does_not_disturb_current_selection():
 
 
 async def test_chapter_fetch_failure_leaves_chapter_column_blank():
-    api = FakeAPI([_book("B1", "One")], chapters_exc=RuntimeError("boom"))
+    api = FakeAPI([_book("B1", "One")], chapters_exc=httpx.HTTPError("boom"))
     screen = LibraryScreen(api)
     app = HostApp(screen)
 

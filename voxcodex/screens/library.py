@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import time
 
+import httpx
+from audible.exceptions import AudibleError
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,18 +14,32 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Static
+from textual.widgets.data_table import CellDoesNotExist
 from textual.worker import get_current_worker
 
 from voxcodex.models import Book
 from voxcodex.screens.modals import ConfirmModal
 from voxcodex.screens.player_screen import PlayerScreen
 from voxcodex.services import chapter_cache, download, library_cache, progress
-from voxcodex.services.api import AudibleAPI, Chapter
+from voxcodex.services.api import AudibleAPI, Chapter, LicenseDenied, NoDownloadUrl
 from voxcodex.services.settings import Settings
 
 logger = logging.getLogger(__name__)
 
 COLUMNS = ("Title", "Author", "Series", "Length", "Progress", "Chapter", "Downloaded")
+
+# Failures a chapter-metadata fetch can actually raise: a network/API
+# problem. Anything else (a real bug -- bad response shape, etc.) should
+# propagate to the worker's error handler instead of quietly leaving the
+# Chapter column blank forever.
+_CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError)
+
+# Failures opening a title for playback can legitimately raise: a missing/
+# malformed local voucher, a denied license or a license response with no
+# download URL, or a network/API problem reaching Audible.
+_PLAYER_OPEN_ERRORS = (
+    RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, httpx.HTTPError, AudibleError,
+)
 
 
 def _format_age(seconds: float) -> str:
@@ -325,7 +341,7 @@ class LibraryScreen(Screen[None]):
                 break
             try:
                 chapters = self.api.get_chapters(book.asin)
-            except Exception:  # noqa: BLE001
+            except _CHAPTER_FETCH_ERRORS:
                 continue
             self._chapter_cache[book.asin] = chapters
             newly_cached = True
@@ -397,7 +413,7 @@ class LibraryScreen(Screen[None]):
             return None
         try:
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        except Exception:
+        except CellDoesNotExist:
             return None
         asin = row_key.value
         for book in self._books:
@@ -639,7 +655,7 @@ class LibraryScreen(Screen[None]):
                 license_ = self.api.get_license(book.asin)
                 source, key, iv = license_.content_url, license_.key, license_.iv
                 acr = license_.acr
-        except Exception as exc:  # noqa: BLE001
+        except _PLAYER_OPEN_ERRORS as exc:
             self.app.call_from_thread(self._player_open_failed, str(exc))
             return
 
@@ -649,7 +665,7 @@ class LibraryScreen(Screen[None]):
         if chapters is None:
             try:
                 chapters = self.api.get_chapters(book.asin)
-            except Exception:  # noqa: BLE001
+            except _CHAPTER_FETCH_ERRORS:
                 # Chapter navigation is an enhancement, not a playback
                 # requirement -- a book without (or a failed fetch of)
                 # chapter data should still play, just without next/
