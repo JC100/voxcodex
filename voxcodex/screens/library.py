@@ -17,7 +17,7 @@ from textual.worker import get_current_worker
 from voxcodex.models import Book
 from voxcodex.screens.modals import ConfirmModal
 from voxcodex.screens.player_screen import PlayerScreen
-from voxcodex.services import download, library_cache, progress
+from voxcodex.services import chapter_cache, download, library_cache, progress
 from voxcodex.services.api import AudibleAPI, Chapter
 from voxcodex.services.settings import Settings
 
@@ -125,12 +125,12 @@ class LibraryScreen(Screen[None]):
         self.settings = settings if settings is not None else Settings()
         self._books: list[Book] = []
         self._filtered: list[Book] = []
-        # In-memory only, refetched fresh each session -- a book's chapters
-        # don't change, but its current-chapter does as you listen, so a
-        # disk cache would need its own invalidation story. Reused across a
-        # manual refresh within the same session so that doesn't re-fetch
-        # what this session already knows.
-        self._chapter_cache: dict[str, list[Chapter]] = {}
+        # Seeded from disk (chapter *lists* never change for a book, so
+        # they're safe to persist), then extended in-memory as new titles
+        # are fetched this session. chapter_current is never cached here --
+        # it depends on progress and is always recomputed locally from the
+        # cached start_ms values via _current_chapter_number.
+        self._chapter_cache: dict[str, list[Chapter]] = chapter_cache.load()
         self._sort_key = (
             self.settings.library_sort_key
             if self.settings.library_sort_key in _SORT_OPTIONS
@@ -234,44 +234,89 @@ class LibraryScreen(Screen[None]):
             remote_ms = remote_positions.get(book.asin, 0)
             book.progress_ms = max(book.progress_ms, local_ms, remote_ms)
 
+    def _apply_cached_chapters(self, books: list[Book]) -> None:
+        """Fills in chapter_total/chapter_current for any book already in
+        `_chapter_cache` (this session's fetches, or seeded from disk) --
+        no network call, so safe to run inline before the table first
+        renders."""
+        for book in books:
+            chapters = self._chapter_cache.get(book.asin)
+            if chapters is not None:
+                book.chapter_total = len(chapters)
+                book.chapter_current = _current_chapter_number(chapters, book.progress_ms)
+
     def _populate(self, books: list[Book]) -> None:
         self._books = books
+        self._apply_cached_chapters(books)
         self._apply_filters_and_sort()
         self._set_status(f"{len(books)} titles")
         self._fetch_chapter_counts(books)
 
     def _populate_offline(self, books: list[Book], cached_at: float) -> None:
         self._books = books
+        self._apply_cached_chapters(books)
         self._apply_filters_and_sort()
         age = _format_age(time.time() - cached_at)
         self._set_status(
             f"[yellow]Offline -- showing last known library "
             f"({len(books)} titles, cached {age} ago). Downloaded books still play.[/yellow]"
         )
-        self._fetch_chapter_counts(books)
+        # No _fetch_chapter_counts here: every uncached title would fail
+        # slowly against the API client's 30s timeout while offline, and
+        # _apply_cached_chapters above already showed everything this
+        # session can know without a network call.
+
+    # How many newly-fetched chapter counts to batch into one table rebuild,
+    # whichever comes first: this many books, or this many seconds. Without
+    # batching, a full clear-and-rebuild of every row runs once per book --
+    # O(n^2) over a library of any size.
+    _CHAPTER_REFRESH_BATCH_SIZE = 25
+    _CHAPTER_REFRESH_INTERVAL_S = 0.5
 
     @work(thread=True, exclusive=True, group="chapter_counts", exit_on_error=False)
     def _fetch_chapter_counts(self, books: list[Book]) -> None:
         """Progressively fills in each book's chapter column after the table
         is already showing -- one extra network call per book not already
-        known this session, so it's kept out of the main load/offline-
-        fallback path entirely. A book that fails (typically: offline, or no
-        chapter data for that title) just keeps its blank Chapter cell."""
+        cached (this session or on disk), batched into occasional table
+        rebuilds rather than one per book. A book that fails (typically:
+        offline, or no chapter data for that title) just keeps its blank
+        Chapter cell."""
         worker = get_current_worker()
-        for book in books:
+        to_fetch = [book for book in books if book.asin not in self._chapter_cache]
+        if not to_fetch:
+            return
+
+        fetched_since_refresh = 0
+        last_refresh = time.monotonic()
+        newly_cached = False
+        for book in to_fetch:
             if worker.is_cancelled:
-                return
-            chapters = self._chapter_cache.get(book.asin)
-            if chapters is None:
-                try:
-                    chapters = self.api.get_chapters(book.asin)
-                except Exception:  # noqa: BLE001
-                    continue
-                self._chapter_cache[book.asin] = chapters
+                break
+            try:
+                chapters = self.api.get_chapters(book.asin)
+            except Exception:  # noqa: BLE001
+                continue
+            self._chapter_cache[book.asin] = chapters
+            newly_cached = True
             book.chapter_total = len(chapters)
             book.chapter_current = _current_chapter_number(chapters, book.progress_ms)
-            if not worker.is_cancelled:
+
+            fetched_since_refresh += 1
+            now = time.monotonic()
+            if (
+                fetched_since_refresh >= self._CHAPTER_REFRESH_BATCH_SIZE
+                or now - last_refresh >= self._CHAPTER_REFRESH_INTERVAL_S
+            ):
+                if worker.is_cancelled:
+                    break
                 self.app.call_from_thread(self._refresh_table)
+                fetched_since_refresh = 0
+                last_refresh = now
+
+        if fetched_since_refresh and not worker.is_cancelled:
+            self.app.call_from_thread(self._refresh_table)
+        if newly_cached:
+            chapter_cache.save(self._chapter_cache)
 
     def _progress_cell(self, book: Book) -> str:
         if self._progress_display == "time_left":

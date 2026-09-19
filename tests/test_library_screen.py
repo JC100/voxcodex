@@ -158,6 +158,29 @@ def _fake_library_cache(monkeypatch):
     return instance
 
 
+class FakeChapterCache:
+    """Stands in for services.chapter_cache -- never touches the real
+    ~/.local/share/voxcodex/chapter_cache.json. `to_return` seeds what
+    `load()` answers with; defaults to "no cache exists yet"."""
+
+    def __init__(self):
+        self.save_calls = []
+        self.to_return: dict = {}
+
+    def save(self, chapters_by_asin):
+        self.save_calls.append(dict(chapters_by_asin))
+
+    def load(self):
+        return self.to_return
+
+
+@pytest.fixture(autouse=True)
+def _fake_chapter_cache(monkeypatch):
+    instance = FakeChapterCache()
+    monkeypatch.setattr(library_module, "chapter_cache", instance)
+    return instance
+
+
 @pytest.fixture(autouse=True)
 def _no_downloads_by_default(monkeypatch):
     monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: False)
@@ -987,6 +1010,74 @@ async def test_chapter_counts_are_cached_and_reused_without_a_second_fetch(monke
         await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
 
         assert api.chapter_calls == ["B1"]  # not fetched again for playback
+
+
+async def test_chapter_counts_seeded_from_disk_cache_skip_the_network_call(
+    _fake_chapter_cache,
+):
+    chapters = [
+        Chapter(title="Ch1", start_ms=0, length_ms=1000),
+        Chapter(title="Ch2", start_ms=1000, length_ms=1000),
+    ]
+    _fake_chapter_cache.to_return = {"B1": chapters}
+    book = _book("B1", "One")
+    book.progress_ms = 1500  # inside "Ch2" -> chapter 2 of 2
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        # Give the background worker a moment; there's nothing left to fetch.
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+        assert api.chapter_calls == []
+        assert screen._books[0].chapter_total == 2
+        assert screen._books[0].chapter_current == 2
+
+
+async def test_offline_populate_does_not_fetch_chapter_counts(_fake_library_cache):
+    book = _book("B1", "One")
+    _fake_library_cache.to_return = ([book], 12345.0)
+    api = FakeAPI([book], get_library_exc=RuntimeError("offline"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+        assert api.chapter_calls == []  # never even tried while offline
+
+
+async def test_chapter_count_fetch_batches_table_rebuilds(monkeypatch):
+    """Regression test for the O(n) call_from_thread(_refresh_table) per
+    book: a large library should rebuild the table a handful of times, not
+    once per title."""
+    books = [_book(f"B{i}", f"Title {i}") for i in range(60)]
+    chapters = [Chapter(title="Ch1", start_ms=0, length_ms=1000)]
+    api = FakeAPI(books, chapters=chapters)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    refresh_calls = 0
+    original_refresh = screen._refresh_table
+
+    def _counting_refresh():
+        nonlocal refresh_calls
+        refresh_calls += 1
+        original_refresh()
+
+    monkeypatch.setattr(screen, "_refresh_table", _counting_refresh)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 60)
+        await _wait_until(lambda: all(b.chapter_total is not None for b in screen._books))
+
+        # 60 books at a batch size of 25 -> at most 3 rebuilds from the
+        # chapter-count worker, plus whatever _apply_filters_and_sort did on
+        # load -- nowhere near one per book.
+        assert refresh_calls <= 5
 
 
 # -- last played externally -----------------------------------------------

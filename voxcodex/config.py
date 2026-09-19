@@ -17,6 +17,7 @@ AUTH_FILE = CONFIG_DIR / "auth.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 PROGRESS_CACHE_FILE = DATA_DIR / "progress_cache.json"
 LIBRARY_CACHE_FILE = DATA_DIR / "library_cache.json"
+CHAPTER_CACHE_FILE = DATA_DIR / "chapter_cache.json"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 LOG_FILE = DATA_DIR / "voxcodex.log"
 
