@@ -138,7 +138,19 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       `test_get_chapters_raises_invalid_response_on_a_non_json_200`,
       `test_play_surfaces_a_non_json_license_response_as_a_playback_failure`,
       and `test_play_still_works_when_chapter_metadata_is_non_json`.
-- [ ] 9 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M4 -- `most_recent_external_play`'s premise is now false, and the
+      feature it feeds is dead, write-only state (`services/progress.py` /
+      `services/settings.py`). **Fixed** 2026-09-21: deleted
+      `most_recent_external_play`, `Settings.last_played_in_app` /
+      `last_played_externally` (getters, setters, and the `_last_played`
+      helper), and their only call sites (`LibraryScreen._load` and
+      `PlayerScreen._start_succeeded`) -- nothing read either value
+      anywhere in the app, and the "this app's own plays don't reach this
+      endpoint" premise the function's docstring relied on stopped being
+      true once the mid-book sync push shipped. Removed the now-dead tests
+      in `test_progress.py`, `test_settings.py`, `test_library_screen.py`,
+      and `test_player_screen.py`.
+- [ ] 8 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

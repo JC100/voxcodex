@@ -1,21 +1,11 @@
-"""Persisted, app-wide preferences and small bits of "what happened last"
-state -- distinct from progress.py's per-book position cache.
-
-`last_played_in_app` and `last_played_externally` are kept as two separate
-fields rather than reconciled into one on purpose: this app's own plays
-never reach Audible's servers (see progress.py's module docstring), so
-"most recently played" can only be answered separately for "in this app"
-vs. "as far as Audible's own record shows" until real two-way sync exists
-(see docs/whispersync-research.md). Collapsing them into a single value now
-would just mean guessing which one to trust.
+"""Persisted, app-wide preferences -- distinct from progress.py's per-book
+position cache.
 """
 
 from __future__ import annotations
 
 import json
 import threading
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +19,11 @@ DEFAULT_THEME = "textual-dark"
 DEFAULT_PROGRESS_DISPLAY = "percent"
 
 # Process-wide: the app, the library screen and the player screen have each
-# historically held their own Settings() over the same file, and the library
-# fetch worker writes `last_played_externally` from a background thread while
-# the main thread may be mid-write. One lock plus a read-modify-write per
-# setter (below) keeps those from clobbering each other or truncating the
-# file. The app threads a single instance through where it can; this is the
-# backstop for anything that still constructs its own.
+# historically held their own Settings() over the same file, and more than
+# one can write from different threads. One lock plus a read-modify-write
+# per setter (below) keeps those from clobbering each other or truncating
+# the file. The app threads a single instance through where it can; this is
+# the backstop for anything that still constructs its own.
 _FILE_LOCK = threading.RLock()
 
 
@@ -86,23 +75,6 @@ class Settings:
         self._set("playback_volume", float(volume))
 
     @property
-    def last_played_in_app(self) -> tuple[str, float] | None:
-        return self._last_played("last_played_in_app")
-
-    def set_last_played_in_app(self, asin: str) -> None:
-        self._set("last_played_in_app", {"asin": asin, "updated_at": time.time()})
-
-    @property
-    def last_played_externally(self) -> tuple[str, float] | None:
-        return self._last_played("last_played_externally")
-
-    def set_last_played_externally(self, asin: str, updated_at: datetime) -> None:
-        self._set(
-            "last_played_externally",
-            {"asin": asin, "updated_at": updated_at.timestamp()},
-        )
-
-    @property
     def library_sort_key(self) -> str:
         return str(self._data.get("library_sort_key", DEFAULT_LIBRARY_SORT))
 
@@ -132,12 +104,3 @@ class Settings:
 
     def set_theme(self, theme: str) -> None:
         self._set("theme", theme)
-
-    def _last_played(self, key: str) -> tuple[str, float] | None:
-        entry = self._data.get(key)
-        if not isinstance(entry, dict) or "asin" not in entry or "updated_at" not in entry:
-            return None
-        try:
-            return str(entry["asin"]), float(entry["updated_at"])
-        except (TypeError, ValueError):
-            return None

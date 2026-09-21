@@ -176,29 +176,6 @@ def positions_with_updated_at_from_annotations(
     return result
 
 
-def most_recent_external_play(
-    records: list[dict[str, Any]],
-) -> tuple[str, datetime] | None:
-    """Of these records, the asin Audible most recently recorded a position
-    for -- i.e. the book you most recently played somewhere other than this
-    app (this app's own plays don't reach this endpoint; see the module
-    docstring). Returns (asin, updated_at) for the newest one, or None if no
-    record has both an existing position and a parseable timestamp.
-    """
-    best: tuple[str, datetime] | None = None
-    for record in records:
-        existing = _existing_last_position_heard(record)
-        if existing is None:
-            continue
-        asin, lph = existing
-        updated_at = parse_audible_timestamp(lph.get("last_updated"))
-        if updated_at is None:
-            continue
-        if best is None or updated_at > best[1]:
-            best = (asin, updated_at)
-    return best
-
-
 def _existing_last_position_heard(
     record: Any,
 ) -> tuple[str, dict[str, Any]] | None:

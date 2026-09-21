@@ -286,11 +286,6 @@ class LibraryScreen(Screen[None]):
         annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
         remote_positions = progress.positions_with_updated_at_from_annotations(annotations)
 
-        most_recent = progress.most_recent_external_play(annotations)
-        if most_recent is not None:
-            asin, updated_at = most_recent
-            self.settings.set_last_played_externally(asin, updated_at)
-
         self._apply_local_state(books, remote_positions)
         if worker.is_cancelled:
             return

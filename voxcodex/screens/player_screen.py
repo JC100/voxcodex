@@ -209,7 +209,6 @@ class PlayerScreen(Screen[int]):
             return
         self._control(lambda p: p.set_speed(self._speed))
         self._control(lambda p: p.set_volume(self._volume))
-        self._settings.set_last_played_in_app(self.book.asin)
         self.set_interval(1.0, self._poll)
 
     def _control(self, fn: Callable[[MpvPlayer], object]) -> None:

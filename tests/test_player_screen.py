@@ -112,7 +112,6 @@ class FakeSettings:
         self.playback_volume = playback_volume
         self.speed_calls = []
         self.volume_calls = []
-        self.last_played_in_app_calls = []
 
     def set_playback_speed(self, speed):
         self.speed_calls.append(speed)
@@ -121,9 +120,6 @@ class FakeSettings:
     def set_playback_volume(self, volume):
         self.volume_calls.append(volume)
         self.playback_volume = volume
-
-    def set_last_played_in_app(self, asin):
-        self.last_played_in_app_calls.append(asin)
 
 
 class HostApp(App):
@@ -363,17 +359,6 @@ async def test_starts_at_persisted_speed_and_volume(fake_player, fake_settings):
         assert screen._volume == 82.0
         assert fake_player.speed_calls == [1.3]
         assert fake_player.volume_calls == [82.0]
-
-
-async def test_starting_playback_records_last_played_in_app(fake_player, fake_settings):
-    book = _book()
-    book.asin = "B42"
-    screen = PlayerScreen(book, "source-url", "key", "iv")
-    app = HostApp(screen)
-
-    async with app.run_test():
-        await _wait_until(lambda: screen._player is not None)
-        assert fake_settings.last_played_in_app_calls == ["B42"]
 
 
 async def test_bracket_right_increases_volume(fake_player, fake_settings):

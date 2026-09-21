@@ -254,38 +254,6 @@ def test_get_updated_at_reflects_the_last_set_position_ms_call(tmp_path):
     assert before <= store.get_updated_at("B001") <= after
 
 
-# -- most_recent_external_play -------------------------------------------
-
-
-def test_most_recent_external_play_picks_the_newest_timestamp():
-    records = [
-        _existing("B001", 100, last_updated="2019-01-24 09:21:16.892"),
-        _existing("B002", 200, last_updated="2026-08-27 08:56:11.849"),
-        _existing("B003", 300, last_updated="2026-08-10 22:17:44.988"),
-    ]
-    result = progress.most_recent_external_play(records)
-    assert result is not None
-    asin, updated_at = result
-    assert asin == "B002"
-    assert updated_at.year == 2026
-    assert updated_at.month == 8
-    assert updated_at.day == 27
-
-
-def test_most_recent_external_play_ignores_titles_never_played():
-    records = [_does_not_exist("B001")]
-    assert progress.most_recent_external_play(records) is None
-
-
-def test_most_recent_external_play_none_when_no_records():
-    assert progress.most_recent_external_play([]) is None
-
-
-def test_most_recent_external_play_skips_unparseable_timestamps():
-    records = [_existing("B001", 100, last_updated="not-a-real-timestamp")]
-    assert progress.most_recent_external_play(records) is None
-
-
 # -- push_position -------------------------------------------------------
 
 

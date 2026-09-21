@@ -53,7 +53,6 @@ class FakeProgressStore:
 
 class FakeSettings:
     def __init__(self, *args, **kwargs):
-        self.last_played_externally_calls = []
         self.library_sort_key = "recent"
         self.library_filter_key = "all"
         self.progress_display_mode = "percent"
@@ -62,10 +61,6 @@ class FakeSettings:
         # own, so one fake has to cover both.
         self.playback_speed = 1.0
         self.playback_volume = 100.0
-        self.last_played_in_app_calls = []
-
-    def set_last_played_externally(self, asin, updated_at):
-        self.last_played_externally_calls.append((asin, updated_at))
 
     def set_library_sort_key(self, key):
         self.library_sort_key = key
@@ -81,9 +76,6 @@ class FakeSettings:
 
     def set_playback_volume(self, volume):
         self.playback_volume = volume
-
-    def set_last_played_in_app(self, asin):
-        self.last_played_in_app_calls.append(asin)
 
 
 class FakeAudibleClient:
@@ -2266,52 +2258,6 @@ async def test_chapter_count_fetch_batches_table_rebuilds(monkeypatch):
 
 def _annotations_response(records):
     return {"asin_last_position_heard_annots": records}
-
-
-def _existing(asin, last_updated):
-    return {
-        "asin": asin,
-        "last_position_heard": {
-            "status": "Exists", "position_ms": 1000, "last_updated": last_updated,
-        },
-    }
-
-
-async def test_library_load_records_the_most_recently_played_external_title(_fake_settings):
-    response = _annotations_response(
-        [
-            _existing("B1", "2019-01-24 09:21:16.892"),
-            _existing("B2", "2026-08-27 08:56:11.849"),
-        ]
-    )
-    books = [_book("B1", "One"), _book("B2", "Two")]
-    api = FakeAPI(books, annotations_response=response)
-    screen = LibraryScreen(api)
-    app = HostApp(screen)
-
-    async with app.run_test():
-        await _wait_until(lambda: len(screen._books) == 2)
-
-        assert len(_fake_settings.last_played_externally_calls) == 1
-        asin, updated_at = _fake_settings.last_played_externally_calls[0]
-        assert asin == "B2"
-        assert updated_at.year == 2026
-
-
-async def test_library_load_does_not_record_anything_when_nothing_was_ever_played(
-    _fake_settings,
-):
-    response = _annotations_response(
-        [{"asin": "B1", "last_position_heard": {"status": "DoesNotExist"}}]
-    )
-    books = [_book("B1", "One")]
-    api = FakeAPI(books, annotations_response=response)
-    screen = LibraryScreen(api)
-    app = HostApp(screen)
-
-    async with app.run_test():
-        await _wait_until(lambda: len(screen._books) == 1)
-        assert _fake_settings.last_played_externally_calls == []
 
 
 # -- progress merge on load (M5) -------------------------------------------
