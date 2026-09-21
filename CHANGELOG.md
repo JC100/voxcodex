@@ -92,7 +92,10 @@
   config-file include, and the stream URL was passed as a bare positional
   argument -- both server-controlled values, and either could (under a
   hostile or compromised license response) get mpv to load and execute an
-  attacker-controlled script. The key/iv are now rejected unless they're
+  attacker-controlled script. ASINs are now also validated before being
+  used to build a download/voucher filename (a hostile library response
+  with a path-traversal ASIN could otherwise write outside the downloads
+  directory). The key/iv are now rejected unless they're
   plain hex, and the stream URL is now passed after a `--` terminator.
 
 ## 0.5.0

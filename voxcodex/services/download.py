@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -19,21 +20,45 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int], None]
 CancelCheck = Callable[[], bool]
 
+# Real ASINs are always alphanumeric. asin comes straight from the library
+# API response (Amazon, over TLS -- not directly attacker-controlled, but
+# a hostile or compromised response is the threat model the rest of this
+# module already defends against), and is used to build a filename below
+# with no other validation -- a value like "../../../../etc/cron.d/x"
+# would otherwise write outside DOWNLOADS_DIR (L1).
+_VALID_ASIN_RE = re.compile(r"[A-Za-z0-9]+")
+
 
 class DownloadCancelled(Exception):
     """Raised by `download_book` when `cancel_check` asks it to stop."""
 
 
+class InvalidAsin(ValueError):
+    pass
+
+
+def _require_valid_asin(asin: str) -> str:
+    if not _VALID_ASIN_RE.fullmatch(asin):
+        raise InvalidAsin(f"invalid asin: {asin!r}")
+    return asin
+
+
 def voucher_path_for(asin: str) -> Path:
-    return config.DOWNLOADS_DIR / f"{asin}.voucher.json"
+    return config.DOWNLOADS_DIR / f"{_require_valid_asin(asin)}.voucher.json"
 
 
 def audio_path_for(asin: str) -> Path:
-    return config.DOWNLOADS_DIR / f"{asin}.aaxc"
+    return config.DOWNLOADS_DIR / f"{_require_valid_asin(asin)}.aaxc"
 
 
 def is_downloaded(asin: str) -> bool:
-    return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
+    # Read-only and called unconditionally for every book on every library
+    # load -- an invalid ASIN should make this title report "not
+    # downloaded" rather than take the whole load down.
+    try:
+        return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
+    except InvalidAsin:
+        return False
 
 
 def downloaded_size(asin: str) -> int | None:
@@ -42,7 +67,7 @@ def downloaded_size(asin: str) -> int | None:
     this call -- e.g. deleted from another VoxCodex instance)."""
     try:
         return audio_path_for(asin).stat().st_size
-    except OSError:
+    except (OSError, InvalidAsin):
         return None
 
 

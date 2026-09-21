@@ -245,7 +245,17 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
 All 6 High and all 16 Medium findings from the 2026-09-21 review are now
 done.
 
-- [ ] 27 Low findings -- see the doc for the full list and suggested
+- [x] L1 -- An ASIN is never validated before being used as a filename
+      (`services/download.py`). **Fixed** 2026-09-21: added
+      `_require_valid_asin` (restricting to `[A-Za-z0-9]+`), applied at
+      `voucher_path_for`/`audio_path_for` -- the two places an ASIN first
+      becomes a path. `is_downloaded`/`downloaded_size` catch the new
+      `InvalidAsin` and fail safe (False/None) since they're called
+      unconditionally for every book on every library load; other call
+      sites (`download_book`, `_open_player`) are already inside existing
+      broad exception handling, so `InvalidAsin` was also added to
+      `_PLAYER_OPEN_ERRORS` for a clean message there. Added 3 tests.
+- [ ] 26 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -55,7 +55,7 @@ _CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError, InvalidResponse)
 # Audible.
 _PLAYER_OPEN_ERRORS = (
     RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, InvalidResponse,
-    httpx.HTTPError, AudibleError,
+    download.InvalidAsin, httpx.HTTPError, AudibleError,
 )
 
 

@@ -92,6 +92,30 @@ def test_audio_and_voucher_paths_are_under_downloads_dir():
     assert download.voucher_path_for("B001") == config.DOWNLOADS_DIR / "B001.voucher.json"
 
 
+# -- ASIN validation before it's used as a filename (L1) --------------------
+
+
+@pytest.mark.parametrize(
+    "asin", ["../../../../etc/cron.d/x", "../secret", "a/b", "", "B00-1", "B00 1"]
+)
+def test_path_helpers_reject_a_non_alphanumeric_asin(asin):
+    with pytest.raises(download.InvalidAsin):
+        download.audio_path_for(asin)
+    with pytest.raises(download.InvalidAsin):
+        download.voucher_path_for(asin)
+
+
+def test_is_downloaded_false_for_an_invalid_asin_not_raised():
+    # Called unconditionally for every book on every library load -- an
+    # invalid ASIN must make the title report "not downloaded", not crash
+    # the whole load.
+    assert download.is_downloaded("../etc/passwd") is False
+
+
+def test_downloaded_size_none_for_an_invalid_asin_not_raised():
+    assert download.downloaded_size("../etc/passwd") is None
+
+
 def test_is_downloaded_false_when_nothing_exists():
     assert download.is_downloaded("B001") is False
 
