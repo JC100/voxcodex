@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -83,9 +84,10 @@ class PlayerScreen(Screen[int]):
     _CHAPTER_RESTART_THRESHOLD_MS = 3000
 
     # _tick fires ~1/s; checkpoint the listening position roughly this often
-    # so an abnormal exit (ctrl+q, closed terminal, crash) loses seconds, not
-    # the whole session. The close/unmount flush is the authoritative write.
-    _CHECKPOINT_EVERY_TICKS = 15
+    # (real elapsed seconds, not a count of _tick calls -- L9) so an
+    # abnormal exit (ctrl+q, closed terminal, crash) loses seconds, not the
+    # whole session. The close/unmount flush is the authoritative write.
+    _CHECKPOINT_EVERY_SECONDS = 15.0
 
     DEFAULT_CSS = """
     PlayerScreen {
@@ -140,7 +142,14 @@ class PlayerScreen(Screen[int]):
         # final, pushes it to Audible. See LibraryScreen._launch_player.
         self._on_progress = on_progress
         self._saved_position_ms = self._start_position_ms
-        self._ticks_since_checkpoint = 0
+        self._seconds_since_checkpoint = 0.0
+        # Real elapsed time since the previous _tick, not an assumed fixed
+        # 1s/tick -- a poll that takes longer than a second (four IPC round
+        # trips under load) is skipped entirely rather than counted, so a
+        # fixed-decrement counter would drift long against wall-clock time
+        # (L9). None until the first _tick, which then assumes 1s to match
+        # the nominal ~1 Hz cadence.
+        self._last_tick_at: float | None = None
         self._poll_inflight = False
         self._settings = settings if settings is not None else Settings()
         self._speed = self._settings.playback_speed
@@ -292,16 +301,20 @@ class PlayerScreen(Screen[int]):
         duration = snap.duration or (self.book.duration_ms / 1000)
         paused = snap.paused
 
+        now = time.monotonic()
+        elapsed = now - self._last_tick_at if self._last_tick_at is not None else 1.0
+        self._last_tick_at = now
+
         self._last_position_ms = int(position * 1000)
-        self._ticks_since_checkpoint += 1
-        if self._ticks_since_checkpoint >= self._CHECKPOINT_EVERY_TICKS:
-            self._ticks_since_checkpoint = 0
+        self._seconds_since_checkpoint += elapsed
+        if self._seconds_since_checkpoint >= self._CHECKPOINT_EVERY_SECONDS:
+            self._seconds_since_checkpoint = 0.0
             self._flush_progress(final=False)
         pct = int(position / duration * 100) if duration else 0
         self.query_one("#bar", ProgressBar).update(total=100, progress=min(100, pct))
 
         if self._sleep_remaining_seconds is not None and not paused:
-            self._sleep_remaining_seconds = max(0.0, self._sleep_remaining_seconds - 1.0)
+            self._sleep_remaining_seconds = max(0.0, self._sleep_remaining_seconds - elapsed)
             if self._sleep_remaining_seconds <= 0:
                 self._control(lambda p: p.set_paused(True))
                 paused = True

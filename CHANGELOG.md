@@ -97,6 +97,10 @@
 - **A failed periodic progress checkpoint could silently give up
   retrying** if the position didn't move again before the next tick --
   it's no longer marked as saved unless the save actually succeeded.
+- **The sleep timer and the periodic progress checkpoint could both drift
+  long under load**, since a poll cycle taking over a second was skipped
+  entirely rather than counted. Both now track real elapsed time instead
+  of assuming exactly one tick per second.
 
 ### Security
 - **The Amazon account password and vault password could leak into

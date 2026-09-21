@@ -164,6 +164,27 @@ def fake_settings(monkeypatch):
     return instance
 
 
+class FakeClock:
+    """L9: _tick now measures real elapsed time via time.monotonic() rather
+    than assuming a fixed 1s/call, so a test driving _tick in a tight
+    synchronous loop needs to advance a fake clock between calls to
+    simulate the nominal ~1 Hz polling cadence -- real wall-clock time
+    between such calls is a fraction of a millisecond."""
+
+    def __init__(self):
+        self.now = 1_000_000.0
+
+    def advance(self, seconds: float = 1.0) -> None:
+        self.now += seconds
+
+
+@pytest.fixture()
+def fake_clock(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(player_screen_module.time, "monotonic", lambda: clock.now)
+    return clock
+
+
 # -- startup --------------------------------------------------------------
 
 
@@ -515,6 +536,27 @@ async def test_tick_counts_down_sleep_timer_while_playing(fake_player):
         screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert screen._sleep_remaining_seconds == 19.0
+
+
+async def test_sleep_timer_counts_down_by_real_elapsed_time_not_a_fixed_decrement(
+    fake_player, fake_clock,
+):
+    """L9: a fixed -1.0 per _tick call drifts long once a poll cycle takes
+    over a second (the tick it would have driven is skipped entirely, not
+    queued) -- the countdown must track real elapsed time instead."""
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._sleep_remaining_seconds = 20.0
+        fake_player.paused_ = False
+
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))  # seeds the clock
+        fake_clock.advance(5.0)  # a slow poll cycle, not the nominal 1s
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert screen._sleep_remaining_seconds == 14.0  # 20 - 1 (first tick) - 5
 
 
 async def test_tick_does_not_count_down_sleep_timer_while_paused(fake_player):
@@ -903,7 +945,7 @@ async def test_action_close_does_not_block_the_event_loop(fake_player):
 # -- progress checkpointing (H3) ----------------------------------------------
 
 
-async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
+async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player, fake_clock):
     saved = []
     screen = PlayerScreen(
         _book(duration_ms=1_000_000), "s", "k", "iv",
@@ -915,13 +957,43 @@ async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 123.0
 
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
             screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert saved == [(123_000, False)]  # exactly one, and not "final"
 
 
-async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_player):
+async def test_checkpoint_fires_from_real_elapsed_time_not_a_tick_count(
+    fake_player, fake_clock,
+):
+    """L9: a poll that takes longer than a second (four IPC round trips
+    under load) is skipped entirely by _poll's own inflight guard, not
+    queued -- a fixed per-call decrement would then drift the checkpoint
+    interval long. Two _tick calls spanning the interval in real elapsed
+    time must trigger it, without needing _CHECKPOINT_EVERY_SECONDS
+    separate calls."""
+    saved = []
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 50.0
+
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))  # seeds the clock
+        fake_clock.advance(20.0)  # one slow poll cycle standing in for many skipped ones
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert saved == [(50_000, False)]
+
+
+async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(
+    fake_player, fake_clock,
+):
     saved = []
     screen = PlayerScreen(
         _book(progress_ms=10_000, duration_ms=1_000_000), "s", "k", "iv",
@@ -933,7 +1005,8 @@ async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_p
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 10.0  # right where the book was already left
 
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS * 2):
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS) * 2):
+            fake_clock.advance(1.0)
             screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert saved == []
@@ -1020,7 +1093,7 @@ async def test_poll_skips_a_tick_instead_of_committing_a_failed_read_as_zero(
         await _wait_until(lambda: screen._last_position_ms == 61_000)
 
         fake_player.fail_position_reads = True
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+        for _ in range(15):  # not tied to the checkpoint interval, just "several"
             screen._poll()
             await _wait_until(lambda: screen._poll_inflight is False)
 
@@ -1040,7 +1113,7 @@ async def test_poll_does_not_stack_reads_while_one_is_in_flight(fake_player):
         assert screen._poll_inflight is True
 
 
-async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
+async def test_checkpoint_failure_does_not_crash_the_player(fake_player, fake_clock):
     def boom(pos, *, final):
         raise RuntimeError("owner blew up")
 
@@ -1053,12 +1126,13 @@ async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 30.0
         snap = _Playback.read(fake_player, screen.book.duration_ms)
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
             screen._tick(snap)  # must not raise despite the callback raising
 
 
 async def test_periodic_checkpoint_retries_after_a_failure_at_the_same_position(
-    fake_player,
+    fake_player, fake_clock,
 ):
     """L8: a failed save must not be marked as saved -- _flush_progress's
     own "nothing moved since last save" guard would otherwise skip the
@@ -1081,13 +1155,15 @@ async def test_periodic_checkpoint_retries_after_a_failure_at_the_same_position(
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 30.0
         snap = _Playback.read(fake_player, screen.book.duration_ms)
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
             screen._tick(snap)  # first periodic checkpoint fails
 
         assert calls == [30_000]  # attempted once, failed
 
         should_fail = False
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
             screen._tick(snap)  # position unchanged -- must still retry
 
         assert calls == [30_000, 30_000]  # retried, not silently skipped

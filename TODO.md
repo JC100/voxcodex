@@ -317,7 +317,21 @@ done.
       `except`-block `return` before it). Added
       `test_periodic_checkpoint_retries_after_a_failure_at_the_same_position`
       (verified it fails against the pre-fix unconditional bookkeeping).
-- [ ] 19 more Low findings -- see the doc for the full list and suggested
+- [x] L9 -- The sleep timer and checkpoint counter assume exactly one
+      tick per second, but a poll that takes longer than a second is
+      skipped entirely rather than counted, so both drift long
+      (`screens/player_screen.py`). **Fixed** 2026-09-21: `_tick` now
+      measures real elapsed time via `time.monotonic()` and uses that
+      delta for both the checkpoint accumulator (renamed
+      `_seconds_since_checkpoint`, `_CHECKPOINT_EVERY_TICKS` ->
+      `_CHECKPOINT_EVERY_SECONDS`) and the sleep-timer countdown, instead
+      of a fixed `-1`/`+1` per call. Added a `fake_clock` fixture and two
+      new tests demonstrating the fix (`test_checkpoint_fires_from_real_elapsed_time_not_a_tick_count`,
+      `test_sleep_timer_counts_down_by_real_elapsed_time_not_a_fixed_decrement`
+      -- both verified to fail against the pre-fix per-call decrement);
+      adjusted 4 existing tests that drove `_tick` in a tight loop
+      assuming 1 call == 1 second to advance the fake clock explicitly.
+- [ ] 18 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
