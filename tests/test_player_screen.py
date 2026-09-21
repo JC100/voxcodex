@@ -230,6 +230,27 @@ async def test_start_failure_from_mpv_error_also_shown(monkeypatch):
         )
 
 
+async def test_start_failure_from_os_error_also_shown(monkeypatch):
+    """M6: a real-world start() failure that isn't (Mpv)NotFoundError/
+    MpvError -- mpv removed/renamed between the constructor's shutil.which
+    check and the actual start() call, or a resource limit -- used to
+    escape as an unhandled OSError, get swallowed by the worker's
+    exit_on_error=False, and leave the screen reading "Starting player..."
+    forever with no error and no retry."""
+    monkeypatch.setattr(
+        player_screen_module, "MpvPlayer",
+        lambda: FailingPlayer(FileNotFoundError("mpv: No such file or directory")),
+    )
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(
+            lambda: "No such file or directory" in str(screen.query_one("#state", Static).content)
+        )
+        assert screen._player is None
+
+
 # -- transport controls, via real keybindings ------------------------------
 
 

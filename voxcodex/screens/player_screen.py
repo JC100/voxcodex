@@ -178,7 +178,15 @@ class PlayerScreen(Screen[int]):
         self._player = player
         try:
             player.start(self._source, self._key, self._iv, start_seconds=start_seconds)
-        except (MpvNotFoundError, MpvError) as exc:
+        except (MpvNotFoundError, MpvError, OSError) as exc:
+            # OSError covers a real-world failure MpvPlayer.start() doesn't
+            # wrap: mpv removed/renamed between the shutil.which check in
+            # MpvPlayer.__init__ and Popen() here, or a resource limit.
+            # Narrower than this used to be (only MpvNotFoundError/
+            # MpvError) -- an unwrapped OSError previously escaped as
+            # unhandled, was swallowed by the worker's exit_on_error=False,
+            # and left the screen reading "Starting player..." forever with
+            # no error and no retry (M6).
             player.stop()
             self._player = None
             if not worker.is_cancelled and self.is_mounted:

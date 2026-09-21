@@ -158,7 +158,19 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       non-dict entry instead of trying to mutate it (which would raise
       `TypeError` on item assignment). Added four tests covering both
       malformed shapes on read and the replace-on-write behavior.
-- [ ] 7 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M6 -- `MpvPlayer.start()` can leak a temp dir holding the DRM key,
+      and a non-`MpvError` startup failure wedges the player screen
+      forever (`services/player.py` / `screens/player_screen.py`).
+      **Fixed** 2026-09-21: `Popen` now runs inside the same cleanup
+      `try` as `_connect()`, so a `FileNotFoundError` (or any other
+      startup failure) calls `self.stop()` and cleans up the temp dir
+      instead of leaking it. `PlayerScreen._start_player` now also
+      catches `OSError` (was only `MpvNotFoundError`/`MpvError`), so a
+      real-world failure of that shape shows an error instead of wedging
+      the screen on "Starting player..." forever. Added
+      `test_start_cleans_up_the_temp_dir_when_popen_itself_fails` and
+      `test_start_failure_from_os_error_also_shown`.
+- [ ] 6 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

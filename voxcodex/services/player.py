@@ -126,14 +126,18 @@ class MpvPlayer:
         cmd.append("--")
         cmd.append(source)
 
-        self._proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
         try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
             self._connect()
         except Exception:
-            # Don't leave the mpv process we just spawned running headless
-            # with no IPC channel to control or stop it.
+            # Covers both a Popen failure (e.g. mpv removed/renamed between
+            # the shutil.which check in __init__ and here, or a resource
+            # limit) and a failed _connect -- either way, don't leave the
+            # temp dir (holding the plaintext DRM key) on disk, or an mpv
+            # process running headless with no IPC channel to control it.
             self.stop()
             raise
 

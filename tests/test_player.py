@@ -472,3 +472,34 @@ def test_stop_during_startup_breaks_connect_out_of_its_retry_loop(monkeypatch):
     with pytest.raises(MpvError):
         p.start("src", "de", "ad")
     assert time.monotonic() - started < 3.0  # nowhere near the 8s ceiling
+
+
+def test_start_cleans_up_the_temp_dir_when_popen_itself_fails(monkeypatch):
+    """M6: Popen used to run outside the surrounding cleanup try -- a
+    FileNotFoundError (mpv removed/renamed between the shutil.which check
+    in __init__ and here) left the 0700 temp dir, with the plaintext DRM
+    key inside it, on disk until the next reboot."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+
+    created_dirs = []
+    real_mkdtemp = player_module.tempfile.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created_dirs.append(path)
+        return path
+
+    monkeypatch.setattr(player_module.tempfile, "mkdtemp", recording_mkdtemp)
+
+    def fake_popen(cmd, **kwargs):
+        raise FileNotFoundError("mpv: No such file or directory")
+
+    monkeypatch.setattr(player_module.subprocess, "Popen", fake_popen)
+
+    p = MpvPlayer()
+    with pytest.raises(FileNotFoundError):
+        p.start("src", "de", "ad")
+
+    assert p._dir is None
+    (created_dir,) = created_dirs
+    assert not os.path.exists(created_dir)

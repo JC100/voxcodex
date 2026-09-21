@@ -52,6 +52,10 @@
 - **A malformed entry in the local progress cache could crash the whole
   library load.** Reading or writing a position now tolerates a
   wrong-shape cache entry instead of raising.
+- **A failure starting mpv itself (not just a bad response from it) could
+  wedge the player screen on "Starting player..." forever with no error,
+  and leak a temp directory holding the plaintext DRM key.** Both paths
+  are now cleaned up and surfaced properly.
 
 ### Security
 - **The Amazon account password and vault password could leak into
