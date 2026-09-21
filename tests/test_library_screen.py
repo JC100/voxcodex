@@ -1041,6 +1041,49 @@ async def test_download_success_updates_status_and_table(monkeypatch):
         assert "Downloaded: One" in str(screen.query_one("#status").content)
 
 
+async def test_download_completing_after_a_refresh_still_marks_the_current_book(
+    monkeypatch,
+):
+    """L21: a library refresh completing mid-download replaces
+    self._books wholesale with fresh Book objects -- the download's
+    completion handler used to mutate the closure-captured (now orphaned)
+    Book, which had no effect on what's displayed until the next manual
+    refresh."""
+    release = threading.Event()
+    entered = threading.Event()
+
+    def blocking_download_book(book, api, on_progress=None, cancel_check=None):
+        entered.set()
+        release.wait(timeout=5)
+        return "/tmp/fake.aaxc"
+
+    monkeypatch.setattr(library_module.download, "download_book", blocking_download_book)
+
+    orphaned_book = _book("B1", "One")
+    screen = LibraryScreen(FakeAPI([orphaned_book]))
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: len(screen._books) == 1)
+            screen.query_one(DataTable).focus()
+            await pilot.press("d")
+            await _wait_until(lambda: entered.is_set())
+
+            # A library refresh completing mid-download: a fresh Book
+            # object for the same title replaces the one the download
+            # started with.
+            fresh_book = _book("B1", "One")
+            screen._books = [fresh_book]
+            screen._apply_filters_and_sort()
+
+            release.set()
+            await _wait_until(lambda: fresh_book.is_downloaded is True)
+            assert orphaned_book.is_downloaded is False  # untouched, as expected
+    finally:
+        release.set()
+
+
 async def test_download_failure_shows_error_and_book_stays_not_downloaded(monkeypatch):
     def fake_download_book(book, api, on_progress=None, cancel_check=None):
         raise RuntimeError("403 Forbidden")

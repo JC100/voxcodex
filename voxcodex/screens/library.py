@@ -467,7 +467,9 @@ class LibraryScreen(Screen[None]):
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         except CellDoesNotExist:
             return None
-        asin = row_key.value
+        return self._book_by_asin(row_key.value)
+
+    def _book_by_asin(self, asin: str | None) -> Book | None:
         for book in self._books:
             if book.asin == asin:
                 return book
@@ -699,7 +701,15 @@ class LibraryScreen(Screen[None]):
             bar = self.query_one("#download-progress", ProgressBar)
         except NoMatches:
             return
-        book.is_downloaded = True
+        # Re-resolve by ASIN against the current book list rather than
+        # mutating the closure-captured object directly -- a library
+        # refresh completing mid-download replaces self._books wholesale
+        # with fresh Book objects, orphaning this one (L21): mutating it
+        # would have no effect on what's displayed until the next manual
+        # refresh. Falls back to the captured object if the title
+        # genuinely isn't in the library anymore (e.g. returned).
+        current = self._book_by_asin(book.asin) or book
+        current.is_downloaded = True
         self._apply_filters_and_sort()
         if book.asin != self._active_download_asin:
             # Superseded (L20) -- the state update above is real and must

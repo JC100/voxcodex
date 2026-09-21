@@ -117,6 +117,9 @@
 - Switching to a different download mid-flight could hide the new
   download's progress and show a stale "Downloaded" status for the one
   it replaced.
+- A library refresh completing while a download was in flight could
+  leave that download not showing as downloaded until the next manual
+  refresh.
 
 ### Added
 - Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation

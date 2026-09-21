@@ -434,7 +434,19 @@ done.
       UI elements are guarded). Added
       `test_download_completing_after_being_superseded_does_not_clobber_the_new_one`
       (verified it fails against the pre-fix unconditional callbacks).
-- [ ] 7 more Low findings -- see the doc for the full list and suggested
+- [x] L21 -- A library refresh completing mid-download orphans the
+      in-flight `Book` object -- the download's completion handler
+      mutates a `Book` no longer present in `self._books`, so the
+      finished download doesn't show as downloaded until the next manual
+      refresh (`screens/library.py`). **Fixed** 2026-09-21: added
+      `_book_by_asin` (extracted from `_selected_book`'s existing
+      lookup), and `_download_succeeded` now re-resolves the current
+      `Book` object by ASIN before mutating `is_downloaded`, falling back
+      to the closure-captured one only if the title is genuinely gone
+      from the library. Added
+      `test_download_completing_after_a_refresh_still_marks_the_current_book`
+      (verified it fails against the pre-fix direct mutation).
+- [ ] 6 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
