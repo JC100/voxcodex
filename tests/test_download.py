@@ -146,6 +146,17 @@ def test_load_voucher_parses_saved_json():
     assert download.load_voucher("B001") == {"key": "k", "iv": "i"}
 
 
+def test_load_voucher_returns_none_for_corrupted_json():
+    # M14: a corrupt voucher (partial disk, a bad sync -- atomic_write_text
+    # only protects the write itself, not later corruption) used to raise
+    # json.JSONDecodeError uncaught, hanging the play flow forever with no
+    # error shown, instead of being treated the same as a missing voucher.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.voucher_path_for("B001").write_text("{not valid json")
+
+    assert download.load_voucher("B001") is None
+
+
 # -- download_book --------------------------------------------------------
 
 

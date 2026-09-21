@@ -775,7 +775,9 @@ class LibraryScreen(Screen[None]):
             if book.is_downloaded:
                 voucher = download.load_voucher(book.asin)
                 if voucher is None:
-                    raise RuntimeError("Downloaded file is missing its decryption voucher")
+                    raise RuntimeError(
+                        "Downloaded file's decryption voucher is missing or unreadable"
+                    )
                 source = str(download.audio_path_for(book.asin))
                 key, iv = voucher["key"], voucher["iv"]
                 acr = voucher.get("acr", "")

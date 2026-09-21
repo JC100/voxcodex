@@ -77,6 +77,9 @@
 - **A corrupted playback speed or volume setting could crash the app the
   moment a book was opened.** Both are now guarded and clamped to their
   valid range instead of crashing or silently going out of range.
+- **A corrupt or unreadable download voucher could hang the play flow
+  forever, with no error shown and no way to retry.** It's now treated
+  the same as a missing voucher, with a clear error message.
 
 ### Security
 - **The Amazon account password and vault password could leak into

@@ -2039,6 +2039,45 @@ async def test_chapter_column_unchanged_when_the_chapter_fetch_never_succeeded(
 # -- narrowed exception handling on the license path (M7) -----------------
 
 
+async def test_play_shows_an_error_instead_of_hanging_on_a_corrupt_voucher(
+    monkeypatch, tmp_path
+):
+    """M14: load_voucher used to raise json.JSONDecodeError uncaught on a
+    corrupt voucher (a realistic trigger: partial disk, a bad sync --
+    atomic_write_text only protects the write itself, not later
+    corruption), which wasn't in _PLAYER_OPEN_ERRORS -- the worker's
+    exception was swallowed by exit_on_error=False, leaving the status
+    line reading "Opening license for..." permanently with no error shown
+    and no retry possible. Uses the real download.load_voucher (not a
+    monkeypatched fake) against an actually-corrupted file on disk, so
+    this exercises load_voucher's own fix, not just the library-screen
+    wiring around it."""
+    from voxcodex import config
+
+    monkeypatch.setattr(config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    library_module.download.voucher_path_for("B1").write_text("{not valid json")
+    library_module.download.audio_path_for("B1").write_bytes(b"data")
+
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
+
+    books = [_book("B1", "One")]
+    books[0].is_downloaded = True
+    api = FakeAPI(books)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Could not start playback" in str(screen.query_one("#status").content)
+        )
+        assert "missing or unreadable" in str(screen.query_one("#status").content)
+
+
 async def test_play_shows_the_denial_message_when_the_license_is_denied():
     books = [_book("B1", "One")]
     api = FakeAPI(books, license_exc=LicenseDenied("Not entitled to this title"))

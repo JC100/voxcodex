@@ -230,8 +230,23 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       otherwise only gets clamped incrementally, by the +/- actions' own
       `min()`/`max()`. Added four tests covering a non-numeric value,
       `null`, and an out-of-range value for each property.
-- [ ] 1 more Medium and 27 Low findings -- see the doc for the full list
-      and suggested order of work.
+- [x] M14 -- A corrupt or unreadable download voucher hangs the play flow
+      forever, with no error shown (`screens/library.py` /
+      `services/download.py`). **Fixed** 2026-09-21: `load_voucher` now
+      catches `json.JSONDecodeError`/`OSError` and returns `None` on a
+      parse failure, the same as a missing voucher -- which
+      `_open_player`'s existing "no voucher" handling already turns into
+      a clean, user-visible `RuntimeError` (message reworded to cover
+      both "missing" and "unreadable"). Added
+      `test_load_voucher_returns_none_for_corrupted_json` and an
+      end-to-end `test_play_shows_an_error_instead_of_hanging_on_a_corrupt_voucher`
+      (against a real corrupted file on disk, not a mocked `load_voucher`).
+
+All 6 High and all 16 Medium findings from the 2026-09-21 review are now
+done.
+
+- [ ] 27 Low findings -- see the doc for the full list and suggested
+      order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
       `docs/library-progress-sync-investigation.md:23-30`; the

@@ -158,10 +158,21 @@ def _write_voucher(asin: str, license_: License) -> None:
 
 
 def load_voucher(asin: str) -> dict[str, str] | None:
+    """The saved voucher for `asin`, or None if it's missing, corrupted
+    (a partial disk, a bad sync -- atomic_write_text only protects the
+    write itself, not later corruption), or unreadable. The caller's
+    existing "no voucher" handling (a clean, user-visible error) already
+    covers all three the same way -- a JSONDecodeError/OSError here
+    otherwise escaped unhandled and hung the play flow forever with no
+    message shown (M14)."""
     path = voucher_path_for(asin)
     if not path.exists():
         return None
-    return cast("dict[str, str]", json.loads(path.read_text()))
+    try:
+        return cast("dict[str, str]", json.loads(path.read_text()))
+    except (json.JSONDecodeError, OSError):
+        logger.debug("failed to read voucher for %s", asin, exc_info=True)
+        return None
 
 
 def delete_download(asin: str) -> None:
