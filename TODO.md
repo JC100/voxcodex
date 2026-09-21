@@ -331,7 +331,14 @@ done.
       -- both verified to fail against the pre-fix per-call decrement);
       adjusted 4 existing tests that drove `_tick` in a tight loop
       assuming 1 call == 1 second to advance the fake clock explicitly.
-- [ ] 18 more Low findings -- see the doc for the full list and suggested
+- [x] L10 -- The chapter row goes stale when the current-chapter lookup
+      returns `None` (seeking before the first chapter's start)
+      (`screens/player_screen.py`). **Fixed** 2026-09-21: added an
+      `else: chapter_row.update("")` branch alongside the existing
+      no-chapters case. Added
+      `test_chapter_row_clears_when_position_is_before_the_first_chapter`
+      (verified it fails against the pre-fix missing branch).
+- [ ] 17 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

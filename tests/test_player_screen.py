@@ -644,6 +644,29 @@ async def test_chapter_row_shows_current_chapter(fake_player):
         )
 
 
+async def test_chapter_row_clears_when_position_is_before_the_first_chapter(
+    fake_player,
+):
+    """L10: _current_chapter_index returns None when the position is
+    before the first chapter's start (chapter data with a nonzero first
+    start_ms, or seeking back past 0) -- the chapter row used to be left
+    showing the previous chapter's text instead of reflecting that."""
+    chapters_with_a_gap = [Chapter(title="Chapter 1", start_ms=5_000, length_ms=60_000)]
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=chapters_with_a_gap)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # inside "Chapter 1"
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+        assert "Chapter 1" in str(screen.query_one("#chapter-row").content)
+
+        fake_player.position = 2.0  # before the first chapter's 5s start
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert str(screen.query_one("#chapter-row").content) == ""
+
+
 async def test_next_chapter_seeks_to_next_chapters_start(fake_player):
     screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=_CHAPTERS)
     app = HostApp(screen)

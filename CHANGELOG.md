@@ -101,6 +101,8 @@
   long under load**, since a poll cycle taking over a second was skipped
   entirely rather than counted. Both now track real elapsed time instead
   of assuming exactly one tick per second.
+- The chapter row could show a stale chapter after seeking to before the
+  first chapter's start -- it now clears instead.
 
 ### Security
 - **The Amazon account password and vault password could leak into

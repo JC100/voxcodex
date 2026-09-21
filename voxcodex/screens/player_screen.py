@@ -344,6 +344,12 @@ class PlayerScreen(Screen[int]):
                     f"Chapter {idx + 1}/{len(self._chapters)}: {chapter.title}   "
                     f"({_fmt_hms(chapter_position)} / {_fmt_hms(chapter_length)})"
                 )
+            else:
+                # Before the first chapter's start (seeking back past 0, or
+                # chapter data with a nonzero first start_ms) -- leaving the
+                # previous chapter's text on screen would misrepresent the
+                # current position (L10).
+                chapter_row.update("")
         else:
             chapter_row.update("")
 
