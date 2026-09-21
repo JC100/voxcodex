@@ -2573,3 +2573,36 @@ async def test_library_load_keeps_the_newer_local_position_over_a_larger_remote_
     async with app.run_test():
         await _wait_until(lambda: len(screen._books) == 1)
         assert screen._books[0].progress_ms == 100_000
+
+
+async def test_apply_filters_and_sort_does_not_raise_if_search_box_is_gone():
+    """L23: _apply_filters_and_sort's #search query is reached from the
+    background library-load worker (_populate/_populate_offline via
+    call_from_thread), which can land after the screen's widgets are torn
+    down -- should no-op like _refresh_table already does, not raise
+    NoMatches."""
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        await screen.query_one("#search", Input).remove()
+
+        screen._apply_filters_and_sort()  # must not raise NoMatches
+
+
+async def test_update_sort_filter_label_does_not_raise_if_label_is_gone():
+    """L23: same as above but for _update_sort_filter_label's own
+    #sort-filter query, reached via _apply_filters_and_sort -> ... ->
+    _update_sort_filter_label from the same background-worker path."""
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        await screen.query_one("#sort-filter").remove()
+
+        screen._apply_filters_and_sort()  # must not raise NoMatches
+        screen._update_sort_filter_label()  # must not raise NoMatches

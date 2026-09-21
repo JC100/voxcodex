@@ -451,7 +451,19 @@ done.
       2026-09-21: guarded with `if books: library_cache.save(books)`.
       Added `test_successful_but_empty_fetch_does_not_overwrite_the_offline_cache`
       (verified it fails against the pre-fix unconditional save).
-- [ ] 5 more Low findings -- see the doc for the full list and suggested
+- [x] L23 -- Two DOM queries reached from the background library-load
+      worker (`_populate`/`_populate_offline` via `call_from_thread`)
+      aren't guarded against `NoMatches` the way `_refresh_table` already
+      is -- `_apply_filters_and_sort`'s own `#search` query and
+      `_update_sort_filter_label`'s `#sort-filter` query
+      (`screens/library.py`). Harmless today under `exit_on_error=False`,
+      but inconsistent with the pattern established everywhere else in the
+      file. **Fixed** 2026-09-21: wrapped both in `try/except NoMatches:
+      return`, matching `_refresh_table`'s existing style. Added
+      `test_apply_filters_and_sort_does_not_raise_if_search_box_is_gone`
+      and `test_update_sort_filter_label_does_not_raise_if_label_is_gone`
+      (verified both fail against the pre-fix unguarded queries).
+- [ ] 4 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

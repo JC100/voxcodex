@@ -570,7 +570,13 @@ class LibraryScreen(Screen[None]):
         )
         total_size = self._total_downloaded_size()
         size_suffix = f"   {_format_size(total_size)} downloaded" if total_size else ""
-        self.query_one("#sort-filter", Static).update(
+        # Reached from the background library-load worker too, which may
+        # outlive the screen -- same reasoning as _refresh_table (L23).
+        try:
+            label = self.query_one("#sort-filter", Static)
+        except NoMatches:
+            return
+        label.update(
             f"Sort: {_SORT_LABELS[self._sort_key]}   Filter: {_FILTER_LABELS[self._filter_key]}"
             f"   ({count} shown){size_suffix}"
         )
@@ -607,7 +613,15 @@ class LibraryScreen(Screen[None]):
         return self._sort_key in ("recent", "progress")
 
     def _apply_filters_and_sort(self) -> None:
-        query = self.query_one("#search", Input).value.strip().lower()
+        # Reached from the background library-load worker too (_populate /
+        # _populate_offline via call_from_thread), which may land after the
+        # screen's been popped -- same pattern _refresh_table already uses
+        # for the same reason. Harmless today under exit_on_error=False,
+        # but worth being consistent with the rest of the file (L23).
+        try:
+            query = self.query_one("#search", Input).value.strip().lower()
+        except NoMatches:
+            return
         books = self._books
         if query:
             books = [
