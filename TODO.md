@@ -255,7 +255,15 @@ done.
       sites (`download_book`, `_open_player`) are already inside existing
       broad exception handling, so `InvalidAsin` was also added to
       `_PLAYER_OPEN_ERRORS` for a clean message there. Added 3 tests.
-- [ ] 26 more Low findings -- see the doc for the full list and suggested
+- [x] L2 -- `stop()` closes the mpv socket while a concurrent blocking
+      `recv` may still be in flight (`services/player.py`). **Fixed**
+      2026-09-21: `sock.shutdown(SHUT_RDWR)` before `sock.close()`, which
+      forces a concurrent blocked `recv()` to return immediately (as EOF)
+      without invalidating the fd, rather than racing a `close()` that
+      could let the fd be reused by an unrelated new socket before that
+      blocked read wakes up. Added
+      `test_stop_shuts_down_the_socket_before_closing_it`.
+- [ ] 25 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

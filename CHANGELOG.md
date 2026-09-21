@@ -80,6 +80,9 @@
 - **A corrupt or unreadable download voucher could hang the play flow
   forever, with no error shown and no way to retry.** It's now treated
   the same as a missing voucher, with a clear error message.
+- Closed a rare race where stopping playback while a transport command
+  was in flight could let its socket file descriptor be reused before
+  that command's read finished.
 
 ### Security
 - **The Amazon account password and vault password could leak into

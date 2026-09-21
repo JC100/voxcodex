@@ -413,6 +413,39 @@ def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     assert not tmp_dir.exists()
 
 
+def test_stop_shuts_down_the_socket_before_closing_it(fake_mpv, monkeypatch):
+    """L2: stop() doesn't take _io_lock, so a concurrent _command on
+    another thread (the poll or control worker) may still be blocked in
+    recv() on this same socket. A bare close() can race that -- the fd
+    could be reused by an unrelated new socket before the blocked recv()
+    wakes up. shutdown() first forces that recv() to return immediately
+    (as EOF) without invalidating the fd, closing the window."""
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+    client_sock = p._sock
+
+    calls = []
+    original_shutdown = socket.socket.shutdown
+    original_close = socket.socket.close
+
+    def recording_shutdown(self, *args, **kwargs):
+        if self is client_sock:
+            calls.append("shutdown")
+        return original_shutdown(self, *args, **kwargs)
+
+    def recording_close(self, *args, **kwargs):
+        if self is client_sock:
+            calls.append("close")
+        return original_close(self, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "shutdown", recording_shutdown)
+    monkeypatch.setattr(socket.socket, "close", recording_close)
+
+    p.stop()
+
+    assert calls == ["shutdown", "close"]
+
+
 def test_command_is_serialised_across_threads(fake_mpv):
     """The player screen polls position from a background worker while
     transport actions run on theirs -- interleaved sendall/recv on one

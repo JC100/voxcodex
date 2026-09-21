@@ -280,6 +280,15 @@ class MpvPlayer:
                     sock.sendall(b'{"command": ["quit"]}\n')
                 except OSError:
                     pass
+                # stop() doesn't take _io_lock, so a concurrent _command on
+                # another thread (the poll or control worker) may still be
+                # blocked in recv() on this same socket. A bare close() can
+                # race that: the fd could be reused by an unrelated new
+                # socket before the blocked recv() wakes up. shutdown()
+                # first forces that recv() to return immediately (as EOF)
+                # without invalidating the fd, closing the window (L2).
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
                 with contextlib.suppress(OSError):
                     sock.close()
 
