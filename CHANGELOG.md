@@ -61,6 +61,10 @@
   attempt now gets its own temp file, a failed rename cleans up the
   voucher it was paired with, and a same-book double-press is rejected
   outright with an "Already downloading" status instead of racing.
+- **A wedged or slow-to-respond mpv could freeze the whole player screen**
+  -- every transport key (play/pause/seek/speed/volume) and closing the
+  player each did at least one blocking round trip on the UI thread. Both
+  now run off the event loop.
 
 ### Security
 - **The Amazon account password and vault password could leak into

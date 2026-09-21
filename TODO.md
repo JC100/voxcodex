@@ -184,7 +184,23 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       `test_library_screen.py` covering the unique-tmp-name behavior, a
       concrete two-attempts-in-flight race, voucher cleanup on a failed
       rename, the double-press rejection, and retry-after-failure.
-- [ ] 5 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M8 -- Transport keys, close, and unmount all do blocking mpv IPC on
+      the Textual event loop (`screens/player_screen.py`). **Fixed**
+      2026-09-21: `_control` now dispatches every transport command
+      (play/pause/seek/speed/volume) to a background worker instead of
+      running it inline, mirroring how the poll path already avoids the
+      event loop. `action_close` similarly moves its position read +
+      `stop()` off the event loop, dismissing via `call_from_thread` once
+      they finish. `on_unmount`'s `stop()` is deliberately left
+      synchronous (documented why in a comment) -- the common case is
+      already a fast no-op after `action_close`, and backgrounding the
+      rare hard-quit path risks the process exiting before the worker
+      runs, leaking the mpv subprocess. Added
+      `test_transport_command_does_not_block_the_event_loop` and
+      `test_action_close_does_not_block_the_event_loop`; adjusted a
+      couple of existing tests that asserted on a now-async side effect
+      without waiting for it.
+- [ ] 4 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

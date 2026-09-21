@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from textual.app import App
@@ -266,6 +267,42 @@ async def test_space_toggles_pause(fake_player):
         assert fake_player.toggle_pause_calls == 1
 
 
+async def test_transport_command_does_not_block_the_event_loop(fake_player):
+    """M8: every transport action was at least one blocking IPC round trip
+    run inline on the event loop -- a wedged mpv would freeze the whole
+    TUI. _control now dispatches to a background thread, so a blocked mpv
+    command must not delay an unrelated, purely local action (no IPC
+    involved) from responding."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_toggle_pause = fake_player.toggle_pause
+
+    def blocking_toggle_pause():
+        entered.set()
+        release.wait(timeout=5)
+        original_toggle_pause()
+
+    fake_player.toggle_pause = blocking_toggle_pause
+
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: screen._player is not None)
+
+            await pilot.press("space")  # toggle_pause blocks in a worker thread
+            await _wait_until(lambda: entered.is_set())
+
+            # cycle_sleep_timer touches no mpv IPC at all -- it must
+            # respond immediately, not wait behind the blocked command.
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._sleep_preset_index == 1
+    finally:
+        release.set()  # let the blocked worker thread finish promptly
+
+
 async def test_left_seeks_back_30s(fake_player):
     screen = PlayerScreen(_book(), "source-url", "key", "iv")
     app = HostApp(screen)
@@ -378,8 +415,8 @@ async def test_starts_at_persisted_speed_and_volume(fake_player, fake_settings):
 
         assert screen._speed == 1.3
         assert screen._volume == 82.0
-        assert fake_player.speed_calls == [1.3]
-        assert fake_player.volume_calls == [82.0]
+        await _wait_until(lambda: fake_player.speed_calls == [1.3])
+        await _wait_until(lambda: fake_player.volume_calls == [82.0])
 
 
 async def test_bracket_right_increases_volume(fake_player, fake_settings):
@@ -505,7 +542,7 @@ async def test_sleep_timer_auto_pauses_playback_on_expiry(fake_player):
 
         screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
-        assert fake_player.set_paused_calls == [True]
+        await _wait_until(lambda: fake_player.set_paused_calls == [True])
         assert screen._sleep_remaining_seconds is None
         assert screen._sleep_preset_index == 0
         assert "paused" in str(screen.query_one("#time-row").content)
@@ -775,7 +812,7 @@ async def test_close_stops_player_and_dismisses_with_last_position(fake_player):
         screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("q")
-        await pilot.pause()
+        await _wait_until(lambda: results != [])
 
         assert fake_player.stopped is True
         assert results == [77_000]
@@ -789,10 +826,51 @@ async def test_escape_also_closes(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         await pilot.press("escape")
-        await pilot.pause()
+        await _wait_until(lambda: results != [])
 
         assert fake_player.stopped is True
         assert len(results) == 1
+
+
+async def test_action_close_does_not_block_the_event_loop(fake_player):
+    """M8: the position read plus stop()'s socket write and process wait
+    used to run inline on the event loop -- pressing q against a wedged
+    mpv could freeze the whole TUI for several seconds. Both now run in a
+    background worker, and the screen only dismisses once stop() actually
+    finishes (ordering preserved, just off the event loop)."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_stop = fake_player.stop
+
+    def blocking_stop():
+        entered.set()
+        release.wait(timeout=5)
+        original_stop()
+
+    fake_player.stop = blocking_stop
+
+    results = []
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen, results.append)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: screen._player is not None)
+
+            await pilot.press("q")
+            await _wait_until(lambda: entered.is_set())
+
+            # The event loop itself must still be responsive while stop()
+            # is blocked -- and the screen must not have dismissed yet,
+            # since that only happens after stop() actually returns.
+            await pilot.pause()
+            assert results == []
+            assert isinstance(app.screen, PlayerScreen)
+
+            release.set()
+            await _wait_until(lambda: results != [])
+    finally:
+        release.set()
 
 
 # -- progress checkpointing (H3) ----------------------------------------------

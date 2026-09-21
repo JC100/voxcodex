@@ -220,12 +220,24 @@ class PlayerScreen(Screen[int]):
         self.set_interval(1.0, self._poll)
 
     def _control(self, fn: Callable[[MpvPlayer], object]) -> None:
-        """Run a transport command against the player, swallowing an
-        MpvError from a dead or stalled socket so a keypress can't take the
-        whole app down. The next poll notices `is_running` went False."""
+        """Run a transport command against the player. Dispatched to a
+        background thread rather than run inline -- every transport action
+        (play/pause/seek/speed/volume) is at least one blocking IPC round
+        trip, which would otherwise freeze the whole TUI against a wedged
+        mpv (M8) exactly like _poll's own docstring says reads must not run
+        on the event loop. Fire-and-forget: nothing here depends on the
+        command having completed by the time this returns -- the next poll
+        picks up whatever state resulted (or notices `is_running` went
+        False if mpv died)."""
         player = self._player
         if player is None:
             return
+        self._run_control(fn, player)
+
+    @work(thread=True, exclusive=False, group="control", exit_on_error=False)
+    def _run_control(self, fn: Callable[[MpvPlayer], object], player: MpvPlayer) -> None:
+        # Swallows MpvError from a dead or stalled socket so a keypress
+        # can't take the whole app down.
         try:
             fn(player)
         except MpvError as exc:
@@ -421,17 +433,39 @@ class PlayerScreen(Screen[int]):
         self._saved_position_ms = self._last_position_ms
 
     def action_close(self) -> None:
-        if self._player and self._player.is_running:
-            # Grab a fresh position before stopping -- the last _tick can be
-            # up to a second stale. A failed read (MpvError) must not
-            # overwrite _last_position_ms with a phantom value -- keep the
-            # last known-good position instead.
-            with contextlib.suppress(MpvError):
-                self._last_position_ms = int(self._player.position_seconds * 1000)
-            self._player.stop()
+        player = self._player
+        if player is not None and player.is_running:
+            # A position read plus stop()'s socket write, process wait, and
+            # directory removal -- all blocking -- so this runs off the
+            # event loop (M8) the same way _control does, rather than
+            # freezing the whole TUI for several seconds against a wedged
+            # mpv. dismiss() happens at the end of the worker instead of
+            # here so it still runs after the read/stop actually finish.
+            self._close_player(player)
+            return
         self.dismiss(self._last_position_ms)
 
+    @work(thread=True, exclusive=True, group="close", exit_on_error=False)
+    def _close_player(self, player: MpvPlayer) -> None:
+        # Grab a fresh position before stopping -- the last _tick can be up
+        # to a second stale. A failed read (MpvError) must not overwrite
+        # _last_position_ms with a phantom value -- keep the last
+        # known-good position instead.
+        with contextlib.suppress(MpvError):
+            self._last_position_ms = int(player.position_seconds * 1000)
+        player.stop()
+        self.app.call_from_thread(self.dismiss, self._last_position_ms)
+
     def on_unmount(self) -> None:
+        # Deliberately still synchronous, unlike _control/action_close
+        # above (M8): the common case (an explicit q/esc) already went
+        # through _close_player, so this is a fast no-op (stop() is
+        # idempotent) by the time it runs. The path that actually reaches
+        # here doing real work is a hard app quit, where the app is
+        # already exiting -- backgrounding this would risk the process
+        # ending before the worker thread gets to run at all, leaking the
+        # mpv subprocess (audio kept playing after VoxCodex exits) rather
+        # than merely blocking a UI that's tearing down anyway.
         if self._player:
             self._player.stop()
         # Fires for an explicit q/esc *and* for a hard app quit -- the sole
