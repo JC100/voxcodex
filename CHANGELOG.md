@@ -56,6 +56,11 @@
   wedge the player screen on "Starting player..." forever with no error,
   and leak a temp directory holding the plaintext DRM key.** Both paths
   are now cleaned up and surfaced properly.
+- **Downloading the same book twice in quick succession could race,
+  losing the download and leaving an orphaned voucher.** Each download
+  attempt now gets its own temp file, a failed rename cleans up the
+  voucher it was paired with, and a same-book double-press is rejected
+  outright with an "Already downloading" status instead of racing.
 
 ### Security
 - **The Amazon account password and vault password could leak into

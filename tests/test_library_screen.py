@@ -895,6 +895,43 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
         assert "Already downloaded" in screen.query_one("#status").content
 
 
+async def test_download_rejects_a_same_book_double_press(monkeypatch):
+    """M7: a same-book double-press races two download_book() calls
+    against each other -- _do_download's exclusive=True only flags the
+    older worker cancelled, it doesn't stop its thread synchronously.
+    action_download_selected now rejects a repeat press outright."""
+    started = threading.Event()
+    release = threading.Event()
+    download_calls = []
+
+    def blocking_download_book(book, api, on_progress=None, cancel_check=None):
+        download_calls.append(book.asin)
+        started.set()
+        release.wait(timeout=5)
+        return "/tmp/fake.aaxc"
+
+    monkeypatch.setattr(library_module.download, "download_book", blocking_download_book)
+
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: len(screen._books) == 1)
+            screen.query_one(DataTable).focus()
+            await pilot.press("d")
+            await _wait_until(lambda: started.is_set())
+
+            await pilot.press("d")
+            await pilot.pause()
+
+            assert download_calls == ["B1"]  # not a second call
+            assert "Already downloading" in str(screen.query_one("#status").content)
+    finally:
+        release.set()  # let the blocked worker thread finish promptly
+
+
 async def test_download_succeeded_recomputes_the_active_filter():
     """M13: _download_succeeded used to call _refresh_table() (re-renders
     self._filtered as it was last computed) instead of
@@ -960,6 +997,36 @@ async def test_download_failure_shows_error_and_book_stays_not_downloaded(monkey
         )
 
         assert screen._books[0].is_downloaded is False
+
+
+async def test_download_can_be_retried_after_a_failure(monkeypatch):
+    """The in-flight guard must release on failure, not just success --
+    otherwise a failed download would be permanently unretriable."""
+    download_calls = []
+
+    def fake_download_book(book, api, on_progress=None, cancel_check=None):
+        download_calls.append(book.asin)
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(library_module.download, "download_book", fake_download_book)
+
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("d")
+        await _wait_until(
+            lambda: "Download failed" in str(screen.query_one("#status").content)
+        )
+
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert download_calls == ["B1", "B1"]
+        assert "Already downloading" not in str(screen.query_one("#status").content)
 
 
 # -- delete -------------------------------------------------------------

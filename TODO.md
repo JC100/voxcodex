@@ -170,7 +170,21 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       the screen on "Starting player..." forever. Added
       `test_start_cleans_up_the_temp_dir_when_popen_itself_fails` and
       `test_start_failure_from_os_error_also_shown`.
-- [ ] 6 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M7 -- Two downloads racing on the same book collide on one temp
+      filename, losing the download and orphaning its voucher
+      (`services/download.py` / `screens/library.py`). **Fixed**
+      2026-09-21: `download_book` now uses `tempfile.mkstemp` for a
+      unique temp name per attempt (the `*.part` sweep glob still
+      matches), and the voucher write + rename are inside the same
+      cleanup `try` so a failure in either also removes the other.
+      `action_download_selected` now also rejects a same-book
+      double-press with a status message via a new
+      `_in_flight_downloads` set, instead of racing a second worker.
+      Added six tests across `test_download.py` and
+      `test_library_screen.py` covering the unique-tmp-name behavior, a
+      concrete two-attempts-in-flight race, voucher cleanup on a failed
+      rename, the double-press rejection, and retry-after-failure.
+- [ ] 5 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

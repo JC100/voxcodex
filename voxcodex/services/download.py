@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -72,21 +74,32 @@ def download_book(
     license_ = api.get_license(book.asin, quality=quality)
 
     audio_path = audio_path_for(book.asin)
-    tmp_path = audio_path.with_suffix(".part")
+    # A unique name per attempt, not the deterministic {asin}.part: two
+    # downloads racing on the same book (a same-book double-press, or a
+    # second VoxCodex instance) would otherwise collide on one temp file --
+    # one attempt's cleanup (or the startup sweep) unlinking the file out
+    # from under the other, which is still writing to the now-unlinked
+    # inode. sweep_stale_downloads's `*.part` glob still matches this (M7).
+    fd, tmp_name = tempfile.mkstemp(
+        dir=config.DOWNLOADS_DIR, prefix=f"{book.asin}-", suffix=".part"
+    )
+    tmp_path = Path(tmp_name)
 
-    # Fetched through the same authenticated session used for API calls (matching
-    # audible-cli's own downloader), not a bare unauthenticated client -- Audible's
-    # CDN has rejected the plain-httpx version of this request with a WAF "Request
-    # blocked" 403 even though the signed URL itself was valid, while this same
-    # signed-session request and mpv's own fetch (used for streaming) both work.
     try:
+        # Fetched through the same authenticated session used for API calls
+        # (matching audible-cli's own downloader), not a bare
+        # unauthenticated client -- Audible's CDN has rejected the plain-
+        # httpx version of this request with a WAF "Request blocked" 403
+        # even though the signed URL itself was valid, while this same
+        # signed-session request and mpv's own fetch (used for streaming)
+        # both work.
         with api.client.session.stream(
             "GET", license_.content_url, follow_redirects=True, timeout=60
         ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
-            with open(tmp_path, "wb") as f:
+            with os.fdopen(fd, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=1024 * 256):
                     if cancel_check is not None and cancel_check():
                         raise DownloadCancelled(book.asin)
@@ -102,16 +115,19 @@ def download_book(
             raise OSError(
                 f"download truncated: got {downloaded} of {total} bytes"
             )
+
+        # Voucher before rename: is_downloaded() requires both files, so a
+        # crash in between leaves `.part` (swept at next startup) and a
+        # voucher with no audio yet -- never an audio file reported as
+        # downloaded with no voucher to decrypt it. Both now inside this
+        # same try: a failure in either must also clean up the other,
+        # rather than leaving an orphaned voucher with no audio to match it.
+        _write_voucher(book.asin, license_)
+        tmp_path.replace(audio_path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
+        voucher_path_for(book.asin).unlink(missing_ok=True)
         raise
-
-    # Voucher before rename: is_downloaded() requires both files, so a crash
-    # in between leaves `.part` (swept at next startup) and a voucher with
-    # no audio yet -- never an audio file reported as downloaded with no
-    # voucher to decrypt it.
-    _write_voucher(book.asin, license_)
-    tmp_path.replace(audio_path)
     return audio_path
 
 

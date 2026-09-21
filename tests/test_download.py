@@ -1,5 +1,8 @@
 import json
+import os
 import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -72,6 +75,13 @@ class FakeAPI:
 
 def _book(asin="B001"):
     return Book(asin=asin, title="Test Book")
+
+
+def _no_part_files_left():
+    """M7: tmp filenames are no longer the deterministic {asin}.part, so a
+    leftover-tmp-file check must glob for *.part rather than checking one
+    specific path."""
+    return list(config.DOWNLOADS_DIR.glob("*.part")) == []
 
 
 # -- path helpers --------------------------------------------------------
@@ -154,7 +164,7 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
 
     assert result_path == download.audio_path_for("B001")
     assert result_path.read_bytes() == b"hello world"
-    assert not result_path.with_suffix(".part").exists()
+    assert _no_part_files_left()
 
     voucher = json.loads(download.voucher_path_for("B001").read_text())
     assert voucher == {
@@ -211,7 +221,7 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
         download.download_book(_book("B001"), api)
 
     assert not download.audio_path_for("B001").exists()
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.voucher_path_for("B001").exists()
 
 
@@ -229,7 +239,7 @@ def test_download_book_rejects_a_truncated_stream_and_cleans_up():
         download.download_book(_book("B001"), api)
 
     assert not download.audio_path_for("B001").exists()
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.voucher_path_for("B001").exists()
 
 
@@ -250,7 +260,7 @@ def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
     with pytest.raises(download.DownloadCancelled):
         download.download_book(_book("B001"), api, cancel_check=cancel_after_first_chunk)
 
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.audio_path_for("B001").exists()
 
 
@@ -296,6 +306,101 @@ def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
         download._write_voucher = original_write_voucher
 
     assert seen_audio_exists_when_voucher_written is False
+
+
+def test_download_book_uses_a_unique_tmp_name_per_attempt():
+    """M7: two downloads racing on the same book must not collide on one
+    deterministic {asin}.part -- each attempt gets its own unique temp
+    file (still matched by sweep_stale_downloads's *.part glob)."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    seen_tmp_names = []
+    original_mkstemp = download.tempfile.mkstemp
+
+    def _spy(*args, **kwargs):
+        fd, name = original_mkstemp(*args, **kwargs)
+        if name.endswith(".part"):  # atomic_write_text also calls mkstemp
+            seen_tmp_names.append(name)
+        return fd, name
+
+    download.tempfile.mkstemp = _spy
+    try:
+        for _ in range(2):
+            response = FakeResponse([b"hello"], headers={"content-length": "5"})
+            api = FakeAPI(license_, response)
+            download.download_book(_book("B001"), api)
+    finally:
+        download.tempfile.mkstemp = original_mkstemp
+
+    assert len(seen_tmp_names) == 2
+    assert seen_tmp_names[0] != seen_tmp_names[1]
+    assert all(name.endswith(".part") for name in seen_tmp_names)
+    assert all("B001" in name for name in seen_tmp_names)
+
+
+def test_download_book_a_second_attempt_does_not_disturb_the_first_still_running():
+    """M7: the concrete race -- one attempt's temp file must survive
+    another attempt for the same book still being in progress, not get
+    unlinked out from under it."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+
+    # Start "attempt A" far enough to create its own unique tmp file, but
+    # don't let download_book finish yet.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    fd_a, tmp_name_a = tempfile.mkstemp(
+        dir=config.DOWNLOADS_DIR, prefix="B001-", suffix=".part"
+    )
+    os.close(fd_a)
+    tmp_path_a = Path(tmp_name_a)
+    tmp_path_a.write_bytes(b"partial-from-attempt-a")
+
+    # "Attempt B" runs a full, independent download_book() for the same
+    # book while attempt A's tmp file is still sitting on disk.
+    response_b = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api_b = FakeAPI(license_, response_b)
+    download.download_book(_book("B001"), api_b)
+
+    # Attempt A's still-in-flight tmp file must be untouched by B's run.
+    assert tmp_path_a.exists()
+    assert tmp_path_a.read_bytes() == b"partial-from-attempt-a"
+    assert download.audio_path_for("B001").read_bytes() == b"hello"
+
+    tmp_path_a.unlink()
+
+
+def test_download_book_a_failed_replace_also_removes_the_just_written_voucher():
+    """M7: replace() failing after a successful voucher write used to
+    leave an orphaned voucher (the AES key) on disk with no audio file to
+    match it and nothing ever sweeping it -- invisible to is_downloaded()
+    since that checks both files. Both are now inside the same cleanup
+    try, so a failure in the rename also removes the voucher."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    original_replace = Path.replace
+
+    def _boom_replace(self, target):
+        raise OSError("simulated rename failure")
+
+    Path.replace = _boom_replace
+    try:
+        with pytest.raises(OSError, match="simulated rename failure"):
+            download.download_book(_book("B001"), api)
+    finally:
+        Path.replace = original_replace
+
+    assert not download.voucher_path_for("B001").exists()
+    assert not download.audio_path_for("B001").exists()
+    assert _no_part_files_left()
 
 
 # -- sweep_stale_downloads (M3) -------------------------------------------

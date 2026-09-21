@@ -224,6 +224,12 @@ class LibraryScreen(Screen[None]):
             if self.settings.progress_display_mode in _PROGRESS_DISPLAY_OPTIONS
             else _PROGRESS_DISPLAY_OPTIONS[0]
         )
+        # A same-book double-press races two download_book() calls against
+        # each other (M7) -- exclusive=True on _do_download's @work only
+        # flags the older worker cancelled, it doesn't stop its thread
+        # synchronously, so both can be mid-flight at once. Reject a
+        # repeat press instead.
+        self._in_flight_downloads: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -609,6 +615,10 @@ class LibraryScreen(Screen[None]):
         if book.is_downloaded:
             self._set_status(f"Already downloaded: {book.title}")
             return
+        if book.asin in self._in_flight_downloads:
+            self._set_status(f"Already downloading: {book.title}")
+            return
+        self._in_flight_downloads.add(book.asin)
         self._set_status(f"Downloading: {book.title}")
         bar = self.query_one("#download-progress", ProgressBar)
         bar.display = True
@@ -641,6 +651,7 @@ class LibraryScreen(Screen[None]):
                 cancel_check=lambda: worker.is_cancelled,
             )
         except download.DownloadCancelled:
+            self.app.call_from_thread(self._in_flight_downloads.discard, book.asin)
             return
         except Exception as exc:  # noqa: BLE001
             self.app.call_from_thread(self._download_failed, book, str(exc))
@@ -654,6 +665,7 @@ class LibraryScreen(Screen[None]):
             )
 
     def _download_failed(self, book: Book, message: str) -> None:
+        self._in_flight_downloads.discard(book.asin)
         try:
             self.query_one("#download-progress", ProgressBar).display = False
         except NoMatches:
@@ -661,6 +673,7 @@ class LibraryScreen(Screen[None]):
         self._set_status(f"[red]Download failed for {book.title}: {message}[/red]")
 
     def _download_succeeded(self, book: Book) -> None:
+        self._in_flight_downloads.discard(book.asin)
         try:
             self.query_one("#download-progress", ProgressBar).display = False
         except NoMatches:
