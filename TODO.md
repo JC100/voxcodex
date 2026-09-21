@@ -364,7 +364,17 @@ done.
       to capture at DEBUG, and added
       `test_log_cvf_page_logs_at_debug_not_info` (verified it fails
       against the pre-fix INFO level).
-- [ ] 14 more Low findings -- see the doc for the full list and suggested
+- [x] L14 -- The login-diagnostics monkeypatch resolves five private
+      `audible.login` names outside its own `try`, while already holding
+      a module lock -- a future rename would raise `AttributeError` and
+      leave the lock permanently held (`services/auth.py`). **Fixed**
+      2026-09-21: name resolution and wrapper installation now happen
+      inside a `try`/`except Exception` that releases the lock and
+      degrades to no diagnostics (logging a warning) instead of failing
+      closed. Added
+      `test_diagnostics_degrades_instead_of_failing_closed_on_a_missing_name`
+      (verified it fails against the pre-fix unguarded `getattr`).
+- [ ] 13 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -111,7 +111,6 @@ def _login_flow_diagnostics() -> Iterator[None]:
         "check_for_cvf",
         "check_for_approval_alert",
     ]
-    originals = {name: getattr(_login_internals, name) for name in names}
 
     def _make_wrapper(name: str, original: Callable[..., bool]) -> Callable[..., bool]:
         def wrapper(soup: Any, *a: Any, **kw: Any) -> bool:
@@ -130,8 +129,25 @@ def _login_flow_diagnostics() -> Iterator[None]:
 
         return wrapper
 
-    for name, original in originals.items():
-        setattr(_login_internals, name, _make_wrapper(name, original))
+    try:
+        # Resolving these five names, and installing the wrappers, both
+        # happen inside this try -- a future rename in the audible
+        # package's internals (AttributeError) would otherwise escape
+        # uncaught, breaking login itself (not just diagnostics) and
+        # leaving _diagnostics_lock held forever, since the lock is only
+        # released in the finally below (L14).
+        originals = {name: getattr(_login_internals, name) for name in names}
+        for name, original in originals.items():
+            setattr(_login_internals, name, _make_wrapper(name, original))
+    except Exception:
+        logger.warning(
+            "login flow: diagnostics setup failed, continuing without them",
+            exc_info=True,
+        )
+        _diagnostics_lock.release()
+        yield
+        return
+
     try:
         yield
     finally:

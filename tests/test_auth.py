@@ -62,6 +62,24 @@ def test_diagnostics_context_restores_even_if_the_body_raises():
     assert _current_targets() == before
 
 
+def test_diagnostics_degrades_instead_of_failing_closed_on_a_missing_name(
+    monkeypatch, caplog,
+):
+    """L14: resolving the five check_for_* names happened outside the
+    try/finally that releases _diagnostics_lock -- a future rename in the
+    audible package (AttributeError) would escape uncaught, breaking
+    login itself, and leave the lock held forever (every later login
+    silently skipping diagnostics, with no way to recover short of
+    restarting the process)."""
+    monkeypatch.delattr(login_internals, "check_for_cvf")
+
+    with caplog.at_level(logging.WARNING, logger="voxcodex.auth"), auth._login_flow_diagnostics():
+        pass  # must not raise
+
+    assert "diagnostics setup failed" in caplog.text
+    assert not auth._diagnostics_lock.locked()
+
+
 def test_nested_diagnostics_does_not_capture_wrappers_as_originals():
     """The bug the reentrancy guard prevents: an inner enter that patched
     again would, on exit, 'restore' the outer entry's wrappers -- leaving
