@@ -22,7 +22,10 @@ finding, doesn't matter which:
 5. If this closes, advances, or contradicts anything in `TODO.md`, update
    `TODO.md` in the same commit — never a separate "update the TODO" pass.
 6. Commit, then push.
-7. Check that CI actually went green (`gh run list` / `gh run view` on the
+7. Before opening a PR into `main`: make sure `CHANGELOG.md` is current
+   (see Changelog below) — part of finishing the branch, not an
+   afterthought once the PR is already open.
+8. Check that CI actually went green (`gh run list` / `gh run view` on the
    branch) — a clean local run does not guarantee this (see Dev environment
    below). Don't consider the work item done on the strength of the local
    run alone.
@@ -74,6 +77,20 @@ finding, doesn't matter which:
 - `voxcodex/config.py` — all filesystem paths (config/data dirs,
   individual files) and the shared private-write helpers.
 - `tests/` — one file per `voxcodex/` module, same name.
+
+## Changelog
+- `CHANGELOG.md` must be current before opening a PR into `main` — add an
+  entry under `## Unreleased` (grouped `### Added`/`### Fixed`/`### Changed`,
+  matching the existing style) for anything user-visible: new behavior, a
+  fix, a removed feature. Skip it for changes with no user-visible effect
+  (pure refactors, test-only changes, CI/tooling).
+- When a PR includes a version bump, fold `## Unreleased`'s entries into
+  that version's own heading (see the `0.4.0` entry for the shape) rather
+  than leaving them under a separate "Unreleased" label.
+- This went stale once already — the whole M1-M10/L1-L13 review pass and
+  the Python 3.10 drop landed with zero changelog entries until the user
+  asked about release-readiness directly, and it had to be reconstructed
+  after the fact. Don't let it happen again.
 
 ## Backlog
 - `TODO.md` is the live task list. Keep it current as part of doing the

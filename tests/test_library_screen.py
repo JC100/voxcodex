@@ -98,9 +98,10 @@ class FakeAudibleClient:
 class FakeAPI:
     def __init__(
         self, books, chapters=None, chapters_exc=None, annotations_response=None,
-        get_library_exc=None, license_acr="", license_exc=None,
+        get_library_exc=None, license_acr="", license_id="", license_exc=None,
         license_last_position_ms=0, license_last_position_updated_at=None,
         push_position_exc=None, set_finished_exc=None,
+        push_listening_session_exc=None,
     ):
         self._books = books
         self.client = FakeAudibleClient(annotations_response)
@@ -110,13 +111,16 @@ class FakeAPI:
         self._chapters_exc = chapters_exc
         self._get_library_exc = get_library_exc
         self._license_acr = license_acr
+        self._license_id = license_id
         self._license_exc = license_exc
         self._license_last_position_ms = license_last_position_ms
         self._license_last_position_updated_at = license_last_position_updated_at
         self._push_position_exc = push_position_exc
         self._set_finished_exc = set_finished_exc
+        self._push_listening_session_exc = push_listening_session_exc
         self.push_position_calls = []
         self.set_finished_calls = []
+        self.push_listening_session_calls = []
 
     def get_library(self):
         if self._get_library_exc is not None:
@@ -129,7 +133,7 @@ class FakeAPI:
             raise self._license_exc
         return License(
             asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
-            acr=self._license_acr,
+            acr=self._license_acr, license_id=self._license_id,
             last_position_ms=self._license_last_position_ms,
             last_position_updated_at=self._license_last_position_updated_at,
         )
@@ -143,6 +147,17 @@ class FakeAPI:
         self.set_finished_calls.append((asin, finished))
         if self._set_finished_exc is not None:
             raise self._set_finished_exc
+
+    def push_listening_session(
+        self, asin, license_id, start_position_ms, end_position_ms,
+        start_time, end_time, duration_ms, narration_speed, delivery_type,
+    ):
+        self.push_listening_session_calls.append(
+            (asin, license_id, start_position_ms, end_position_ms,
+             start_time, end_time, duration_ms, narration_speed, delivery_type)
+        )
+        if self._push_listening_session_exc is not None:
+            raise self._push_listening_session_exc
 
     def get_chapters(self, asin):
         self.chapter_calls.append(asin)
@@ -1428,6 +1443,248 @@ async def test_playback_close_shows_a_status_when_the_finished_push_fails(monkey
             in str(screen.query_one("#status").content)
         )
         assert api.set_finished_calls == [("B1", True)]
+
+
+# -- listening-session push (mid-book percent_complete sync) ---------------
+
+
+async def test_playback_close_pushes_a_listening_session(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.progress_ms = 100_000
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(lambda: api.push_listening_session_calls != [])
+
+    (call,) = api.push_listening_session_calls
+    (asin, license_id, start_pos, end_pos, start_time, end_time,
+     duration_ms, speed, delivery) = call
+    assert asin == "B1"
+    assert license_id == "lic-abc"
+    assert start_pos == 100_000
+    assert end_pos == 512_000
+    assert end_time >= start_time
+    assert duration_ms == 1_000_000
+    assert speed == 1.0
+    assert delivery == "Streaming"
+
+
+async def test_playback_close_reports_download_as_the_delivery_type(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.is_downloaded = True
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
+    monkeypatch.setattr(
+        library_module.download, "load_voucher",
+        lambda asin: {"key": "k", "iv": "i", "acr": "CR!ABC", "license_id": "lic-abc"},
+    )
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(lambda: api.push_listening_session_calls != [])
+
+    (call,) = api.push_listening_session_calls
+    assert call[8] == "Download"
+
+
+async def test_playback_close_starts_the_session_at_zero_for_a_finished_book(monkeypatch):
+    """PlayerScreen.on_mount restarts a finished book from 0 rather than
+    resuming -- the listening session reported at close must start from the
+    same point, not the stale progress_ms."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 60.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.progress_ms = 900_000  # stale -- should not be used as the session start
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(lambda: api.push_listening_session_calls != [])
+
+    (call,) = api.push_listening_session_calls
+    assert call[2] == 0  # start position
+    assert call[3] == 60_000  # end position
+
+
+# -- resuming a finished book un-finishes it (session tile stays stale --
+# a zero-length reset push was tried live and confirmed a server-side
+# no-op, see AudibleAPI.push_listening_session's docstring) -------------
+
+
+async def test_resuming_a_finished_book_clears_the_flag_immediately(monkeypatch):
+    """The un-finish must happen the moment playback starts, not deferred
+    to close -- otherwise another device checked mid-session would still
+    see "Finished"."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        # Before closing the player at all -- this must already have fired.
+        assert book.is_finished is False
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+
+        # No listening-session push at open time -- only at close (see the
+        # module docstring above for why a reset push isn't sent at all).
+        assert api.push_listening_session_calls == []
+
+
+async def test_resuming_a_not_finished_book_does_not_touch_the_finished_flag(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert api.set_finished_calls == []
+        assert api.push_listening_session_calls == []
+
+
+async def test_playback_close_skips_the_listening_session_without_a_license_id(monkeypatch):
+    """A voucher/license saved before `license_id` existed is a known
+    compatibility gap, not a sync failure -- nothing should be attempted or
+    warned about."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book])  # license_id defaults to ""
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert api.push_listening_session_calls == []
+        assert "sync failed" not in str(screen.query_one("#status").content)
+
+
+async def test_playback_close_shows_a_status_when_the_listening_session_push_fails(
+    monkeypatch,
+):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 512.0
+        duration_seconds = 1000.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    api = FakeAPI(
+        [book], license_id="lic-abc",
+        push_listening_session_exc=RuntimeError("token expired"),
+    )
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        await pilot.press("q")
+
+        await _wait_until(
+            lambda: "Audible sync failed" in str(screen.query_one("#status").content)
+        )
+        assert api.push_listening_session_calls != []
 
 
 async def test_play_passes_fetched_chapters_to_the_player_screen(monkeypatch):

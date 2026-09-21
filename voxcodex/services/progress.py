@@ -252,3 +252,41 @@ def push_finished(api: AudibleAPI, asin: str, finished: bool) -> bool:
     except Exception:
         logger.debug("push_finished failed for %s", asin, exc_info=True)
         return False
+
+
+def push_listening_session(
+    api: AudibleAPI,
+    asin: str,
+    license_id: str,
+    start_position_ms: int,
+    end_position_ms: int,
+    start_time: datetime,
+    end_time: datetime,
+    length_of_book_ms: int,
+    narration_speed: float,
+    delivery_type: str,
+) -> bool:
+    """Best-effort report of one playback session back to Audible, so the
+    official app/website's library tile shows the right mid-book progress.
+
+    Returns whether it went through -- never raises. Like `push_position`
+    and `push_finished`, this is a sync enhancement: VoxCodex's own resume
+    point and library view don't depend on it (see
+    `AudibleAPI.push_listening_session`).
+    """
+    try:
+        api.push_listening_session(
+            asin,
+            license_id,
+            start_position_ms,
+            end_position_ms,
+            start_time,
+            end_time,
+            length_of_book_ms,
+            narration_speed,
+            delivery_type,
+        )
+        return True
+    except Exception:
+        logger.debug("push_listening_session failed for %s", asin, exc_info=True)
+        return False

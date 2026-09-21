@@ -132,6 +132,9 @@ def _write_voucher(asin: str, license_: License) -> None:
                 # .get(); that title just can't push until it's re-downloaded
                 # or played once while streaming.
                 "acr": license_.acr,
+                # Same story, for push_listening_session -- needed to report
+                # a listening session for a downloaded/offline play.
+                "license_id": license_.license_id,
             },
             indent=2,
         ),

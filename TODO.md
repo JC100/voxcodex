@@ -4,11 +4,76 @@
 
 - Every finding from the 2026-08-31 code review is done: Critical (C1-C4),
   High (H1-H10), Medium (M1-M10), and Low (L1-L13) below.
-- No open items right now. Next work goes here when it starts.
+- The library-page progress sync gap (mid-book `percent_complete` /
+  `time_remaining_seconds`) -- the last thing standing between here and a
+  public 1.0 release -- is now closed too (see "Closed: mid-book progress
+  sync" below). No open work remains from either the review or the sync
+  investigation.
+- v0.5.0 closes this out. Plan: one more code review / bug-fix pass, then
+  1.0.
 
 Full finding detail (rationale, suggested fix) lives in
 `docs/code-review-2026-08-31.html`. Its line numbers are stale after the
 M1-M10 rewrites -- relocate a finding by file/description, not by line.
+
+## Open work
+
+None -- the mid-book progress sync gap (below) was the last item, and it's
+now closed.
+
+## Closed: mid-book progress sync (was the last thing before 1.0)
+
+- [x] **Mid-book progress didn't sync to Audible's own library tile --
+      fixed and confirmed live, 2026-09-21.** `percent_complete` /
+      `time_remaining_seconds` didn't update from a VoxCodex play -- root
+      cause found: they're driven by `PUT /1.0/stats/events` `Listening`
+      events, whose exact accepted payload shape was never pinned down. A
+      guessed shape was tried and made it *worse* (drove the percentage
+      to 0% instead of the real value).
+      **Captured** the real payload via network-level MITM (mitmproxy on
+      a dedicated proxy box + Android CA-trust bind-mount) against the
+      real Android app talking to the real backend -- confirmed schema
+      for `Listening`/`StartListening`, full capture + rig notes in
+      `docs/library-progress-sync-investigation.md` (2026-09-21 section).
+      **Implemented** the same day: `AudibleAPI.push_listening_session` /
+      `services.progress.push_listening_session` send a `StartListening` +
+      `Listening` pair on player close, using the license/voucher's
+      `license_id` (new field -- titles saved before this existed need a
+      fresh `get_license()` or re-download before this can push for them)
+      and the session's real start/end position and wall-clock time.
+      Deliberately does *not* mirror the real app's accompanying
+      `MarkAsUnfinished` on every play -- VoxCodex already has an
+      explicit, user-triggered way to un-finish a book, and auto-clearing
+      it just because playback resumed would fight that.
+      **Confirmed against the live account, same day:** played
+      `B01L790CUU` for real (~3 minutes, via VoxCodex itself, not a
+      synthetic call) and re-read the raw library response immediately
+      after --
+      `percent_complete: 1.0`, `time_remaining_seconds: 18829` (out of a
+      19,020s book, ~191s in -- exactly right, not 0% and not a
+      coincidence: matches the actual position to the second). Updated
+      within ~15-20s of the push, not the tens-of-minutes lag seen with
+      the old broken payload shape -- the earlier guess wasn't just wrong
+      in content, it may have also been hitting a genuinely slower
+      recompute path. `is_finished` correctly stayed `True` (this test
+      book was already finished; the deliberate no-`MarkAsUnfinished`
+      choice above held).
+      **Follow-up, same day:** the user pointed out that a book marked
+      finished on Audible needs to un-finish the moment you *resume* it
+      in VoxCodex, not stay stuck showing "Finished" on other devices
+      while you're actively re-listening. `LibraryScreen._launch_player`
+      now clears `is_finished` + pushes `set_finished(asin, False)`
+      immediately on that transition (once, not per checkpoint). Also
+      tried, live, sending a zero-length listening-session event at the
+      same moment to reset the tile's stale `percent_complete` too --
+      confirmed a genuine no-op server-side (not recompute lag: checked
+      twice, 20+s apart, byte-for-byte unchanged) -- removed rather than
+      shipped as dead weight. So: `is_finished` clears instantly;
+      `percent_complete`/`time_remaining_seconds` stay stale until that
+      session's own close, same as any other session.
+      Full trail: `docs/library-progress-sync-investigation.md`,
+      `docs/whispersync-research.md`; also noted in `CHANGELOG.md` and
+      `README.md`.
 
 ## Low-priority findings (L1-L13)
 

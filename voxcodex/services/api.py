@@ -17,6 +17,7 @@ import httpx
 from audible.aescipher import decrypt_voucher_from_licenserequest
 from audible.client import raise_for_status
 
+from voxcodex import __version__
 from voxcodex.models import Book
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,18 @@ _LICENSE_HEADERS = {
 }
 
 # `PUT /1.0/stats/events` is Audible's own telemetry sink (session lifecycle +
-# listening-interval events). VoxCodex only uses it for one thing: flipping a
-# title's finished state, which is confirmed to propagate to
-# `listening_status.is_finished` (and thus the official app/website "Finished"
-# badge) within seconds, and is fully reversible. The listening-interval
-# ("Listening") events are deliberately NOT sent -- their exact accepted shape
-# isn't pinned down, and malformed ones were observed to reset a title's
-# library-page `percent_complete` to 0. See
-# docs/library-progress-sync-investigation.md for the full trail, including the
-# enum of event types the endpoint accepts.
+# listening-interval events). It drives two separate things:
+#   - `listening_status.is_finished` (the "Finished" badge) via
+#     `ManualMarkAsFinished`/`ManualMarkAsUnfinished` -- see `set_finished`.
+#   - `listening_status.percent_complete` / `time_remaining_seconds` (the
+#     mid-book progress on the library tile) via `StartListening` +
+#     `Listening` events -- see `push_listening_session`.
+# The `StartListening`/`Listening` shape was guessed at first and got it
+# *wrong* (drove `percent_complete` to 0% instead of the real value); the
+# shape actually sent now is captured from the real Android app's own
+# traffic against a live account, not guessed. Full trail, including the
+# capture rig and every confirmed field, in
+# docs/library-progress-sync-investigation.md.
 _STATS_EVENTS_PATH = "stats/events"
 
 
@@ -94,6 +98,10 @@ class License:
     # back to Audible's cross-device sync. Empty when a response doesn't
     # include it -- callers must treat that as "can't push for this title".
     acr: str = ""
+    # DRM license id `push_listening_session` reports a listening session
+    # against. Empty when a response doesn't include it -- callers must
+    # treat that as "can't push a listening session for this title".
+    license_id: str = ""
 
 
 @dataclass
@@ -133,6 +141,16 @@ def _api_quality(quality: str) -> str:
     if quality not in _VALID_QUALITIES:
         raise ValueError(f"quality must be one of {_VALID_QUALITIES!r}, got {quality!r}")
     return "High" if quality == "high" else "Normal"
+
+
+def _stats_timestamp(dt: datetime) -> str:
+    """Formats a datetime the way `stats/events` expects for
+    `event_timestamp`/`event_end_timestamp`: ISO 8601, millisecond
+    precision, always UTC with a literal `Z` suffix -- confirmed against
+    the real Android app's own traffic (see
+    docs/library-progress-sync-investigation.md), not guessed."""
+    dt = dt.astimezone(UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 class AudibleAPI:
@@ -229,6 +247,7 @@ class AudibleAPI:
         content_reference = content_metadata.get("content_reference") or {}
         codec = content_reference.get("content_format", "AAXC")
         acr = content_reference.get("acr", "")
+        license_id = content_license.get("license_id", "")
 
         key = iv = ""
         if "license_response" in content_license:
@@ -253,6 +272,7 @@ class AudibleAPI:
             last_position_ms=last_position_ms,
             last_position_updated_at=last_position_updated_at,
             acr=acr,
+            license_id=license_id,
         )
 
     # -- listening position (write) ------------------------------------
@@ -293,7 +313,6 @@ class AudibleAPI:
         should use `services.progress.push_finished` rather than calling this
         directly.
         """
-        now = datetime.now(UTC)
         payload = {
             "stats": [
                 {
@@ -301,8 +320,7 @@ class AudibleAPI:
                         "ManualMarkAsFinished" if finished else "ManualMarkAsUnfinished"
                     ),
                     "asin": asin,
-                    "event_timestamp": now.strftime("%Y-%m-%dT%H:%M:%S.")
-                    + f"{now.microsecond // 1000:03d}Z",
+                    "event_timestamp": _stats_timestamp(datetime.now(UTC)),
                     "listening_mode": "Online",
                     "delivery_type": "Streaming",
                     "audio_type": "FullTitle",
@@ -312,6 +330,100 @@ class AudibleAPI:
                     "local_timezone": "Etc/UTC",
                     "social_network_site": "Unknown",
                 }
+            ]
+        }
+        self.client.put(
+            _STATS_EVENTS_PATH, body=payload, response_callback=_full_response
+        )
+
+    def push_listening_session(
+        self,
+        asin: str,
+        license_id: str,
+        start_position_ms: int,
+        end_position_ms: int,
+        start_time: datetime,
+        end_time: datetime,
+        length_of_book_ms: int,
+        narration_speed: float,
+        delivery_type: str,
+    ) -> None:
+        """Reports one playback session (player opened, played some, closed)
+        via a `StartListening` + `Listening` pair -- the shape that actually
+        drives `listening_status.percent_complete` / `time_remaining_seconds`
+        on the official app/website's library tile.
+
+        Confirmed against a live account (2026-09-21, see
+        docs/library-progress-sync-investigation.md) from a capture of the
+        real Android app's own traffic, not guessed -- an earlier guessed
+        shape drove `percent_complete` to 0% instead of the real value. The
+        real app also sends a `MarkAsUnfinished` alongside `StartListening`
+        every time playback begins (even on a book that isn't finished);
+        not mirrored here as part of *this* payload -- when VoxCodex needs
+        to un-finish a book on resume, `LibraryScreen._launch_player` does
+        it via a dedicated `set_finished(asin, False)` call instead, kept
+        separate so it only fires on the actual finished -> playing
+        transition rather than being folded into every session.
+
+        A zero-length session (`event_start_position == event_end_position`)
+        was tried, live, as a way to immediately reset a resumed-from-
+        finished book's stale `percent_complete` -- confirmed (2026-09-21)
+        to be a genuine no-op server-side, not a recompute-lag artifact
+        (checked again 20s later, unchanged). Audible appears to only
+        recompute the tile from an event with real forward progress. So:
+        silently does nothing if `license_id` is empty (nothing to report
+        the session against -- e.g. a voucher saved before this field
+        existed) or `end_position_ms <= start_position_ms` (no forward
+        progress this session: the player was opened and immediately
+        closed, the listener seeked backward past where they started, or a
+        would-be reset event like the one above). A resumed-from-finished
+        book's `percent_complete`/`time_remaining_seconds` therefore stay
+        stale until this session's own close-time push corrects them --
+        `is_finished` clearing immediately (see `set_finished` above) is
+        what actually matters for the "still shows Finished on my phone"
+        complaint this was solving; the stale-number window is a smaller,
+        accepted gap.
+
+        Raises on HTTP failure like the other push_* methods; callers
+        wanting best-effort semantics should use
+        `services.progress.push_listening_session` rather than calling this
+        directly.
+        """
+        if not license_id or end_position_ms <= start_position_ms:
+            return
+        common = {
+            "asin": asin,
+            "asin_owned": True,
+            "playing_immersion_reading": False,
+            "narration_speed": narration_speed,
+            "length_of_book": length_of_book_ms,
+            "version_of_app": __version__,
+            "delivery_type": delivery_type,
+            "listening_mode": "Online",
+            "store": "Audible",
+            "license_id": license_id,
+            "audio_type": "FullTitle",
+            "secondary_device_type_id": "None",
+            "local_timezone": "Etc/UTC",
+            "session_id": secrets.token_hex(16),
+        }
+        payload = {
+            "stats": [
+                {
+                    **common,
+                    "event_type": "StartListening",
+                    "event_timestamp": _stats_timestamp(start_time),
+                    "event_start_position": start_position_ms,
+                    "event_end_position": 0,
+                },
+                {
+                    **common,
+                    "event_type": "Listening",
+                    "event_timestamp": _stats_timestamp(start_time),
+                    "event_end_timestamp": _stats_timestamp(end_time),
+                    "event_start_position": start_position_ms,
+                    "event_end_position": end_position_ms,
+                },
             ]
         }
         self.client.put(
