@@ -120,6 +120,9 @@
 - A library refresh completing while a download was in flight could
   leave that download not showing as downloaded until the next manual
   refresh.
+- A successful library fetch that happened to return zero items (a
+  transient backend quirk, not an actually-empty library) could destroy
+  the offline cache used when a later fetch fails.
 
 ### Added
 - Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation

@@ -274,6 +274,22 @@ async def test_successful_fetch_caches_the_library_for_offline_use(_fake_library
         assert [b.asin for b in _fake_library_cache.save_calls[0]] == ["B1"]
 
 
+async def test_successful_but_empty_fetch_does_not_overwrite_the_offline_cache(
+    _fake_library_cache,
+):
+    """L22: a transient backend quirk returning an empty first page (not
+    "this library is empty") must not destroy a good offline cache with
+    nothing."""
+    api = FakeAPI([])  # a successful call, just zero items
+
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._books == [])
+        assert _fake_library_cache.save_calls == []
+
+
 async def test_failed_fetch_with_no_cache_shows_the_error(_fake_library_cache):
     _fake_library_cache.to_return = None  # no cache exists yet
     api = FakeAPI([], get_library_exc=RuntimeError("connection refused"))

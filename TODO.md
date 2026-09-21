@@ -446,7 +446,12 @@ done.
       from the library. Added
       `test_download_completing_after_a_refresh_still_marks_the_current_book`
       (verified it fails against the pre-fix direct mutation).
-- [ ] 6 more Low findings -- see the doc for the full list and suggested
+- [x] L22 -- A successful-but-empty library fetch overwrites a good
+      offline cache with nothing (`screens/library.py`). **Fixed**
+      2026-09-21: guarded with `if books: library_cache.save(books)`.
+      Added `test_successful_but_empty_fetch_does_not_overwrite_the_offline_cache`
+      (verified it fails against the pre-fix unconditional save).
+- [ ] 5 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -297,7 +297,11 @@ class LibraryScreen(Screen[None]):
         if worker.is_cancelled:
             return
 
-        library_cache.save(books)
+        if books:
+            # A successful-but-empty fetch (e.g. a transient backend quirk
+            # returning an empty first page, not "this library is empty")
+            # must not destroy a good offline cache with nothing (L22).
+            library_cache.save(books)
 
         annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
         remote_positions = progress.positions_with_updated_at_from_annotations(annotations)
