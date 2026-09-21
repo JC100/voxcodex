@@ -818,6 +818,33 @@ async def test_close_stops_player_and_dismisses_with_last_position(fake_player):
         assert results == [77_000]
 
 
+async def test_hard_quit_before_the_first_poll_flushes_the_real_start_position(
+    fake_player,
+):
+    """L7: _last_position_ms used to be seeded from book.progress_ms even
+    when playback was about to start somewhere else entirely (a
+    finished-book restart at 0, once H1 is fixed). action_close's own
+    live position read masks this (it overwrites _last_position_ms before
+    dismissing) -- but a hard quit (ctrl+q) never runs action_close at
+    all, going straight to on_unmount's backstop flush with whatever
+    _last_position_ms was last set to. Quitting before the first poll
+    tick would then flush the stale progress_ms instead of 0."""
+    saved = []
+    book = _book(progress_ms=999_000)  # stale -- restart is at 0, not this
+    screen = PlayerScreen(
+        book, "s", "k", "iv", start_position_ms=0,
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        # No _tick has run yet, and no action_close -- app teardown below
+        # drives on_unmount directly, the same as a hard ctrl+q would.
+
+    assert saved[-1] == (0, True)
+
+
 async def test_escape_also_closes(fake_player):
     results = []
     screen = PlayerScreen(_book(), "source-url", "key", "iv")

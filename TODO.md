@@ -298,7 +298,19 @@ done.
       book so one failure (a permissions error, or the same race) doesn't
       abort the rest of the batch, reporting how many failed in the
       status message. Added 3 tests.
-- [ ] 21 more Low findings -- see the doc for the full list and suggested
+- [x] L7 -- `_last_position_ms` is seeded from `book.progress_ms` even
+      when playback is about to start at 0 (a finished-book restart)
+      (`screens/player_screen.py`). **Already fixed as a side effect of
+      H1** -- `_last_position_ms` is now seeded from
+      `self._start_position_ms` (the same value `on_mount` computes for
+      `start_seconds`), not `book.progress_ms`. Added
+      `test_hard_quit_before_the_first_poll_flushes_the_real_start_position`
+      to cover it explicitly: `action_close`'s own live position read
+      already masks this for a graceful `q`/escape, so the regression
+      test drives the hard-quit backstop path (`on_unmount` without
+      `action_close`) instead, where it's still live. Verified the test
+      fails against the pre-H1 seeding.
+- [ ] 20 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
