@@ -24,7 +24,7 @@ The read response shape below (`asin_last_position_heard_annots`, a list of
 per-asin records each with a nested `last_position_heard` dict) is confirmed
 directly against a live account, not guessed -- an earlier version of this
 module guessed at several plausible-looking shapes none of which were the
-real one, so `fetch_remote_positions` silently returned {} for every real
+real one, so the remote-read path silently returned nothing for every real
 response since this app's first commit. The bulk-loaded library table still
 looked reasonable throughout because it separately falls back to the
 library API's own `percent_complete` field, which masked the bug -- but the
@@ -151,21 +151,6 @@ def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str
     return records
 
 
-def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
-    """asin -> position_ms for every record with an actual recorded position."""
-    positions: dict[str, int] = {}
-    for record in records:
-        existing = _existing_last_position_heard(record)
-        if existing is None:
-            continue
-        asin, lph = existing
-        try:
-            positions[asin] = int(lph.get("position_ms", 0))
-        except (TypeError, ValueError):
-            continue
-    return positions
-
-
 def positions_with_updated_at_from_annotations(
     records: list[dict[str, Any]],
 ) -> dict[str, tuple[int, float]]:
@@ -214,16 +199,6 @@ def _existing_last_position_heard(
     if not asin or not isinstance(lph, dict) or lph.get("status") != "Exists":
         return None
     return asin, lph
-
-
-def fetch_remote_positions(api: AudibleAPI, asins: list[str]) -> dict[str, int]:
-    """Best-effort bulk read of Audible's own last-heard positions.
-
-    Returns an asin -> position_ms map, or an empty map if the call fails or
-    no title has a recorded position -- callers should treat this purely as
-    an enhancement over the local cache, not a dependency.
-    """
-    return positions_from_annotations(fetch_remote_annotations(api, asins))
 
 
 def push_position(api: AudibleAPI, asin: str, acr: str, position_ms: int) -> bool:

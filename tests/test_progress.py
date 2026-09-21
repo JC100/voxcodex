@@ -236,21 +236,6 @@ def test_fetch_remote_annotations_merges_across_a_failed_chunk(caplog):
     assert "lastpositions fetch failed" in caplog.text
 
 
-def test_positions_from_annotations_includes_only_existing_positions():
-    records = [_existing("B001", 1000), _does_not_exist("B002")]
-    assert progress.positions_from_annotations(records) == {"B001": 1000}
-
-
-def test_positions_from_annotations_empty_when_nothing_exists():
-    assert progress.positions_from_annotations([_does_not_exist("B001")]) == {}
-
-
-def test_fetch_remote_positions_end_to_end():
-    records = [_existing("B001", 4242), _does_not_exist("B002")]
-    api = FakeAPI(response=_annotations_response(records))
-    assert progress.fetch_remote_positions(api, ["B001", "B002"]) == {"B001": 4242}
-
-
 # -- positions_with_updated_at_from_annotations (M5) ----------------------
 
 

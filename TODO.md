@@ -482,7 +482,29 @@ done.
 - [x] L25 -- Dead code: `Settings.reload()` has zero callers anywhere in
       the app (`services/settings.py`). **Fixed** 2026-09-21: deleted it.
       No user-visible effect; no test change needed.
-- [ ] 2 more Low findings -- see the doc for the full list and suggested
+- [x] L26 -- A cluster of dead code: `positions_from_annotations`/
+      `fetch_remote_positions` had no production caller (only tests,
+      `services/progress.py`); the `quality` parameter threaded through
+      `download_book`/`get_license`/`get_chapters` was never overridden by
+      any call site (`services/download.py`, `services/api.py`);
+      `License.codec` was written to the voucher and never read back;
+      `Book.cover_url` was parsed and stored but never rendered (a TUI
+      can't display it); `Book.local_audio_path`/`local_voucher_path` were
+      never set or read at all; three of the four `LIBRARY_RESPONSE_GROUPS`
+      fields (`customer_rights`, `product_desc`, `product_extended_attrs`)
+      were requested but never consumed, adding payload to every library
+      fetch for nothing. **Fixed** 2026-09-21: removed all of the above.
+      `quality` is now hardcoded to `"High"` at both call sites (the value
+      every real caller already used) rather than deleted outright, since
+      the live Audible API genuinely expects that field on the wire --
+      only the app-level knob nothing ever varied is gone. Left `media` in
+      `LIBRARY_RESPONSE_GROUPS` alone (unverifiable against the live API
+      in this session, and not one of the three the review named as
+      confirmed-unused). Updated/removed the tests that covered the
+      deleted behavior; added `test_get_license_requests_high_quality` and
+      `test_get_chapters_requests_high_quality` to cover the now-hardcoded
+      value.
+- [ ] 1 more Low finding -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

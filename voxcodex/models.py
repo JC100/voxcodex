@@ -15,11 +15,8 @@ class Book:
     series: str = ""
     series_sequence: str = ""
     runtime_min: int = 0
-    cover_url: str = ""
     purchase_date: str = ""
     is_downloaded: bool = False
-    local_audio_path: str = ""
-    local_voucher_path: str = ""
     progress_ms: int = 0
     duration_ms: int = 0
     is_finished: bool = False

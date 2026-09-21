@@ -81,11 +81,10 @@ def download_book(
     book: Book,
     api: AudibleAPI,
     on_progress: ProgressCallback | None = None,
-    quality: str = "high",
     cancel_check: CancelCheck | None = None,
 ) -> Path:
     config.ensure_dirs()
-    license_ = api.get_license(book.asin, quality=quality)
+    license_ = api.get_license(book.asin)
 
     audio_path = audio_path_for(book.asin)
     # A unique name per attempt, not the deterministic {asin}.part: two
@@ -166,7 +165,6 @@ def _write_voucher(asin: str, license_: License) -> None:
                 "asin": asin,
                 "key": license_.key,
                 "iv": license_.iv,
-                "codec": license_.codec,
                 # Needed to push a position back for a downloaded/offline play
                 # (see services.progress.push_position) -- not for decryption.
                 # A voucher saved before this field existed loads fine via

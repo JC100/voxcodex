@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 _MAX_LIBRARY_PAGES = 100
 
 LIBRARY_RESPONSE_GROUPS = (
-    "contributors, customer_rights, media, product_attrs, product_desc, "
-    "product_extended_attrs, series, is_finished, is_downloaded, "
+    "contributors, media, product_attrs, series, is_finished, is_downloaded, "
     "listening_status, percent_complete, product_details"
 )
 
@@ -114,7 +113,6 @@ def require_valid_asin(asin: str) -> str:
 class License:
     asin: str
     content_url: str
-    codec: str
     key: str
     iv: str
     last_position_ms: int = 0
@@ -173,19 +171,6 @@ def parse_last_position_heard(lph: Any) -> tuple[int, float | None] | None:
         return None
     updated = parse_audible_timestamp(lph.get("last_updated"))
     return int(lph["position_ms"]), (updated.timestamp() if updated is not None else None)
-
-
-_VALID_QUALITIES = ("high", "normal")
-
-
-def _api_quality(quality: str) -> str:
-    """Maps our lowercase `quality` argument to the API's capitalized
-    value, raising on anything else -- `"High" if quality != "normal"
-    else "Normal"` silently mapped a typo (or any other unrecognized
-    value) to "High" instead."""
-    if quality not in _VALID_QUALITIES:
-        raise ValueError(f"quality must be one of {_VALID_QUALITIES!r}, got {quality!r}")
-    return "High" if quality == "high" else "Normal"
 
 
 def _stats_timestamp(dt: datetime) -> str:
@@ -285,12 +270,13 @@ class AudibleAPI:
 
     # -- licensing / download -----------------------------------------
 
-    def get_license(self, asin: str, quality: str = "high") -> License:
+    def get_license(self, asin: str) -> License:
         require_valid_asin(asin)
-        api_quality = _api_quality(quality)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
-            "quality": api_quality,
+            # No caller has ever needed anything but the best available
+            # quality -- there's no settings UI to choose otherwise (L26).
+            "quality": "High",
             "consumption_type": "Download",
             "response_groups": LICENSE_RESPONSE_GROUPS,
         }
@@ -314,7 +300,6 @@ class AudibleAPI:
         if not content_url:
             raise NoDownloadUrl(asin)
         content_reference = content_metadata.get("content_reference") or {}
-        codec = content_reference.get("content_format", "AAXC")
         acr = content_reference.get("acr", "")
         license_id = content_license.get("license_id", "")
 
@@ -333,7 +318,6 @@ class AudibleAPI:
         return License(
             asin=asin,
             content_url=content_url,
-            codec=codec,
             key=key,
             iv=iv,
             last_position_ms=last_position_ms,
@@ -500,17 +484,18 @@ class AudibleAPI:
 
     # -- chapters -----------------------------------------------------
 
-    def get_chapters(self, asin: str, quality: str = "high") -> list[Chapter]:
+    def get_chapters(self, asin: str) -> list[Chapter]:
         """Fetches this title's chapter list (title + timing).
 
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
         """
         require_valid_asin(asin)
-        api_quality = _api_quality(quality)
         params: dict[str, Any] = {
             "response_groups": "chapter_info",
-            "quality": api_quality,
+            # No caller has ever needed anything but the best available
+            # quality -- there's no settings UI to choose otherwise (L26).
+            "quality": "High",
             "drm_type": "Adrm",
             "chapter_titles_type": "Flat",
         }
@@ -538,8 +523,6 @@ def _book_from_item(item: dict[str, Any]) -> Book:
     series_list = item.get("series") or []
     series = series_list[0].get("title", "") if series_list else ""
     series_sequence = series_list[0].get("sequence", "") if series_list else ""
-    images = item.get("product_images") or {}
-    cover_url = images.get("500") or images.get("300") or ""
     # Coerced with int()/float(), matching the equivalent chapter-parsing
     # code below -- used arithmetically a few lines down, and (unlike a
     # plain `or 0`) this also catches the API ever sending these as
@@ -564,7 +547,6 @@ def _book_from_item(item: dict[str, Any]) -> Book:
         series=series,
         series_sequence=str(series_sequence) if series_sequence else "",
         runtime_min=runtime_min,
-        cover_url=cover_url,
         purchase_date=item.get("purchase_date", "") or "",
         progress_ms=progress_ms,
         duration_ms=duration_ms,

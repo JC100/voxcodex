@@ -76,8 +76,8 @@ class FakeAPI:
         self._license_or_exc = license_or_exc
         self.license_calls = []
 
-    def get_license(self, asin, quality="high"):
-        self.license_calls.append((asin, quality))
+    def get_license(self, asin):
+        self.license_calls.append(asin)
         if isinstance(self._license_or_exc, Exception):
             raise self._license_or_exc
         return self._license_or_exc
@@ -209,7 +209,7 @@ def test_load_voucher_returns_none_for_corrupted_json():
 
 def test_download_book_writes_audio_and_voucher_and_reports_progress():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv", acr="CR!ABC", license_id="lic-123",
     )
     response = FakeResponse([b"hello ", b"world"], headers={"content-length": "11"})
@@ -229,7 +229,6 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
         "asin": "B001",
         "key": "thekey",
         "iv": "theiv",
-        "codec": "AAXC",
         "acr": "CR!ABC",
         "license_id": "lic-123",
     }
@@ -241,7 +240,7 @@ def test_download_book_writes_the_voucher_private():
     """M2: the voucher holds the AES key + iv, so it should never be left
     at the process's default umask (typically 0644)."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv", acr="CR!ABC",
     )
     response = FakeResponse([b"hello world"], headers={"content-length": "11"})
@@ -269,7 +268,7 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
         pass
 
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv",
     )
     response = FakeResponse([], raise_exc=FakeHTTPError("403 Forbidden"))
@@ -287,7 +286,7 @@ def test_download_book_rejects_a_truncated_stream_and_cleans_up():
     # Server promises 100 bytes, connection delivers 4 -- the old code renamed
     # the short file into place and it looked downloaded until playback failed.
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"abcd"], headers={"content-length": "100"})
@@ -310,7 +309,7 @@ def test_download_book_does_not_flag_a_compressed_transfer_as_truncated():
     # here (11 bytes) is larger than the compressed content-length (4) --
     # exactly what a real gzip response looks like -- and must not raise.
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse(
@@ -327,7 +326,7 @@ def test_download_book_does_not_flag_a_compressed_transfer_as_truncated():
 
 def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"one", b"two", b"three"], headers={"content-length": "11"})
@@ -348,7 +347,7 @@ def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
 
 def test_download_book_passes_content_url_and_uses_get_method():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"x"], headers={"content-length": "1"})
@@ -367,7 +366,7 @@ def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
     orphaned voucher -- never a "downloaded" audio file with no voucher to
     decrypt it."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"hello"], headers={"content-length": "5"})
@@ -394,7 +393,7 @@ def test_download_book_fsyncs_the_audio_file_before_renaming_it(monkeypatch):
     """L5: without an fsync, power loss shortly after a completed download
     can land the rename durable but the audio data behind it not."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"hello"], headers={"content-length": "5"})
@@ -428,7 +427,7 @@ def test_download_book_uses_a_unique_tmp_name_per_attempt():
     deterministic {asin}.part -- each attempt gets its own unique temp
     file (still matched by sweep_stale_downloads's *.part glob)."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     seen_tmp_names = []
@@ -460,7 +459,7 @@ def test_download_book_a_second_attempt_does_not_disturb_the_first_still_running
     another attempt for the same book still being in progress, not get
     unlinked out from under it."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
 
@@ -495,7 +494,7 @@ def test_download_book_a_failed_replace_also_removes_the_just_written_voucher():
     since that checks both files. Both are now inside the same cleanup
     try, so a failure in the rename also removes the voucher."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"hello"], headers={"content-length": "5"})

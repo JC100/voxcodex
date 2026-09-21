@@ -120,12 +120,12 @@ class FakeAPI:
             raise self._get_library_exc
         return list(self._books)
 
-    def get_license(self, asin, quality="high"):
-        self.license_calls.append((asin, quality))
+    def get_license(self, asin):
+        self.license_calls.append(asin)
         if self._license_exc is not None:
             raise self._license_exc
         return License(
-            asin=asin, content_url="https://cdn/x", codec="AAXC", key="k", iv="i",
+            asin=asin, content_url="https://cdn/x", key="k", iv="i",
             acr=self._license_acr, license_id=self._license_id,
             last_position_ms=self._license_last_position_ms,
             last_position_updated_at=self._license_last_position_updated_at,
@@ -2335,7 +2335,7 @@ async def test_pressing_play_twice_quickly_opens_only_one_player_screen(monkeypa
     entered_calls = []
 
     class BlockingFirstCallAPI(FakeAPI):
-        def get_license(self, asin, quality="high"):
+        def get_license(self, asin):
             # The first call blocks until released below, standing in for a
             # slow network response -- long enough for a second "p" press to
             # land and start a second worker in the same exclusive group.
@@ -2343,10 +2343,10 @@ async def test_pressing_play_twice_quickly_opens_only_one_player_screen(monkeypa
             # which only grows once a call actually returns) so the test can
             # detect that worker #1 has started, not just that it finished.
             is_first = len(entered_calls) == 0
-            entered_calls.append((asin, quality))
+            entered_calls.append(asin)
             if is_first:
                 unblock_first_call.wait(timeout=5)
-            return super().get_license(asin, quality)
+            return super().get_license(asin)
 
     book = _book("B1", "One")
     api = BlockingFirstCallAPI([book])

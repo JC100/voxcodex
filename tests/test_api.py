@@ -95,18 +95,6 @@ def test_book_from_item_no_series():
     assert book.series_sequence == ""
 
 
-def test_book_from_item_cover_prefers_500_over_300():
-    item = {"product_images": {"300": "small.jpg", "500": "big.jpg"}}
-    book = _book_from_item(item)
-    assert book.cover_url == "big.jpg"
-
-
-def test_book_from_item_cover_falls_back_to_300():
-    item = {"product_images": {"300": "small.jpg"}}
-    book = _book_from_item(item)
-    assert book.cover_url == "small.jpg"
-
-
 def test_book_from_item_computes_progress_ms_from_percent_complete():
     item = {"runtime_length_min": 100, "percent_complete": 50}
     book = _book_from_item(item)
@@ -370,7 +358,6 @@ def test_get_license_happy_path_without_drm_voucher():
 
     assert license_.asin == "B001"
     assert license_.content_url == "https://cdn/x.aaxc"
-    assert license_.codec == "AAXC"
     assert license_.key == ""
     assert license_.iv == ""
     assert license_.last_position_ms == 42_000
@@ -404,24 +391,16 @@ def test_get_license_posts_to_the_asin_specific_endpoint():
     assert path == "content/B12345/licenserequest"
 
 
-def test_get_license_accepts_normal_quality():
+def test_get_license_requests_high_quality():
+    # L26: quality was a caller-supplied parameter nothing ever overrode
+    # (no settings UI exists to choose otherwise) -- now hardcoded.
     client = FakeAudibleClient(post_response=_license_response())
     api = _api_with_fake_client(client)
 
-    api.get_license("B001", quality="normal")
+    api.get_license("B001")
 
     (_path, kwargs), = client.post_calls
-    assert kwargs["body"]["quality"] == "Normal"
-
-
-def test_get_license_rejects_an_unrecognized_quality():
-    # L12: this used to silently coerce any non-"normal" value (a typo
-    # included) to "High" instead of rejecting it.
-    client = FakeAudibleClient(post_response=_license_response())
-    api = _api_with_fake_client(client)
-
-    with pytest.raises(ValueError, match="quality"):
-        api.get_license("B001", quality="hihg")
+    assert kwargs["body"]["quality"] == "High"
 
 
 def test_get_license_rejects_a_malformed_asin():
@@ -639,22 +618,16 @@ def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
     assert kwargs["response_groups"] == "chapter_info"
 
 
-def test_get_chapters_accepts_normal_quality():
+def test_get_chapters_requests_high_quality():
+    # L26: quality was a caller-supplied parameter nothing ever overrode
+    # (no settings UI exists to choose otherwise) -- now hardcoded.
     client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
     api = _api_with_fake_client(client)
 
-    api.get_chapters("B001", quality="normal")
+    api.get_chapters("B001")
 
     (_path, kwargs), = client.calls
-    assert kwargs["quality"] == "Normal"
-
-
-def test_get_chapters_rejects_an_unrecognized_quality():
-    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
-    api = _api_with_fake_client(client)
-
-    with pytest.raises(ValueError, match="quality"):
-        api.get_chapters("B001", quality="hihg")
+    assert kwargs["quality"] == "High"
 
 
 def test_get_chapters_rejects_a_malformed_asin():
