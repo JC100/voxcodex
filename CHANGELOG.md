@@ -90,6 +90,10 @@
   now `fsync`'d before their atomic rename, so a power loss shortly after
   a write can no longer land the rename durable while the data behind it
   isn't.
+- **Bulk-deleting finished downloads could abort partway through** if a
+  single book's delete failed, leaving the rest untouched with no
+  indication of what happened. One failure no longer stops the batch, and
+  the status now reports how many failed.
 
 ### Security
 - **The Amazon account password and vault password could leak into

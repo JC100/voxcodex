@@ -289,7 +289,16 @@ done.
       `test_atomic_write_text_fsyncs_before_the_rename` and
       `test_download_book_fsyncs_the_audio_file_before_renaming_it`
       (verified both catch the regression when the fsync is removed).
-- [ ] 22 more Low findings -- see the doc for the full list and suggested
+- [x] L6 -- `delete_download` has a TOCTOU between its `exists()` check
+      and `unlink()` (`services/download.py` / `screens/library.py`).
+      **Fixed** 2026-09-21: `delete_download` now uses
+      `unlink(missing_ok=True)` instead of a separate `exists()` check.
+      The bulk-delete confirm callback in
+      `action_delete_finished_downloads` also now catches `OSError` per
+      book so one failure (a permissions error, or the same race) doesn't
+      abort the rest of the batch, reporting how many failed in the
+      status message. Added 3 tests.
+- [ ] 21 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

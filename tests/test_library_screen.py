@@ -1224,6 +1224,48 @@ async def test_delete_finished_downloads_requires_confirmation_and_removes_match
         assert "100 MB downloaded" in str(screen.query_one("#sort-filter").content)
 
 
+async def test_delete_finished_downloads_one_failure_does_not_stop_the_rest(monkeypatch):
+    """L6: one book's delete failing (a permissions error, a TOCTOU race
+    with another instance or action_delete_selected) must not abort the
+    rest of the batch."""
+    monkeypatch.setattr(
+        library_module.download, "is_downloaded", lambda asin: asin in ("B1", "B2")
+    )
+    monkeypatch.setattr(library_module.download, "downloaded_size", lambda asin: 1024)
+
+    def flaky_delete(asin):
+        if asin == "B1":
+            raise OSError("permission denied")
+
+    delete_calls = []
+    monkeypatch.setattr(
+        library_module.download, "delete_download",
+        lambda asin: (delete_calls.append(asin), flaky_delete(asin))[1],
+    )
+
+    book1 = _book("B1", "One")
+    book1.is_downloaded = True
+    book1.is_finished = True
+    book2 = _book("B2", "Two")
+    book2.is_downloaded = True
+    book2.is_finished = True
+    screen = LibraryScreen(FakeAPI([book1, book2]))
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 2)
+        screen.query_one(DataTable).focus()
+        await pilot.press("X")
+        await pilot.pause()
+        await pilot.click("#yes")
+        await pilot.pause()
+
+        assert delete_calls == ["B1", "B2"]  # both attempted
+        assert book1.is_downloaded is True  # the failed one, untouched
+        assert book2.is_downloaded is False  # the rest still succeeded
+        assert "1 failed" in str(screen.query_one("#status").content)
+
+
 async def test_delete_finished_downloads_cancelled_removes_nothing(monkeypatch):
     monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
     monkeypatch.setattr(library_module.download, "downloaded_size", lambda asin: 1024)

@@ -718,14 +718,29 @@ class LibraryScreen(Screen[None]):
         def _confirmed(confirmed: bool | None) -> None:
             if not confirmed:
                 return
+            failed = 0
             for book in targets:
-                download.delete_download(book.asin)
+                # One book's delete failing (a permissions error, a TOCTOU
+                # race with another instance or action_delete_selected)
+                # must not abort the rest of the batch (L6).
+                try:
+                    download.delete_download(book.asin)
+                except OSError:
+                    logger.debug(
+                        "failed to delete download for %s", book.asin, exc_info=True
+                    )
+                    failed += 1
+                    continue
                 book.is_downloaded = False
             self._apply_filters_and_sort()
-            self._set_status(
-                f"Removed {len(targets)} finished download"
-                f"{'s' if len(targets) != 1 else ''} ({_format_size(total_size)})"
+            removed = len(targets) - failed
+            status = (
+                f"Removed {removed} finished download"
+                f"{'s' if removed != 1 else ''} ({_format_size(total_size)})"
             )
+            if failed:
+                status += f" -- [red]{failed} failed[/red]"
+            self._set_status(status)
 
         self.app.push_screen(
             ConfirmModal(

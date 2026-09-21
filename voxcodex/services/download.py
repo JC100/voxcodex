@@ -206,6 +206,9 @@ def load_voucher(asin: str) -> dict[str, str] | None:
 
 
 def delete_download(asin: str) -> None:
+    # unlink(missing_ok=True) rather than a separate exists() check -- a
+    # second instance, or the bulk-delete loop below racing this same
+    # title, can otherwise remove the file in the gap between the two,
+    # tripping a FileNotFoundError here (L6).
     for path in (audio_path_for(asin), voucher_path_for(asin)):
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)

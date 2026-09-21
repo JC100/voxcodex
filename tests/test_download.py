@@ -160,6 +160,19 @@ def test_delete_download_is_a_no_op_when_nothing_exists():
     download.delete_download("B001")  # must not raise
 
 
+def test_delete_download_does_not_raise_when_only_one_file_exists():
+    # L6: a TOCTOU between an exists() check and unlink() -- e.g. a second
+    # instance, or the bulk-delete loop, racing this same title -- must
+    # not trip a FileNotFoundError. unlink(missing_ok=True) sidesteps the
+    # check entirely rather than needing to reproduce the exact race.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"data")
+
+    download.delete_download("B001")  # must not raise
+
+    assert not download.audio_path_for("B001").exists()
+
+
 def test_load_voucher_returns_none_when_missing():
     assert download.load_voucher("B001") is None
 
