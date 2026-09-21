@@ -17,8 +17,17 @@
   position 0", so a single dropped read could zero out and push a bogus
   position to Audible. Reads that fail now raise instead of silently
   defaulting, and are skipped rather than treated as real progress.
+- **A duplicate ASIN in the library could silently truncate the table and
+  then crash the app on the next keypress.** The library load now dedupes
+  by ASIN (keeping the first occurrence), the same way it already handled
+  a missing ASIN.
 
 ### Security
+- **The Amazon account password and vault password could leak into
+  Textual's worker logging** (devtools console, or a crash traceback
+  rendered with local variables) via the default worker description for
+  the three login/unlock workers. They now carry an explicit,
+  non-sensitive description instead.
 - **Closed two code-execution primitives in how mpv is invoked.** The DRM
   key/iv from a license response were written unvalidated into mpv's
   config-file include, and the stream URL was passed as a bare positional

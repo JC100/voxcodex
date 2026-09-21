@@ -34,8 +34,14 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       which asserts the actual mpv start position through the full
       `LibraryScreen` -> `p` -> `PlayerScreen` path (the class of test the
       review noted was entirely missing).
-- [ ] H2 -- A duplicate ASIN silently truncates the library table, then
-      crashes on the next keypress (`screens/library.py`).
+- [x] H2 -- A duplicate ASIN silently truncates the library table, then
+      crashes on the next keypress (`screens/library.py`). **Fixed**
+      2026-09-21: `AudibleAPI.get_library` now dedupes by ASIN (keep first
+      occurrence, log the duplicate) the same way it already handled the
+      empty-ASIN case, tracking `seen_asins` across the whole pagination
+      loop since a repeat can span pages. Added
+      `test_get_library_dedupes_repeated_asins_within_a_page` and
+      `test_get_library_dedupes_an_asin_repeated_across_pages`.
 - [x] H3 -- A transient mpv read failure silently zeroes the saved
       position and pushes that to Audible (`screens/player_screen.py` /
       `services/player.py`). **Fixed** 2026-09-21: `MpvPlayer.position_seconds`
@@ -50,8 +56,14 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       (player_screen) and `test_position_seconds_raises_instead_of_defaulting_when_not_connected`
       / a dropped-connection assertion (player), covering the exact gap
       the review noted (`FakePlayer.position_seconds` never raised).
-- [ ] H4 -- Amazon account password and vault password leak into Textual
-      worker descriptions/logs (`screens/login.py`).
+- [x] H4 -- Amazon account password and vault password leak into Textual
+      worker descriptions/logs (`screens/login.py`). **Fixed** 2026-09-21:
+      added an explicit `description=` to the `@work` decorators on
+      `_do_login`, `_do_unlock`, and `_do_external_login` -- Textual skips
+      the `repr()`-the-positional-args fallback (which put both passwords
+      in plaintext on the Worker) whenever one is given. Added three tests
+      asserting the actual `Worker.description` doesn't contain the
+      account or vault password.
 - [x] H5 -- Unvalidated DRM key/IV are newline-injectable into the mpv
       options file (`services/player.py`). **Fixed** 2026-09-21:
       `MpvPlayer.start` now rejects any key/iv that isn't a plain,

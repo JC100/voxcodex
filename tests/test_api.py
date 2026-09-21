@@ -241,6 +241,52 @@ def test_get_library_skips_items_with_no_asin(caplog):
     assert "No asin key at all" in caplog.text
 
 
+def test_get_library_dedupes_repeated_asins_within_a_page(caplog):
+    # H2: table.add_row(..., key=book.asin) raises Textual's DuplicateKey
+    # on a repeated key -- keep the first occurrence and drop the rest
+    # rather than crashing the library render.
+    items = [
+        {"asin": "B001", "title": "First copy"},
+        {"asin": "B001", "title": "Second copy, same ASIN"},
+        {"asin": "B002", "title": "Different book"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001", "B002"]
+    assert [b.title for b in books] == ["First copy", "Different book"]
+    assert "B001" in caplog.text
+
+
+def test_get_library_dedupes_an_asin_repeated_across_pages(caplog):
+    # A purchase landing mid-pagination shifts the page window, so the
+    # same ASIN can legitimately reappear on a later page, not just within
+    # one -- the dedupe set must persist across the pagination loop.
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "B001", "title": "Page 1 copy"}] * 1000}),
+            FakeJsonResponse(
+                {"items": [{"asin": "B001", "title": "Page 2 copy"}, {"asin": "B002"}]}
+            ),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001", "B002"]
+
+
 # -- get_license -------------------------------------------------------
 
 

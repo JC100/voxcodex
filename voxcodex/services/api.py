@@ -167,6 +167,7 @@ class AudibleAPI:
 
     def get_library(self) -> list[Book]:
         books: list[Book] = []
+        seen_asins: set[str] = set()
         page = 1
         num_results = 1000
         while True:
@@ -195,7 +196,8 @@ class AudibleAPI:
                     page, len(items), num_results,
                 )
             for item in items:
-                if not item.get("asin"):
+                asin = item.get("asin")
+                if not asin:
                     # DataTable rows are keyed by asin (see LibraryScreen.
                     # _refresh_table); a missing one would default to "" and
                     # crash add_row with DuplicateKey the moment a second
@@ -205,6 +207,15 @@ class AudibleAPI:
                         "library item missing asin, skipping: %r", item.get("title")
                     )
                     continue
+                if asin in seen_asins:
+                    # Same DuplicateKey hazard as above, but with a real
+                    # ASIN repeated -- a purchase landing mid-pagination
+                    # shifts the page window, and a library can legitimately
+                    # list one ASIN twice (owned + Plus catalog). Keep the
+                    # first occurrence, drop the rest.
+                    logger.warning("duplicate asin in library, skipping: %r", asin)
+                    continue
+                seen_asins.add(asin)
                 books.append(_book_from_item(item))
             if page >= _MAX_LIBRARY_PAGES:
                 logger.warning(
