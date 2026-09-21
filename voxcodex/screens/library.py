@@ -6,6 +6,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable
+from datetime import datetime, UTC
 from typing import Any
 
 import httpx
@@ -751,10 +752,12 @@ class LibraryScreen(Screen[None]):
                 source = str(download.audio_path_for(book.asin))
                 key, iv = voucher["key"], voucher["iv"]
                 acr = voucher.get("acr", "")
+                license_id = voucher.get("license_id", "")
             else:
                 license_ = self.api.get_license(book.asin)
                 source, key, iv = license_.content_url, license_.key, license_.iv
                 acr = license_.acr
+                license_id = license_.license_id
                 # The license response's own last_position_heard is the
                 # most authoritative resume position available -- fetched
                 # fresh at the moment of playback, not at library-load
@@ -794,7 +797,7 @@ class LibraryScreen(Screen[None]):
         if worker.is_cancelled:
             return
         self.app.call_from_thread(
-            self._launch_player, book, source, key, iv, chapters, acr
+            self._launch_player, book, source, key, iv, chapters, acr, license_id
         )
 
     def _player_open_failed(self, message: str) -> None:
@@ -808,8 +811,16 @@ class LibraryScreen(Screen[None]):
         iv: str,
         chapters: list[Chapter],
         acr: str,
+        license_id: str,
     ) -> None:
         self._set_status("")
+
+        # Matches what PlayerScreen.on_mount actually starts mpv from --
+        # a finished book restarts at 0 rather than resuming, so the
+        # listening session reported below must start from the same point,
+        # not from the (stale/irrelevant) prior progress_ms.
+        session_start_position_ms = 0 if book.is_finished else book.progress_ms
+        session_start_time = datetime.now(UTC)
 
         def _on_progress(position_ms: int, *, final: bool) -> None:
             # Called both on a ~15s timer during playback and once on close /
@@ -835,6 +846,17 @@ class LibraryScreen(Screen[None]):
                 # propagate out of the player's on_unmount.
                 try:
                     self._push_position(book.asin, acr, position_ms)
+                    self._push_listening_session(
+                        book.asin,
+                        license_id,
+                        session_start_position_ms,
+                        position_ms,
+                        session_start_time,
+                        datetime.now(UTC),
+                        book.duration_ms,
+                        self.settings.playback_speed,
+                        "Download" if book.is_downloaded else "Streaming",
+                    )
                     if newly_finished:
                         self._push_finished(book.asin, True)
                 except Exception:  # noqa: BLE001
@@ -870,4 +892,41 @@ class LibraryScreen(Screen[None]):
             self.app.call_from_thread(
                 self._set_status,
                 f"[yellow]{state} status saved locally; Audible sync failed[/yellow]",
+            )
+
+    @work(thread=True, exclusive=False, group="push_listening_session", exit_on_error=False)
+    def _push_listening_session(
+        self,
+        asin: str,
+        license_id: str,
+        start_position_ms: int,
+        end_position_ms: int,
+        start_time: datetime,
+        end_time: datetime,
+        duration_ms: int,
+        narration_speed: float,
+        delivery_type: str,
+    ) -> None:
+        if not license_id:
+            # No DRM license id to report the session against (see
+            # push_listening_session's docstring) -- nothing was attempted,
+            # so this isn't a sync failure worth surfacing, just a known
+            # compatibility gap for vouchers saved before `license_id`
+            # existed.
+            return
+        if not progress.push_listening_session(
+            self.api,
+            asin,
+            license_id,
+            start_position_ms,
+            end_position_ms,
+            start_time,
+            end_time,
+            duration_ms,
+            narration_speed,
+            delivery_type,
+        ):
+            self.app.call_from_thread(
+                self._set_status,
+                "[yellow]Progress saved locally; Audible sync failed[/yellow]",
             )

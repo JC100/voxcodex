@@ -13,26 +13,36 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 
 ## Open work
 
-- [ ] **Mid-book progress doesn't sync to Audible's own library tile.**
+- [ ] **Mid-book progress sync -- implemented, not yet confirmed live.**
       `percent_complete` / `time_remaining_seconds` on the *official*
-      Audible app/website's library view don't update from a VoxCodex
+      Audible app/website's library view didn't update from a VoxCodex
       play -- root cause found: they're driven by `PUT /1.0/stats/events`
       `Listening` events, whose exact accepted payload shape was never
       pinned down. A guessed shape was tried and made it *worse* (drove
-      the percentage to 0% instead of the real value), so VoxCodex
-      deliberately does not send `Listening` events at all right now.
-      **2026-09-21: the payload capture is done** -- network-level MITM
+      the percentage to 0% instead of the real value).
+      **2026-09-21: captured the real payload** via network-level MITM
       (mitmproxy on a dedicated proxy box + Android CA-trust bind-mount)
-      against the real Android app talking to the real backend confirmed
-      the exact schema for `Listening` / `StartListening` /
-      `MarkAsUnfinished`, including batching and the
-      `StartListening`+`MarkAsUnfinished` pairing on playback start. Full
-      capture + rig notes in
-      `docs/library-progress-sync-investigation.md` (2026-09-21 section).
-      **Remaining:** implement sending it from VoxCodex, then re-poll
-      `percent_complete` on a real send to confirm it resolves correctly
-      (recompute lag observed at tens of minutes, so this needs a
-      same-day-later check, not an immediate one).
+      against the real Android app talking to the real backend --
+      confirmed schema for `Listening`/`StartListening`, full capture +
+      rig notes in `docs/library-progress-sync-investigation.md`
+      (2026-09-21 section).
+      **2026-09-21 (same day): implemented.** `AudibleAPI
+      .push_listening_session` / `services.progress.push_listening_session`
+      send a `StartListening` + `Listening` pair on player close, using
+      the license/voucher's `license_id` (new field, needs a fresh
+      `get_license()` or re-download for titles saved before this
+      existed) and the session's real start/end position and wall-clock
+      time. Deliberately does *not* mirror the real app's accompanying
+      `MarkAsUnfinished` on every play -- VoxCodex already has an
+      explicit, user-triggered way to un-finish a book, and auto-clearing
+      it just because playback resumed would fight that. Tests/ruff/mypy
+      all green.
+      **Remaining:** re-poll `percent_complete` on a title played through
+      this new path to confirm it resolves to the *correct* value, not
+      just *a different* one -- recompute lag observed at tens of minutes
+      in earlier black-box testing, so this needs a same-day-later check,
+      not an immediate one. Don't mark this item done until that's
+      confirmed against a live account.
       Doesn't affect VoxCodex's own library view (reads from
       `annotations/lastpositions` + the local cache, unaffected) or the
       "Finished" badge (a separate field, already synced both ways and

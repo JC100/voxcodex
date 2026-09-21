@@ -390,6 +390,28 @@ def test_get_license_defaults_acr_to_empty_when_absent():
     assert license_.acr == ""
 
 
+def test_get_license_extracts_license_id():
+    # `license_id` is what push_listening_session needs to report a
+    # listening session against -- see that method's docstring.
+    resp = _license_response()
+    resp["content_license"]["license_id"] = "40f2193e-602f-4fb2-8905-90451f2ed5e0"
+    client = FakeAudibleClient(post_response=resp)
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.license_id == "40f2193e-602f-4fb2-8905-90451f2ed5e0"
+
+
+def test_get_license_defaults_license_id_to_empty_when_absent():
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.license_id == ""
+
+
 def test_get_license_decrypts_voucher_when_license_response_present(monkeypatch):
     """The real, common case for DRM-protected (Adrm) content: the license
     response includes an encrypted `license_response` blob that has to be
@@ -567,3 +589,95 @@ def test_set_finished_propagates_http_errors():
 
     with pytest.raises(RuntimeError):
         api.set_finished("B001", True)
+
+
+# -- push_listening_session -------------------------------------------------
+#
+# Payload shape confirmed against the real Android app's own traffic
+# (2026-09-21, see docs/library-progress-sync-investigation.md) -- not
+# guessed. An earlier guessed shape drove `percent_complete` to 0% instead
+# of the real value.
+
+
+def _dt(hour, minute, second=0, microsecond=0):
+    from datetime import datetime, UTC
+
+    return datetime(2026, 9, 21, hour, minute, second, microsecond, tzinfo=UTC)
+
+
+def test_push_listening_session_sends_start_listening_and_listening_events():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.push_listening_session(
+        "B001", "lic-123", 100_000, 250_000,
+        _dt(10, 0, 0, 59_000), _dt(10, 5, 13, 671_000),
+        19_040_890, 1.2, "Download",
+    )
+
+    (path, body, _), = client.put_calls
+    assert path == "stats/events"
+    start_event, listening_event = body["stats"]
+
+    assert start_event["event_type"] == "StartListening"
+    assert start_event["asin"] == "B001"
+    assert start_event["license_id"] == "lic-123"
+    assert start_event["event_timestamp"] == "2026-09-21T10:00:00.059Z"
+    assert start_event["event_start_position"] == 100_000
+    assert start_event["event_end_position"] == 0
+    assert start_event["length_of_book"] == 19_040_890
+    assert start_event["narration_speed"] == 1.2
+    assert start_event["delivery_type"] == "Download"
+    assert "event_end_timestamp" not in start_event
+
+    assert listening_event["event_type"] == "Listening"
+    assert listening_event["event_timestamp"] == "2026-09-21T10:00:00.059Z"
+    assert listening_event["event_end_timestamp"] == "2026-09-21T10:05:13.671Z"
+    assert listening_event["event_start_position"] == 100_000
+    assert listening_event["event_end_position"] == 250_000
+
+    # Same session_id ties both events together, matching the real app.
+    assert start_event["session_id"] == listening_event["session_id"]
+
+
+def test_push_listening_session_skips_without_a_license_id():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.push_listening_session(
+        "B001", "", 0, 1000, _dt(10, 0), _dt(10, 1), 100_000, 1.0, "Streaming",
+    )
+
+    assert client.put_calls == []
+
+
+def test_push_listening_session_skips_when_no_forward_progress():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.push_listening_session(
+        "B001", "lic-123", 5000, 5000, _dt(10, 0), _dt(10, 1), 100_000, 1.0, "Streaming",
+    )
+
+    assert client.put_calls == []
+
+
+def test_push_listening_session_skips_when_position_went_backward():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    api.push_listening_session(
+        "B001", "lic-123", 5000, 1000, _dt(10, 0), _dt(10, 1), 100_000, 1.0, "Streaming",
+    )
+
+    assert client.put_calls == []
+
+
+def test_push_listening_session_propagates_http_errors():
+    client = FakePutClient(exc=RuntimeError("boom"))
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(RuntimeError):
+        api.push_listening_session(
+            "B001", "lic-123", 0, 1000, _dt(10, 0), _dt(10, 1), 100_000, 1.0, "Streaming",
+        )

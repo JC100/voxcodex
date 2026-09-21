@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 
 from voxcodex.services import progress
 
@@ -227,6 +228,7 @@ class FakePushAPI:
         self.exc = exc
         self.calls = []
         self.finished_calls = []
+        self.listening_session_calls = []
 
     def push_last_position(self, asin, acr, position_ms):
         self.calls.append((asin, acr, position_ms))
@@ -235,6 +237,11 @@ class FakePushAPI:
 
     def set_finished(self, asin, finished):
         self.finished_calls.append((asin, finished))
+        if self.exc is not None:
+            raise self.exc
+
+    def push_listening_session(self, *args):
+        self.listening_session_calls.append(args)
         if self.exc is not None:
             raise self.exc
 
@@ -274,6 +281,36 @@ def test_push_finished_passes_through_unfinished_too():
 def test_push_finished_swallows_failure_and_reports_it():
     api = FakePushAPI(exc=RuntimeError("network exploded"))
     assert progress.push_finished(api, "B001", True) is False
+
+
+# -- push_listening_session ----------------------------------------------
+
+
+def test_push_listening_session_calls_through_and_reports_success():
+    api = FakePushAPI()
+    start = datetime(2026, 9, 21, 10, 0)
+    end = datetime(2026, 9, 21, 10, 5)
+
+    result = progress.push_listening_session(
+        api, "B001", "lic-123", 1000, 5000, start, end, 100_000, 1.0, "Streaming",
+    )
+
+    assert result is True
+    assert api.listening_session_calls == [
+        ("B001", "lic-123", 1000, 5000, start, end, 100_000, 1.0, "Streaming"),
+    ]
+
+
+def test_push_listening_session_swallows_failure_and_reports_it():
+    api = FakePushAPI(exc=RuntimeError("network exploded"))
+    start = datetime(2026, 9, 21, 10, 0)
+    end = datetime(2026, 9, 21, 10, 5)
+
+    result = progress.push_listening_session(
+        api, "B001", "lic-123", 1000, 5000, start, end, 100_000, 1.0, "Streaming",
+    )
+
+    assert result is False
 
 
 # -- default path resolution (L6) -------------------------------------------

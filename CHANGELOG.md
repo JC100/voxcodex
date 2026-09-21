@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+- **Mid-book progress now pushed to Audible's own library tile.** Closing
+  the player reports the session's `StartListening`/`Listening` events
+  (the same shape the real Android app sends, captured off a live
+  account -- see `docs/library-progress-sync-investigation.md`), so
+  `percent_complete`/"time left" on the official app/website can catch up
+  to what VoxCodex actually played, not just resume position and the
+  "Finished" badge as before. Best-effort like the other Audible pushes:
+  a failure surfaces the existing "...Audible sync failed" status rather
+  than blocking anything locally, and titles played before this existed
+  (no `license_id` on the saved voucher) are silently skipped until
+  re-downloaded or streamed once.
+
 ## 0.4.0
 
 Closes out every remaining finding (Medium and Low) from the outside code

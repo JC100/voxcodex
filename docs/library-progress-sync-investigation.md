@@ -27,12 +27,15 @@ position.
   capture. Until then VoxCodex does **not** send `Listening` events (they make
   it worse). For a *finished* book this doesn't matter — the "Finished" badge
   wins over the percent. It only shows for books left partway through.
-- **2026-09-21: the capture is done — see that dated section below.** Real
-  `Listening` / `StartListening` / `MarkAsUnfinished` payloads recovered via a
-  network-level MITM (mitmproxy on a dedicated proxy box + Android CA-trust
-  bind-mount), exact field set confirmed against the real Android app talking
-  to the real backend. **Implementing it in VoxCodex is now the only
-  remaining step** — see "Open questions" below.
+- **2026-09-21: captured and implemented, same day — see that dated section
+  below.** Real `Listening` / `StartListening` / `MarkAsUnfinished` payloads
+  recovered via a network-level MITM (mitmproxy on a dedicated proxy box +
+  Android CA-trust bind-mount) against the real Android app talking to the
+  real backend, then `AudibleAPI.push_listening_session` implemented in
+  VoxCodex to send a `StartListening`+`Listening` pair on player close.
+  **Not yet done: confirm against a live account that VoxCodex's own send
+  actually resolves `percent_complete` correctly** (not just differently) —
+  see "Open questions" below.
 - **Position push moved off the Fiona sidecar (done, v0.3.0).** The push now
   goes through `PUT /1.0/lastpositions/{asin}` — clean JSON
   (`{acr, asin, position_ms}`), normal api.audible host, no `guid` / XML /
@@ -508,25 +511,27 @@ rediscover any of the above.
 
 1. ~~Capture the real `Listening` payload~~ — **done, 2026-09-21.** Exact
    schema confirmed for `Listening` / `StartListening` / `MarkAsUnfinished`,
-   see that dated section above. **Next:** implement sending it from
-   VoxCodex (mirror the app's pairing behavior — `MarkAsUnfinished` +
-   `StartListening` on playback start, closing `Listening` event on
-   pause/stop with the real elapsed interval), then re-poll
-   `percent_complete` on a real send to confirm it resolves correctly
-   rather than repeating the 2026-08-30 black-box session's 0%-regression
-   (that session's synthetic guesses were a *different*, wrong shape — this
-   one is the real thing, but hasn't been round-tripped through VoxCodex's
-   own send path yet).
+   see that dated section above.
 2. ~~Switch the position push to `PUT /1.0/lastpositions/{asin}`~~ — **done in
    v0.3.0.** `push_last_heard` → `push_last_position`; Fiona sidecar,
    `content_version`, and the constructed `guid` are all gone.
-3. **Re-poll `percent_complete` on the test titles** after implementing the
-   real send (see #1) — recompute lag observed at tens of minutes, so check
-   well after sending, not immediately.
-4. **Decide product stance for going public:** now largely moot given #1 is
-   solved — but if implementation + re-poll reveals a new wrinkle, "resume
-   position + finished state sync both ways; in-progress % updates once you
-   open the book on an official client" remains an acceptable v1 fallback.
+3. ~~Implement sending it from VoxCodex~~ — **done, 2026-09-21 (same day
+   as the capture).** `AudibleAPI.push_listening_session` sends a
+   `StartListening` + `Listening` pair on player close, using the new
+   `License.license_id` field (also persisted to the download voucher).
+   Deliberately drops the real app's accompanying `MarkAsUnfinished` --
+   see that method's docstring for why. Tests/ruff/mypy all green.
+   **Not yet done: re-poll `percent_complete` on a title played through
+   this new path** to confirm it resolves to the *correct* value and not
+   just *a different* one -- recompute lag observed at tens of minutes in
+   the 2026-08-30 black-box testing, so this needs a same-day-later check
+   against a live account, not an immediate one. Until that's confirmed,
+   treat this as "implemented, unverified" rather than "fixed."
+4. **Decide product stance for going public:** now largely moot given #1
+   and #3 are done — but if the re-poll in #3 reveals a new wrinkle,
+   "resume position + finished state sync both ways; in-progress % updates
+   once you open the book on an official client" remains an acceptable v1
+   fallback.
 
 ## Restoration ledger (test books)
 
