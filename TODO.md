@@ -374,7 +374,19 @@ done.
       closed. Added
       `test_diagnostics_degrades_instead_of_failing_closed_on_a_missing_name`
       (verified it fails against the pre-fix unguarded `getattr`).
-- [ ] 13 more Low findings -- see the doc for the full list and suggested
+- [x] L15 -- ASINs are interpolated into request paths with no
+      percent-encoding -- a value containing `?` or `#` would inject a
+      query/fragment (`services/api.py`). **Fixed** 2026-09-21: moved the
+      `InvalidAsin`/`require_valid_asin` shape validator (from the L1 fix
+      in `download.py`) into `api.py` -- ASINs' real entry point, and
+      where the other request-path builders live too -- and applied it in
+      `get_license`, `push_last_position`, `get_chapters`, and (alongside
+      the existing presence/dedupe checks) `get_library`'s item loop.
+      `download.py` now imports and re-exports the shared validator
+      instead of duplicating it. Added 5 tests (verified
+      `test_get_license_rejects_a_malformed_asin` fails against the
+      pre-fix unguarded interpolation).
+- [ ] 12 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

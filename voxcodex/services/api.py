@@ -7,6 +7,7 @@ anywhere here.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -88,6 +89,25 @@ class InvalidResponse(Exception):
     page, an Amazon maintenance page), which would otherwise raise an
     unguarded TypeError/AttributeError indexing it like the expected dict,
     escaping the caller's typed error handling entirely (M3)."""
+
+
+class InvalidAsin(ValueError):
+    pass
+
+
+# Real ASINs are always alphanumeric. Values originate from Amazon over TLS
+# (not directly attacker-controlled), so this is theoretical -- but every
+# method below that interpolates an asin straight into a request *path*
+# (get_license, push_last_position, get_chapters) does so with no percent-
+# encoding, and the underlying client builds the URL via a raw-path copy:
+# a value containing "?" or "#" would inject a query string/fragment (L15).
+_VALID_ASIN_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def require_valid_asin(asin: str) -> str:
+    if not _VALID_ASIN_RE.fullmatch(asin):
+        raise InvalidAsin(f"invalid asin: {asin!r}")
+    return asin
 
 
 @dataclass
@@ -232,6 +252,16 @@ class AudibleAPI:
                         "library item missing asin, skipping: %r", item.get("title")
                     )
                     continue
+                if not _VALID_ASIN_RE.fullmatch(asin):
+                    # Same DuplicateKey-render hazard doesn't apply here,
+                    # but every method that later builds a request path
+                    # from this asin (get_license, get_chapters, ...)
+                    # would (L15) -- cheap to validate shape here, once,
+                    # at the point ASINs first enter the app.
+                    logger.warning(
+                        "library item has a malformed asin, skipping: %r", asin
+                    )
+                    continue
                 if asin in seen_asins:
                     # Same DuplicateKey hazard as above, but with a real
                     # ASIN repeated -- a purchase landing mid-pagination
@@ -256,6 +286,7 @@ class AudibleAPI:
     # -- licensing / download -----------------------------------------
 
     def get_license(self, asin: str, quality: str = "high") -> License:
+        require_valid_asin(asin)
         api_quality = _api_quality(quality)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
@@ -328,6 +359,7 @@ class AudibleAPI:
         """
         if not acr:
             raise ValueError("push_last_position needs a real acr from get_license()")
+        require_valid_asin(asin)
         self.client.put(
             f"lastpositions/{asin}",
             body={"acr": acr, "asin": asin, "position_ms": position_ms},
@@ -474,6 +506,7 @@ class AudibleAPI:
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
         """
+        require_valid_asin(asin)
         api_quality = _api_quality(quality)
         params: dict[str, Any] = {
             "response_groups": "chapter_info",

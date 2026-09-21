@@ -2,6 +2,7 @@ import pytest
 
 from voxcodex.services.api import (
     AudibleAPI,
+    InvalidAsin,
     InvalidResponse,
     LicenseDenied,
     NoDownloadUrl,
@@ -194,7 +195,7 @@ def test_get_library_stops_at_the_page_safety_limit_if_pages_never_go_empty():
     # Every page comes back "full" (a misbehaving server that never signals
     # the end) -- the hard page cap is what stops this from looping forever.
     pages = [
-        FakeJsonResponse({"items": [{"asin": f"P{page}-{i}"} for i in range(1000)]})
+        FakeJsonResponse({"items": [{"asin": f"P{page}X{i}"} for i in range(1000)]})
         for page in range(api_module._MAX_LIBRARY_PAGES + 5)
     ]
     client = FakeAudibleClient(get_pages=pages)
@@ -240,6 +241,33 @@ def test_get_library_skips_items_with_no_asin(caplog):
     assert [b.asin for b in books] == ["B001"]
     assert "Missing ASIN" in caplog.text
     assert "No asin key at all" in caplog.text
+
+
+def test_get_library_skips_items_with_a_malformed_asin(caplog):
+    # L15: every method that later builds a request path from an asin
+    # (get_license, push_last_position, get_chapters) does so with no
+    # percent-encoding -- a value containing "?" or "#" would inject a
+    # query string/fragment. Cheap to validate shape here too, at the
+    # point ASINs first enter the app, alongside the existing presence
+    # check.
+    items = [
+        {"asin": "B001", "title": "Well-formed"},
+        {"asin": "B002?evil=1", "title": "Path-injection shaped"},
+        {"asin": "B003#frag", "title": "Also path-injection shaped"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed asin" in caplog.text
 
 
 def test_get_library_dedupes_repeated_asins_within_a_page(caplog):
@@ -372,6 +400,19 @@ def test_get_license_rejects_an_unrecognized_quality():
 
     with pytest.raises(ValueError, match="quality"):
         api.get_license("B001", quality="hihg")
+
+
+def test_get_license_rejects_a_malformed_asin():
+    # L15: asin is interpolated straight into the request path with no
+    # percent-encoding -- a value containing "?" or "#" would inject a
+    # query string/fragment.
+    client = FakeAudibleClient(post_response=_license_response())
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidAsin):
+        api.get_license("B001?evil=1")
+
+    assert client.post_calls == []  # rejected before any request was made
 
 
 def test_get_license_defaults_to_zero_position_when_absent():
@@ -594,6 +635,16 @@ def test_get_chapters_rejects_an_unrecognized_quality():
         api.get_chapters("B001", quality="hihg")
 
 
+def test_get_chapters_rejects_a_malformed_asin():
+    client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidAsin):
+        api.get_chapters("B001#frag")
+
+    assert client.calls == []  # rejected before any request was made
+
+
 def test_get_chapters_raises_invalid_response_on_a_non_json_200():
     # M3: audible.client.convert_response_content falls back to returning
     # raw text when a 200 body isn't valid JSON (a captive portal, a proxy
@@ -630,6 +681,16 @@ def test_push_last_position_raises_without_acr():
     with pytest.raises(ValueError):
         api.push_last_position("B001", "", 1000)
     assert client.put_calls == []
+
+
+def test_push_last_position_rejects_a_malformed_asin():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidAsin):
+        api.push_last_position("B001?evil=1", "CR!ABC", 1000)
+
+    assert client.put_calls == []  # rejected before any request was made
 
 
 def test_push_last_position_puts_json_to_the_lastpositions_endpoint():

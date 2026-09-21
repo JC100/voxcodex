@@ -29,6 +29,7 @@ from voxcodex.services import chapter_cache, download, library_cache, progress
 from voxcodex.services.api import (
     AudibleAPI,
     Chapter,
+    InvalidAsin,
     InvalidResponse,
     LicenseDenied,
     NoDownloadUrl,
@@ -55,7 +56,7 @@ _CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError, InvalidResponse)
 # Audible.
 _PLAYER_OPEN_ERRORS = (
     RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, InvalidResponse,
-    download.InvalidAsin, httpx.HTTPError, AudibleError,
+    InvalidAsin, httpx.HTTPError, AudibleError,
 )
 
 

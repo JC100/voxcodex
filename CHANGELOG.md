@@ -128,6 +128,10 @@
 - A CAPTCHA/OTP verification page's text -- which typically includes a
   masked delivery destination (partial email/phone) -- no longer lands in
   the log file by default; it's only captured under `VOXCODEX_DEBUG`.
+- ASINs are now also validated before being used to build any API request
+  path, not just a download/voucher filename -- a hostile library
+  response with a path-injection-shaped ASIN could otherwise smuggle a
+  query string or fragment into a request.
 
 ## 0.5.0
 
