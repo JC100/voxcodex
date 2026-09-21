@@ -81,6 +81,15 @@ class NoDownloadUrl(Exception):
     pass
 
 
+class InvalidResponse(Exception):
+    """Raised when a 200 response isn't the JSON object it's expected to be
+    -- audible.client.convert_response_content falls back to returning raw
+    text when the body isn't valid JSON (a captive portal, a proxy error
+    page, an Amazon maintenance page), which would otherwise raise an
+    unguarded TypeError/AttributeError indexing it like the expected dict,
+    escaping the caller's typed error handling entirely (M3)."""
+
+
 @dataclass
 class License:
     asin: str
@@ -261,6 +270,8 @@ class AudibleAPI:
         lr = self.client.post(
             f"content/{asin}/licenserequest", body=body, headers=headers
         )
+        if not isinstance(lr, dict):
+            raise InvalidResponse(f"licenserequest for {asin} returned a non-JSON body")
         content_license = lr["content_license"]
 
         if content_license.get("status_code") == "Denied":
@@ -471,6 +482,8 @@ class AudibleAPI:
             "chapter_titles_type": "Flat",
         }
         resp = self.client.get(f"content/{asin}/metadata", **params)
+        if not isinstance(resp, dict):
+            raise InvalidResponse(f"metadata for {asin} returned a non-JSON body")
         content_metadata = resp.get("content_metadata") or {}
         chapter_info = content_metadata.get("chapter_info") or {}
         raw_chapters = chapter_info.get("chapters") or []

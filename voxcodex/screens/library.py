@@ -26,7 +26,13 @@ from voxcodex.models import Book
 from voxcodex.screens.modals import ConfirmModal
 from voxcodex.screens.player_screen import PlayerScreen
 from voxcodex.services import chapter_cache, download, library_cache, progress
-from voxcodex.services.api import AudibleAPI, Chapter, LicenseDenied, NoDownloadUrl
+from voxcodex.services.api import (
+    AudibleAPI,
+    Chapter,
+    InvalidResponse,
+    LicenseDenied,
+    NoDownloadUrl,
+)
 from voxcodex.services.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -36,16 +42,20 @@ COLUMNS = (
 )
 
 # Failures a chapter-metadata fetch can actually raise: a network/API
-# problem. Anything else (a real bug -- bad response shape, etc.) should
-# propagate to the worker's error handler instead of quietly leaving the
-# Chapter column blank forever.
-_CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError)
+# problem, or a 200 response that wasn't the JSON object expected (a
+# captive portal, a proxy error page, an Amazon maintenance page -- see
+# InvalidResponse). Anything else (a real bug -- bad response shape, etc.)
+# should propagate to the worker's error handler instead of quietly
+# leaving the Chapter column blank forever.
+_CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError, InvalidResponse)
 
 # Failures opening a title for playback can legitimately raise: a missing/
 # malformed local voucher, a denied license or a license response with no
-# download URL, or a network/API problem reaching Audible.
+# download URL, a non-JSON 200 response, or a network/API problem reaching
+# Audible.
 _PLAYER_OPEN_ERRORS = (
-    RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, httpx.HTTPError, AudibleError,
+    RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, InvalidResponse,
+    httpx.HTTPError, AudibleError,
 )
 
 

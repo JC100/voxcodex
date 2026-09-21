@@ -44,6 +44,11 @@
   It sent every ASIN as one unchunked query string, plausibly past a
   gateway's request-line limit on a several-hundred-title library -- the
   request is now chunked (100 ASINs at a time) and results merged.
+- **A non-JSON 200 response (a captive portal, a proxy error page, an
+  Amazon maintenance page) could crash playback or chapter fetching with
+  no message shown.** Both now raise a typed error the existing failure
+  handling already catches, so the user gets "Could not start
+  playback..." instead of nothing.
 
 ### Security
 - **The Amazon account password and vault password could leak into

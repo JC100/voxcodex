@@ -25,7 +25,7 @@ from voxcodex.screens.library import (
     _reached_end,
     _resolve_progress_ms,
 )
-from voxcodex.services.api import Chapter, License, LicenseDenied
+from voxcodex.services.api import Chapter, InvalidResponse, License, LicenseDenied
 
 
 class FakeProgressStore:
@@ -1873,6 +1873,29 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
         assert app.screen._chapters == []
 
 
+async def test_play_still_works_when_chapter_metadata_is_non_json(monkeypatch):
+    """M3: InvalidResponse (a non-JSON 200 from the metadata endpoint) is
+    caught by _CHAPTER_FETCH_ERRORS the same way a network error already
+    is -- chapter navigation degrades, playback still works."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, chapters_exc=InvalidResponse("metadata returned a non-JSON body"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        assert app.screen._chapters == []
+
+
 async def test_chapter_column_advances_after_a_listening_session_closes(monkeypatch):
     """M16: _on_progress updated progress_ms and rebuilt the table on
     close, but never recomputed chapter_current -- so a book listened to
@@ -1976,6 +1999,27 @@ async def test_play_shows_the_denial_message_when_the_license_is_denied():
 async def test_play_surfaces_a_network_error_from_get_license():
     books = [_book("B1", "One")]
     api = FakeAPI(books, license_exc=httpx.HTTPError("connection reset"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+
+        await _wait_until(
+            lambda: "Could not start playback" in str(screen.query_one("#status").content)
+        )
+
+
+async def test_play_surfaces_a_non_json_license_response_as_a_playback_failure():
+    """M3: a non-JSON 200 (captive portal, proxy error page, Amazon
+    maintenance page) used to raise an untyped TypeError indexing the raw
+    text as a dict, escaping _PLAYER_OPEN_ERRORS and leaving the user with
+    no message at all instead of "Could not start playback...".
+    """
+    books = [_book("B1", "One")]
+    api = FakeAPI(books, license_exc=InvalidResponse("licenserequest returned a non-JSON body"))
     screen = LibraryScreen(api)
     app = HostApp(screen)
 

@@ -2,6 +2,7 @@ import pytest
 
 from voxcodex.services.api import (
     AudibleAPI,
+    InvalidResponse,
     LicenseDenied,
     NoDownloadUrl,
     _book_from_item,
@@ -383,6 +384,17 @@ def test_get_license_defaults_to_zero_position_when_absent():
     assert license_.last_position_updated_at is None
 
 
+def test_get_license_raises_invalid_response_on_a_non_json_200():
+    # M3: same hazard as get_chapters -- indexing a non-dict 200 body like
+    # the expected dict used to raise an untyped TypeError, escaping
+    # _PLAYER_OPEN_ERRORS entirely and leaving the user with no message.
+    client = FakeAudibleClient(post_response="<html>Service Unavailable</html>")
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
 def test_get_license_extracts_last_position_updated_at():
     import datetime
 
@@ -580,6 +592,19 @@ def test_get_chapters_rejects_an_unrecognized_quality():
 
     with pytest.raises(ValueError, match="quality"):
         api.get_chapters("B001", quality="hihg")
+
+
+def test_get_chapters_raises_invalid_response_on_a_non_json_200():
+    # M3: audible.client.convert_response_content falls back to returning
+    # raw text when a 200 body isn't valid JSON (a captive portal, a proxy
+    # error page, an Amazon maintenance page). Indexing that as a dict used
+    # to raise an untyped AttributeError that escaped the caller's error
+    # handling entirely, leaving the user with no message at all.
+    client = FakeMetadataClient("<html>Service Unavailable</html>")
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_chapters("B001")
 
 
 # -- push_last_position + set_finished ------------------------------------

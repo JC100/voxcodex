@@ -129,7 +129,16 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       (was DEBUG) when a chunk fails outright. Added
       `test_fetch_remote_annotations_chunks_a_large_asin_list` and
       `test_fetch_remote_annotations_merges_across_a_failed_chunk`.
-- [ ] 10 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M3 -- A non-JSON 200 response crashes the player/chapter workers
+      instead of showing an error (`services/api.py`). **Fixed**
+      2026-09-21: added `InvalidResponse`, raised from `get_license` and
+      `get_chapters` when the response isn't a dict, and added to
+      `_PLAYER_OPEN_ERRORS`/`_CHAPTER_FETCH_ERRORS` in `library.py`. Added
+      `test_get_license_raises_invalid_response_on_a_non_json_200`,
+      `test_get_chapters_raises_invalid_response_on_a_non_json_200`,
+      `test_play_surfaces_a_non_json_license_response_as_a_playback_failure`,
+      and `test_play_still_works_when_chapter_metadata_is_non_json`.
+- [ ] 9 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
