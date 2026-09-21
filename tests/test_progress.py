@@ -134,6 +134,72 @@ def test_fetch_remote_annotations_passes_comma_joined_asins():
     assert kwargs["asins"] == "B001,B002"
 
 
+class _ChunkedFakeClient:
+    """Each .get() call answers from the next queued response, in order --
+    lets a test assert on the args of (and merge across) several chunked
+    requests, unlike FakeClient's single fixed response."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def get(self, path, **kwargs):
+        self.calls.append((path, kwargs))
+        return self._responses[len(self.calls) - 1]
+
+
+class _ChunkedFakeAPI:
+    def __init__(self, responses):
+        self.client = _ChunkedFakeClient(responses)
+
+
+def test_fetch_remote_annotations_chunks_a_large_asin_list():
+    # M2: asins=... is one query-string parameter -- at ~11 bytes/ASIN, an
+    # unchunked request for a several-hundred-title library is plausibly
+    # past a gateway's request-line limit, silently breaking the whole
+    # feature with no indication to the user.
+    asins = [f"B{i:09d}" for i in range(250)]
+    responses = [
+        _annotations_response([_existing(asins[0], 1000)]),
+        _annotations_response([_existing(asins[100], 2000)]),
+        _annotations_response([_existing(asins[200], 3000)]),
+    ]
+    api = _ChunkedFakeAPI(responses)
+
+    records = progress.fetch_remote_annotations(api, asins)
+
+    assert len(api.client.calls) == 3
+    sent_asins = [kwargs["asins"].split(",") for _path, kwargs in api.client.calls]
+    assert sent_asins == [asins[:100], asins[100:200], asins[200:250]]
+    assert [r["asin"] for r in records] == [asins[0], asins[100], asins[200]]
+
+
+def test_fetch_remote_annotations_merges_across_a_failed_chunk(caplog):
+    asins = [f"B{i:09d}" for i in range(150)]
+    responses = [
+        RuntimeError("network exploded"),
+        _annotations_response([_existing(asins[100], 2000)]),
+    ]
+
+    class _MixedFakeClient(_ChunkedFakeClient):
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            response = self._responses[len(self.calls) - 1]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    api = _ChunkedFakeAPI([])
+    api.client = _MixedFakeClient(responses)
+
+    with caplog.at_level("WARNING"):
+        records = progress.fetch_remote_annotations(api, asins)
+
+    assert len(api.client.calls) == 2
+    assert [r["asin"] for r in records] == [asins[100]]
+    assert "lastpositions fetch failed" in caplog.text
+
+
 def test_positions_from_annotations_includes_only_existing_positions():
     records = [_existing("B001", 1000), _does_not_exist("B002")]
     assert progress.positions_from_annotations(records) == {"B001": 1000}

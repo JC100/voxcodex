@@ -122,7 +122,14 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       **Fixed** 2026-09-21: added `parse_last_position_heard` (mirroring
       `_existing_last_position_heard`'s guard) and used it in `get_license`.
       Added `test_get_license_ignores_a_does_not_exist_position`.
-- [ ] 11 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M2 -- Remote-position lookups sent every ASIN in the library as one
+      unchunked query string (`services/progress.py`). **Fixed**
+      2026-09-21: `fetch_remote_annotations` now chunks the ASIN list
+      (100/request) and merges results across chunks, logging at WARNING
+      (was DEBUG) when a chunk fails outright. Added
+      `test_fetch_remote_annotations_chunks_a_large_asin_list` and
+      `test_fetch_remote_annotations_merges_across_a_failed_chunk`.
+- [ ] 10 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -94,27 +94,43 @@ class ProgressStore:
             self._data = data
 
 
+# asins=... is one query-string parameter -- at ~11 bytes/ASIN, an
+# unchunked request for a several-hundred-title library is plausibly past a
+# gateway's request-line limit (M2). 100 per request keeps that comfortably
+# small while still batching most libraries into one or two round trips.
+_ANNOTATIONS_CHUNK_SIZE = 100
+
+
 def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str, Any]]:
     """Best-effort raw fetch of Audible's own last-heard annotations.
 
     Returns the list of per-asin records (never raises, never None) --
-    empty if there are no asins to ask about, the call fails, or the
-    response doesn't match the confirmed shape. Kept separate from parsing
-    so a single fetch can feed more than one derived view (positions,
-    most-recently-played) without a second round trip.
+    empty if there are no asins to ask about, every chunked request fails,
+    or none of the responses match the confirmed shape. Kept separate from
+    parsing so a single fetch can feed more than one derived view
+    (positions, most-recently-played) without a second round trip.
     """
-    if not asins:
-        return []
-    try:
-        # See api.py's get_library for why this goes through a dict[str, Any]
-        # rather than a plain kwarg -- audible.Client.get's **kwargs stub.
-        params: dict[str, Any] = {"asins": ",".join(asins)}
-        resp = api.client.get("annotations/lastpositions", **params)
-        records = resp.get("asin_last_position_heard_annots") if isinstance(resp, dict) else None
-        return records if isinstance(records, list) else []
-    except Exception:
-        logger.debug("lastpositions fetch failed", exc_info=True)
-        return []
+    records: list[dict[str, Any]] = []
+    for i in range(0, len(asins), _ANNOTATIONS_CHUNK_SIZE):
+        chunk = asins[i : i + _ANNOTATIONS_CHUNK_SIZE]
+        try:
+            # See api.py's get_library for why this goes through a
+            # dict[str, Any] rather than a plain kwarg -- audible.Client.
+            # get's **kwargs stub.
+            params: dict[str, Any] = {"asins": ",".join(chunk)}
+            resp = api.client.get("annotations/lastpositions", **params)
+            chunk_records = (
+                resp.get("asin_last_position_heard_annots")
+                if isinstance(resp, dict) else None
+            )
+            if isinstance(chunk_records, list):
+                records.extend(chunk_records)
+        except Exception:
+            logger.warning(
+                "lastpositions fetch failed for a chunk of %d asins", len(chunk),
+                exc_info=True,
+            )
+    return records
 
 
 def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:

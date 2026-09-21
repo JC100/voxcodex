@@ -40,6 +40,10 @@
   parser elsewhere already does, so a "DoesNotExist" record (a title never
   played anywhere) could in principle feed in a bogus position and reset a
   real resume point.
+- **Remote-position sync could silently stop working for a large library.**
+  It sent every ASIN as one unchunked query string, plausibly past a
+  gateway's request-line limit on a several-hundred-title library -- the
+  request is now chunked (100 ASINs at a time) and results merged.
 
 ### Security
 - **The Amazon account password and vault password could leak into
