@@ -479,7 +479,10 @@ done.
       updated `test_runtime_display_zero` to
       `test_runtime_display_blank_when_unknown` (verified both new/changed
       assertions fail against the pre-fix code).
-- [ ] 3 more Low findings -- see the doc for the full list and suggested
+- [x] L25 -- Dead code: `Settings.reload()` has zero callers anywhere in
+      the app (`services/settings.py`). **Fixed** 2026-09-21: deleted it.
+      No user-visible effect; no test change needed.
+- [ ] 2 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

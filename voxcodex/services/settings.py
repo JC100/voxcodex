@@ -56,10 +56,6 @@ class Settings:
             config.atomic_write_text(self._path, json.dumps(data, indent=2))
             self._data = data
 
-    def reload(self) -> None:
-        with _FILE_LOCK:
-            self._data = _read_file(self._path)
-
     def _float(
         self, key: str, default: float, *, min_value: float, max_value: float
     ) -> float:
