@@ -962,7 +962,12 @@ async def test_poll_worker_reads_mpv_off_the_event_loop_and_renders(fake_player)
             lambda: "1:01" in str(screen.query_one("#time-row", Static).content)
         )
         assert screen._last_position_ms == 61_000
-        assert screen._poll_inflight is False  # reset so the next tick can run
+        # _poll_player's finally clears this just after call_from_thread(_tick)
+        # returns -- i.e. on the worker thread, a moment after the UI update
+        # above is already visible on this (the main) thread. Poll for it
+        # rather than asserting immediately, to avoid a race against that
+        # small window.
+        await _wait_until(lambda: screen._poll_inflight is False)
 
 
 async def test_poll_skips_a_tick_instead_of_committing_a_failed_read_as_zero(
