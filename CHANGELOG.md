@@ -35,6 +35,11 @@
 - **The Chapter column stopped advancing after a listening session.** It
   stayed at whatever chapter the book was on when the library was last
   loaded, even after playing well past it, until the next full refresh.
+- **`get_license` could trust an unconfirmed remote position.** It parsed
+  `last_position_heard` without checking its status the way the equivalent
+  parser elsewhere already does, so a "DoesNotExist" record (a title never
+  played anywhere) could in principle feed in a bogus position and reset a
+  real resume point.
 
 ### Security
 - **The Amazon account password and vault password could leak into

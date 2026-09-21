@@ -130,6 +130,22 @@ def parse_audible_timestamp(raw: Any) -> datetime | None:
         return None
 
 
+def parse_last_position_heard(lph: Any) -> tuple[int, float | None] | None:
+    """Pulls (position_ms, updated_at) out of a `last_position_heard` dict,
+    or None if it doesn't have one -- Audible returns a record with status
+    "DoesNotExist" (no real position_ms/last_updated) for a title that's
+    never been played anywhere, which is not an error, just nothing to
+    report. Mirrors services.progress._existing_last_position_heard's guard
+    on the same field shape, so get_license doesn't trust an
+    unconfirmed-status record the way that sibling parser already refuses to."""
+    if not isinstance(lph, dict) or lph.get("status") != "Exists":
+        return None
+    if "position_ms" not in lph:
+        return None
+    updated = parse_audible_timestamp(lph.get("last_updated"))
+    return int(lph["position_ms"]), (updated.timestamp() if updated is not None else None)
+
+
 _VALID_QUALITIES = ("high", "normal")
 
 
@@ -268,11 +284,9 @@ class AudibleAPI:
 
         last_position_ms = 0
         last_position_updated_at = None
-        lph = content_license.get("last_position_heard") or {}
-        if isinstance(lph, dict) and "position_ms" in lph:
-            last_position_ms = int(lph["position_ms"])
-            parsed = parse_audible_timestamp(lph.get("last_updated"))
-            last_position_updated_at = parsed.timestamp() if parsed is not None else None
+        parsed_lph = parse_last_position_heard(content_license.get("last_position_heard"))
+        if parsed_lph is not None:
+            last_position_ms, last_position_updated_at = parsed_lph
 
         return License(
             asin=asin,

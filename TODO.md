@@ -117,7 +117,12 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       failure -- see `_open_player`) before the table rebuild. Added
       `test_chapter_column_advances_after_a_listening_session_closes` and
       `test_chapter_column_unchanged_when_the_chapter_fetch_never_succeeded`.
-- [ ] 12 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M1 -- `get_license` is missing the `status == "Exists"` guard its
+      sibling parser requires (`services/api.py` vs. `services/progress.py`).
+      **Fixed** 2026-09-21: added `parse_last_position_heard` (mirroring
+      `_existing_last_position_heard`'s guard) and used it in `get_license`.
+      Added `test_get_license_ignores_a_does_not_exist_position`.
+- [ ] 11 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

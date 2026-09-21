@@ -292,7 +292,7 @@ def test_get_library_dedupes_an_asin_repeated_across_pages(caplog):
 
 def _license_response(
     status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None,
-    last_updated=None,
+    last_updated=None, position_status="Exists",
 ):
     content_license = {
         "status_code": status_code,
@@ -302,7 +302,7 @@ def _license_response(
         },
     }
     if position_ms is not None:
-        lph = {"position_ms": position_ms}
+        lph = {"status": position_status, "position_ms": position_ms}
         if last_updated is not None:
             lph["last_updated"] = last_updated
         content_license["last_position_heard"] = lph
@@ -407,6 +407,28 @@ def test_get_license_position_updated_at_none_without_a_timestamp():
 
     license_ = api.get_license("B001")
 
+    assert license_.last_position_updated_at is None
+
+
+def test_get_license_ignores_a_does_not_exist_position(monkeypatch):
+    # M1: progress._existing_last_position_heard rejects any
+    # last_position_heard record whose status isn't "Exists" (Audible
+    # returns "DoesNotExist" -- no real position -- for a never-played
+    # title). get_license parses the same field shape and used to have no
+    # such guard, so a DoesNotExist record with a fresh timestamp could
+    # feed a bogus 0 in as the "most recent" position, silently resetting
+    # a real resume point.
+    client = FakeAudibleClient(
+        post_response=_license_response(
+            position_ms=999_000, last_updated="2026-08-30 10:54:00.671",
+            position_status="DoesNotExist",
+        )
+    )
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.last_position_ms == 0
     assert license_.last_position_updated_at is None
 
 
