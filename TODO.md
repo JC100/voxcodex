@@ -463,7 +463,23 @@ done.
       `test_apply_filters_and_sort_does_not_raise_if_search_box_is_gone`
       and `test_update_sort_filter_label_does_not_raise_if_label_is_gone`
       (verified both fail against the pre-fix unguarded queries).
-- [ ] 4 more Low findings -- see the doc for the full list and suggested
+- [x] L24 -- Minor display inconsistencies in `Book` (`models.py`): unknown
+      runtime rendered `"0m"` while unknown remaining-time rendered blank
+      for the same "not known" state, and `time_left_display` could report
+      `"done"` for a book with well under a minute genuinely remaining
+      (never started) because it rounded to 0 minutes before checking for
+      "finished". **Fixed** 2026-09-21: `runtime_display` now returns `""`
+      when `runtime_min == 0`, matching `progress_pct`/`time_left_display`'s
+      existing "duration unknown" convention; `time_left_display` now
+      checks the unrounded `remaining_ms` for the true "finished" case and
+      falls back to `"<1m left"` (rather than `"done"`) for a nonzero
+      remainder that rounds to 0 minutes. Added
+      `test_time_left_display_sub_minute_remainder_is_not_done`,
+      `test_time_left_display_done_only_when_truly_zero_remaining`, and
+      updated `test_runtime_display_zero` to
+      `test_runtime_display_blank_when_unknown` (verified both new/changed
+      assertions fail against the pre-fix code).
+- [ ] 3 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

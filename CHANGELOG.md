@@ -123,6 +123,10 @@
 - A successful library fetch that happened to return zero items (a
   transient backend quirk, not an actually-empty library) could destroy
   the offline cache used when a later fetch fails.
+- A book with well under a minute genuinely remaining, that had never been
+  started, could show as "done" in the library table instead of the
+  correct time left. An unknown runtime now shows blank, matching how an
+  unknown remaining time already did, instead of "0m".
 
 ### Added
 - Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation
