@@ -1055,3 +1055,39 @@ async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
         snap = _Playback.read(fake_player, screen.book.duration_ms)
         for _ in range(screen._CHECKPOINT_EVERY_TICKS):
             screen._tick(snap)  # must not raise despite the callback raising
+
+
+async def test_periodic_checkpoint_retries_after_a_failure_at_the_same_position(
+    fake_player,
+):
+    """L8: a failed save must not be marked as saved -- _flush_progress's
+    own "nothing moved since last save" guard would otherwise skip the
+    next periodic retry at that same (unmoved) position, silently giving
+    up on ever persisting it."""
+    calls = []
+    should_fail = True
+
+    def flaky_on_progress(pos, *, final):
+        calls.append(pos)
+        if should_fail:
+            raise RuntimeError("owner blew up")
+
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv", on_progress=flaky_on_progress,
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 30.0
+        snap = _Playback.read(fake_player, screen.book.duration_ms)
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick(snap)  # first periodic checkpoint fails
+
+        assert calls == [30_000]  # attempted once, failed
+
+        should_fail = False
+        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
+            screen._tick(snap)  # position unchanged -- must still retry
+
+        assert calls == [30_000, 30_000]  # retried, not silently skipped

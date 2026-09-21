@@ -429,7 +429,12 @@ class PlayerScreen(Screen[int]):
         try:
             self._on_progress(self._last_position_ms, final=final)
         except Exception:  # noqa: BLE001
+            # Don't mark this position as saved on a failed attempt (L8) --
+            # doing so would suppress the next periodic retry at the same
+            # position, since the guard above only re-checkpoints once the
+            # position has moved past whatever was last marked saved.
             logger.warning("progress checkpoint failed", exc_info=True)
+            return
         self._saved_position_ms = self._last_position_ms
 
     def action_close(self) -> None:

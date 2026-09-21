@@ -94,6 +94,9 @@
   single book's delete failed, leaving the rest untouched with no
   indication of what happened. One failure no longer stops the batch, and
   the status now reports how many failed.
+- **A failed periodic progress checkpoint could silently give up
+  retrying** if the position didn't move again before the next tick --
+  it's no longer marked as saved unless the save actually succeeded.
 
 ### Security
 - **The Amazon account password and vault password could leak into

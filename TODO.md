@@ -310,7 +310,14 @@ done.
       test drives the hard-quit backstop path (`on_unmount` without
       `action_close`) instead, where it's still live. Verified the test
       fails against the pre-H1 seeding.
-- [ ] 20 more Low findings -- see the doc for the full list and suggested
+- [x] L8 -- `_flush_progress` marks progress as saved even when the save
+      callback raised, suppressing the next periodic retry at the same
+      position (`screens/player_screen.py`). **Fixed** 2026-09-21: the
+      "saved" bookkeeping now only runs on the success path (an
+      `except`-block `return` before it). Added
+      `test_periodic_checkpoint_retries_after_a_failure_at_the_same_position`
+      (verified it fails against the pre-fix unconditional bookkeeping).
+- [ ] 19 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
