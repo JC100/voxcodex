@@ -18,6 +18,15 @@
   position to Audible. Reads that fail now raise instead of silently
   defaulting, and are skipped rather than treated as real progress.
 
+### Security
+- **Closed two code-execution primitives in how mpv is invoked.** The DRM
+  key/iv from a license response were written unvalidated into mpv's
+  config-file include, and the stream URL was passed as a bare positional
+  argument -- both server-controlled values, and either could (under a
+  hostile or compromised license response) get mpv to load and execute an
+  attacker-controlled script. The key/iv are now rejected unless they're
+  plain hex, and the stream URL is now passed after a `--` terminator.
+
 ## 0.5.0
 
 Closes the mid-book progress sync investigation -- the last known gap

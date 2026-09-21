@@ -52,10 +52,23 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       the review noted (`FakePlayer.position_seconds` never raised).
 - [ ] H4 -- Amazon account password and vault password leak into Textual
       worker descriptions/logs (`screens/login.py`).
-- [ ] H5 -- Unvalidated DRM key/IV are newline-injectable into the mpv
-      options file (`services/player.py`).
-- [ ] H6 -- The stream URL is passed to mpv as a bare positional arg with
-      no `--` terminator (`services/player.py`).
+- [x] H5 -- Unvalidated DRM key/IV are newline-injectable into the mpv
+      options file (`services/player.py`). **Fixed** 2026-09-21:
+      `MpvPlayer.start` now rejects any key/iv that isn't a plain,
+      even-length hex string via a new `_require_hex` helper, raising
+      `MpvError` before anything is written to the options file. Added
+      `test_start_rejects_non_hex_key_or_iv` (parametrized, including the
+      concrete newline+`script=` injection) and
+      `test_start_accepts_plain_hex_key_and_iv`.
+- [x] H6 -- The stream URL is passed to mpv as a bare positional arg with
+      no `--` terminator (`services/player.py`). **Fixed** 2026-09-21:
+      `start()` now appends a literal `--` before `source` in the mpv
+      argument list (and keeps `--start=` before that terminator, not
+      after it). Added `test_start_puts_a_double_dash_terminator_before_the_source`,
+      `test_start_with_a_leading_dash_source_is_not_treated_as_an_option`,
+      and `test_start_with_a_start_seconds_puts_it_before_the_dash_terminator`.
+      Also updated the existing key/iv tests off non-hex placeholder
+      values ("key", "iv", "thekey", ...) now that H5 rejects them.
 - [x] M9 -- A dead `_tick(snap=None)` code path is what most of the
       player-screen test suite actually exercised, masking H3 from the
       tests (`screens/player_screen.py` / `tests/test_player_screen.py`).

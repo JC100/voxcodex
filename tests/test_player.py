@@ -252,7 +252,7 @@ def fake_mpv(monkeypatch):
 
 def test_start_uses_a_private_0700_temp_dir_and_removes_it_on_stop(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     tmp_dir = p._dir
     assert tmp_dir is not None and tmp_dir.is_dir()
@@ -271,34 +271,102 @@ def test_start_uses_a_private_0700_temp_dir_and_removes_it_on_stop(fake_mpv):
 
 def test_start_never_puts_the_key_or_iv_on_the_command_line(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "top-secret-key", "top-secret-iv")
+    p.start("src", "deadbeef", "cafebabe")
 
     cmd_str = " ".join(fake_mpv[-1].cmd)
-    assert "top-secret-key" not in cmd_str
-    assert "top-secret-iv" not in cmd_str
+    assert "deadbeef" not in cmd_str
+    assert "cafebabe" not in cmd_str
 
     p.stop()
 
 
 def test_start_passes_the_key_and_iv_via_a_private_include_file(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "thekey", "theiv")
+    p.start("src", "abc123", "def456")
 
     include_arg = next(arg for arg in fake_mpv[-1].cmd if arg.startswith("--include="))
     options_path = include_arg.split("=", 1)[1]
     assert stat.S_IMODE(os.stat(options_path).st_mode) == 0o600
     with open(options_path) as f:
         contents = f.read()
-    assert "audible_key=thekey" in contents
-    assert "audible_iv=theiv" in contents
+    assert "audible_key=abc123" in contents
+    assert "audible_iv=def456" in contents
 
     p.stop()
     assert not os.path.exists(options_path)  # cleaned up with the rest of _dir
 
 
+# -- H5: key/iv are rejected unless they're plain hex ----------------------
+
+
+@pytest.mark.parametrize(
+    "key,iv",
+    [
+        ("not-hex!", "ad"),
+        ("de", "not-hex!"),
+        ("odd", "ad"),  # odd length -- can't be a whole number of bytes
+        ("", "ad"),
+        ("de", ""),
+        # The actual exploit: an embedded newline followed by a second mpv
+        # config-file line (mpv's config parser is line-oriented and a
+        # malformed line doesn't abort parsing) -- confirmed against real
+        # mpv to load and execute an attacker-supplied script.
+        ("de\nscript=/tmp/evil.lua", "ad"),
+    ],
+)
+def test_start_rejects_non_hex_key_or_iv(monkeypatch, key, iv):
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    with pytest.raises(MpvError):
+        p.start("src", key, iv)
+
+
+def test_start_accepts_plain_hex_key_and_iv(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "deadbeef", "cafebabe")  # must not raise
+    p.stop()
+
+
+# -- H6: the stream URL is passed after a `--` terminator -------------------
+
+
+def test_start_puts_a_double_dash_terminator_before_the_source(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "src"]
+
+    p.stop()
+
+
+def test_start_with_a_leading_dash_source_is_not_treated_as_an_option(fake_mpv):
+    """A stream URL beginning with '-' (server-controlled: license.content_url)
+    would otherwise be parsed by mpv as an option rather than a filename."""
+    p = MpvPlayer()
+    p.start("--script=/tmp/evil.lua", "de", "ad")
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "--script=/tmp/evil.lua"]
+
+    p.stop()
+
+
+def test_start_with_a_start_seconds_puts_it_before_the_dash_terminator(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "de", "ad", start_seconds=12.5)
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "src"]
+    assert "--start=12.50" in cmd
+    assert cmd.index("--start=12.50") < cmd.index("--")
+
+    p.stop()
+
+
 def test_commands_round_trip_over_the_real_socket(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     assert p.get_property("time-pos") == 42  # FakeMpv answers every read with 42
     assert p.position_seconds == 42.0
@@ -312,7 +380,7 @@ def test_commands_round_trip_over_the_real_socket(fake_mpv):
 
 def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     fake_mpv[0].terminate()  # kill the server out from under the client
     time.sleep(0.05)
@@ -332,7 +400,7 @@ def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
 
 def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
     tmp_dir = p._dir
 
     threads = [threading.Thread(target=p.stop) for _ in range(5)]
@@ -350,7 +418,7 @@ def test_command_is_serialised_across_threads(fake_mpv):
     transport actions run on theirs -- interleaved sendall/recv on one
     socket would scramble request/response framing. _io_lock prevents it."""
     p = MpvPlayer()
-    p.start("s", "k", "iv")
+    p.start("s", "0a", "ad")
 
     results = []
     errors = []
@@ -402,5 +470,5 @@ def test_stop_during_startup_breaks_connect_out_of_its_retry_loop(monkeypatch):
 
     started = time.monotonic()
     with pytest.raises(MpvError):
-        p.start("src", "key", "iv")
+        p.start("src", "de", "ad")
     assert time.monotonic() - started < 3.0  # nowhere near the 8s ceiling

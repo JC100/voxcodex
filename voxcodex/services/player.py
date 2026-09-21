@@ -20,6 +20,7 @@ import contextlib
 import itertools
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -36,6 +37,14 @@ class MpvNotFoundError(Exception):
 
 class MpvError(Exception):
     pass
+
+
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def _require_hex(value: str, name: str) -> None:
+    if not value or len(value) % 2 != 0 or not _HEX_RE.fullmatch(value):
+        raise MpvError(f"{name} is not a valid hex string")
 
 
 def _write_private_file(path: Path, text: str) -> None:
@@ -75,6 +84,16 @@ class MpvPlayer:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self, source: str, key: str, iv: str, start_seconds: float = 0.0) -> None:
+        # key/iv are server-controlled plaintext (from a licenserequest
+        # response) written verbatim into mpv's line-oriented config-file
+        # parser -- an embedded newline plus a follow-on option line (e.g.
+        # `script=...`) is otherwise arbitrary code execution the moment
+        # mpv loads the include file. Reject anything that isn't plain hex
+        # before it ever reaches the options file (docs/code-review-
+        # 2026-09-21.html H5).
+        _require_hex(key, "key")
+        _require_hex(iv, "iv")
+
         self.stop()
         self._stopping.clear()
 
@@ -97,10 +116,15 @@ class MpvPlayer:
             "--force-seekable=yes",
             f"--input-ipc-server={self._socket_path}",
             f"--include={options_path}",
-            source,
         ]
         if start_seconds > 0:
-            cmd.insert(-1, f"--start={start_seconds:.2f}")
+            cmd.append(f"--start={start_seconds:.2f}")
+        # `--` terminates option parsing: source is server-controlled
+        # (license.content_url for a stream) and mpv treats any positional
+        # argument starting with "-" as an option rather than a filename
+        # without it (docs/code-review-2026-09-21.html H6).
+        cmd.append("--")
+        cmd.append(source)
 
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
