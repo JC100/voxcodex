@@ -13,7 +13,7 @@ import time
 import httpx
 import pytest
 from textual.app import App
-from textual.widgets import DataTable, Input
+from textual.widgets import DataTable, Input, ProgressBar
 
 from voxcodex.models import Book
 from voxcodex.screens import library as library_module
@@ -930,6 +930,69 @@ async def test_download_rejects_a_same_book_double_press(monkeypatch):
             assert "Already downloading" in str(screen.query_one("#status").content)
     finally:
         release.set()  # let the blocked worker thread finish promptly
+
+
+async def test_download_completing_after_being_superseded_does_not_clobber_the_new_one(
+    monkeypatch,
+):
+    """L20: switching to a different download mid-flight -- exclusive=True
+    only flags the old worker cancelled, it doesn't stop its thread
+    synchronously -- must not let the old download's own completion hide
+    the new download's progress bar or post a stale status for itself
+    while the new one is still running invisibly."""
+    release_a = threading.Event()
+    entered_a = threading.Event()
+    release_b = threading.Event()
+    entered_b = threading.Event()
+
+    def blocking_download_book(book, api, on_progress=None, cancel_check=None):
+        if book.asin == "A":
+            entered_a.set()
+            release_a.wait(timeout=5)
+            return "/tmp/fake-a.aaxc"
+        entered_b.set()
+        release_b.wait(timeout=5)
+        return "/tmp/fake-b.aaxc"
+
+    monkeypatch.setattr(library_module.download, "download_book", blocking_download_book)
+
+    book_a = _book("A", "Book A")
+    book_b = _book("B", "Book B")
+    screen = LibraryScreen(FakeAPI([book_a, book_b]))
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: len(screen._books) == 2)
+            table = screen.query_one(DataTable)
+            table.focus()
+            table.move_cursor(row=0)
+            await pilot.press("d")  # start downloading A -- blocks
+            await _wait_until(lambda: entered_a.is_set())
+
+            table.move_cursor(row=1)
+            await pilot.press("d")  # switch to downloading B -- also blocks
+            await _wait_until(lambda: entered_b.is_set())
+            assert "Downloading: Book B" in str(screen.query_one("#status").content)
+
+            release_a.set()  # let A's now-superseded download finish
+            await _wait_until(lambda: "A" not in screen._in_flight_downloads)
+
+            # A's completion must not have touched the shared bar/status --
+            # those still belong to B, which is still genuinely in flight.
+            assert "Downloading: Book B" in str(screen.query_one("#status").content)
+            assert screen.query_one("#download-progress", ProgressBar).display is True
+            # The per-book state update is real and must still have happened.
+            assert book_a.is_downloaded is True
+
+            release_b.set()  # now let B finish -- its own completion must land
+            await _wait_until(
+                lambda: "Downloaded: Book B" in str(screen.query_one("#status").content)
+            )
+            assert screen.query_one("#download-progress", ProgressBar).display is False
+    finally:
+        release_a.set()
+        release_b.set()
 
 
 async def test_download_succeeded_recomputes_the_active_filter():

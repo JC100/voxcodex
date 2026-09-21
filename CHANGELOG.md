@@ -114,6 +114,9 @@
 - Closed a rare race where the chapter cache could silently fail to save
   if a background chapter fetch happened to be updating it at the same
   moment.
+- Switching to a different download mid-flight could hide the new
+  download's progress and show a stale "Downloaded" status for the one
+  it replaced.
 
 ### Added
 - Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation

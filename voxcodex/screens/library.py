@@ -231,6 +231,15 @@ class LibraryScreen(Screen[None]):
         # synchronously, so both can be mid-flight at once. Reject a
         # repeat press instead.
         self._in_flight_downloads: set[str] = set()
+        # Which book's download currently owns the shared progress bar/
+        # status line -- exclusive=True lets switching to a different
+        # download cancel the old worker's *flag* without stopping its
+        # thread synchronously, so the old download's own completion
+        # callbacks can still fire after a new one has taken over the UI.
+        # Guarded against in _update_download_bar/_download_succeeded/
+        # _download_failed so a superseded download can't clobber the new
+        # one's progress bar or post a stale status for itself (L20).
+        self._active_download_asin: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -620,6 +629,7 @@ class LibraryScreen(Screen[None]):
             self._set_status(f"Already downloading: {book.title}")
             return
         self._in_flight_downloads.add(book.asin)
+        self._active_download_asin = book.asin
         self._set_status(f"Downloading: {book.title}")
         bar = self.query_one("#download-progress", ProgressBar)
         bar.display = True
@@ -642,7 +652,7 @@ class LibraryScreen(Screen[None]):
             if done < total and now - last_bar_update < 0.25:
                 return
             last_bar_update = now
-            self.app.call_from_thread(self._update_download_bar, done, total)
+            self.app.call_from_thread(self._update_download_bar, book.asin, done, total)
 
         try:
             download.download_book(
@@ -659,7 +669,14 @@ class LibraryScreen(Screen[None]):
             return
         self.app.call_from_thread(self._download_succeeded, book)
 
-    def _update_download_bar(self, done: int, total: int) -> None:
+    def _update_download_bar(self, asin: str, done: int, total: int) -> None:
+        if asin != self._active_download_asin:
+            # Superseded by switching to a different download mid-flight
+            # (L20) -- exclusive=True only flagged this one's worker
+            # cancelled, it didn't stop the thread synchronously, so its
+            # progress callbacks can still land after a new download has
+            # taken over the shared bar.
+            return
         with contextlib.suppress(NoMatches):
             self.query_one("#download-progress", ProgressBar).update(
                 total=total, progress=done
@@ -668,19 +685,28 @@ class LibraryScreen(Screen[None]):
     def _download_failed(self, book: Book, message: str) -> None:
         self._in_flight_downloads.discard(book.asin)
         try:
-            self.query_one("#download-progress", ProgressBar).display = False
+            bar = self.query_one("#download-progress", ProgressBar)
         except NoMatches:
             return
+        if book.asin != self._active_download_asin:
+            return
+        bar.display = False
         self._set_status(f"[red]Download failed for {book.title}: {message}[/red]")
 
     def _download_succeeded(self, book: Book) -> None:
         self._in_flight_downloads.discard(book.asin)
         try:
-            self.query_one("#download-progress", ProgressBar).display = False
+            bar = self.query_one("#download-progress", ProgressBar)
         except NoMatches:
             return
         book.is_downloaded = True
         self._apply_filters_and_sort()
+        if book.asin != self._active_download_asin:
+            # Superseded (L20) -- the state update above is real and must
+            # still happen, but the shared bar/status now belong to
+            # whichever download replaced this one.
+            return
+        bar.display = False
         self._set_status(f"Downloaded: {book.title}")
 
     def action_delete_selected(self) -> None:

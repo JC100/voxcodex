@@ -422,7 +422,19 @@ done.
       repeatedly, calibrated to reliably reproduce the `RuntimeError`
       within ~50 attempts against the pre-fix code (verified 3/3 runs)
       and to complete in well under a second either way.
-- [ ] 8 more Low findings -- see the doc for the full list and suggested
+- [x] L20 -- Switching the active download mid-flight can hide the new
+      download's progress bar and post a stale "Downloaded: ..." status
+      for the cancelled one while the new one runs invisibly
+      (`screens/library.py`). **Fixed** 2026-09-21: added
+      `self._active_download_asin`, set when a download starts; the three
+      completion callbacks (`_update_download_bar`, `_download_failed`,
+      `_download_succeeded`) now no-op on the shared progress bar/status
+      unless they match it (per-book state like `is_downloaded` and the
+      filtered table still update regardless -- only the singular shared
+      UI elements are guarded). Added
+      `test_download_completing_after_being_superseded_does_not_clobber_the_new_one`
+      (verified it fails against the pre-fix unconditional callbacks).
+- [ ] 7 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
