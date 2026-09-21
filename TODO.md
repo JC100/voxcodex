@@ -504,8 +504,24 @@ done.
       deleted behavior; added `test_get_license_requests_high_quality` and
       `test_get_chapters_requests_high_quality` to cover the now-hardcoded
       value.
-- [ ] 1 more Low finding -- see the doc for the full list and suggested
-      order of work.
+- [x] L27 -- `app.py`'s login-success handler used `pop_screen()` +
+      `push_screen()` where `login.py`'s own `_reset` deliberately uses
+      `switch_screen()` instead (L8), with a comment and regression test
+      explaining why -- an inconsistency the review flagged since the two
+      call sites should agree. **Fixed** 2026-09-21: `_authenticated` now
+      calls `switch_screen(LibraryScreen(...))` too, with the same L8
+      rationale in a comment. Added
+      `test_authenticated_switches_atomically_from_login_to_library` --
+      note (like L8's own test) this can't actually distinguish
+      `switch_screen` from `pop_screen`+`push_screen` in a synchronous
+      single-threaded test, since both produce the same final
+      screen-stack state; it verifies the functional transition is
+      correct and documents the atomicity rationale, matching the bar
+      L8's precedent already set for this exact kind of fix.
+
+All 27 Low findings are now done, alongside all 6 High and 16 Medium
+findings -- the full 2026-09-21 code review is closed out.
+- [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
       `docs/library-progress-sync-investigation.md:23-30`; the

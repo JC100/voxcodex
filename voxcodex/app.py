@@ -67,8 +67,13 @@ class VoxCodexApp(App[None]):
             # the first Client's httpx connection pool.
             self.api.close()
         self.api = AudibleAPI(message.authenticator)
-        self.pop_screen()
-        self.push_screen(LibraryScreen(self.api, self.settings))
+        # switch_screen swaps the top of the stack in one atomic step -- a
+        # pop followed by a push (the old code here) nets out to the same
+        # depth too, but leaves a frame where the stack is briefly empty (or,
+        # from another thread, could be acted on mid-swap). login.py's own
+        # _reset already made this switch for the same reason (L8); this
+        # call site was the one place that pattern was left unfixed (L27).
+        self.switch_screen(LibraryScreen(self.api, self.settings))
 
     def on_unmount(self) -> None:
         if self.api is not None:

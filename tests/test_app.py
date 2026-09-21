@@ -2,10 +2,12 @@ import logging
 import stat
 
 import pytest
+from textual.screen import Screen
 
 from voxcodex import app as app_module
 from voxcodex import config
 from voxcodex.app import VoxCodexApp
+from voxcodex.screens.login import LoginScreen
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +91,52 @@ async def test_changing_theme_persists_it(monkeypatch):
         await pilot.pause()
 
         assert fake_settings.theme_calls[-1] == "gruvbox"
+
+
+# -- login -> library screen transition (L27) --------------------------------
+
+
+class FakeAudibleAPI:
+    def __init__(self, authenticator):
+        self.authenticator = authenticator
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeLibraryScreen(Screen[None]):
+    """Stands in for the real LibraryScreen -- this test is only about
+    VoxCodexApp's own screen-transition logic, not LibraryScreen's (already
+    covered exhaustively in test_library_screen.py)."""
+
+    def __init__(self, api, settings):
+        super().__init__()
+        self.api = api
+        self.settings = settings
+
+
+async def test_authenticated_switches_atomically_from_login_to_library(monkeypatch):
+    """L27: this used to pop_screen() then push_screen() -- the same
+    pattern login.py's own _reset already moved away from for the same
+    reason (L8): switch_screen replaces the top of the stack in one atomic
+    step, with no frame where the stack is briefly empty or could be acted
+    on mid-swap from another thread."""
+    monkeypatch.setattr(app_module, "Settings", lambda: FakeSettings())
+    monkeypatch.setattr(app_module, "AudibleAPI", FakeAudibleAPI)
+    monkeypatch.setattr(app_module, "LibraryScreen", _FakeLibraryScreen)
+    app = VoxCodexApp()
+
+    async with app.run_test() as pilot:
+        depth_before = len(app.screen_stack)
+        assert isinstance(app.screen, LoginScreen)
+
+        app.screen.post_message(LoginScreen.Authenticated(authenticator=object()))
+        await pilot.pause()
+
+        assert len(app.screen_stack) == depth_before
+        assert isinstance(app.screen, _FakeLibraryScreen)
+        assert app.screen.api is app.api
 
 
 # -- log file permissions (M10) ----------------------------------------------
