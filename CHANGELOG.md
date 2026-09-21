@@ -86,6 +86,10 @@
 - A stalled or misbehaving mpv could hold every transport key hostage far
   longer than the intended timeout, by trickling bytes with no newline
   fast enough to keep resetting an internal read timer.
+- Local writes (settings, progress, caches, and a completed download) are
+  now `fsync`'d before their atomic rename, so a power loss shortly after
+  a write can no longer land the rename durable while the data behind it
+  isn't.
 
 ### Security
 - **The Amazon account password and vault password could leak into

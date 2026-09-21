@@ -343,6 +343,39 @@ def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
     assert seen_audio_exists_when_voucher_written is False
 
 
+def test_download_book_fsyncs_the_audio_file_before_renaming_it(monkeypatch):
+    """L5: without an fsync, power loss shortly after a completed download
+    can land the rename durable but the audio data behind it not."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    calls = []
+    original_fsync = os.fsync
+    original_replace = Path.replace
+
+    def recording_fsync(fd):
+        calls.append("fsync")
+        return original_fsync(fd)
+
+    def recording_replace(self, target):
+        calls.append("replace")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(download.os, "fsync", recording_fsync)
+    monkeypatch.setattr(Path, "replace", recording_replace)
+
+    download.download_book(_book("B001"), api)
+
+    # _write_voucher's atomic_write_text also fsyncs (its own rename) --
+    # assert only that the audio file's own fsync precedes its rename.
+    assert calls[-1] == "replace"
+    assert "fsync" in calls[:-1]
+
+
 def test_download_book_uses_a_unique_tmp_name_per_attempt():
     """M7: two downloads racing on the same book must not collide on one
     deterministic {asin}.part -- each attempt gets its own unique temp

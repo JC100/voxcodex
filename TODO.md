@@ -278,7 +278,18 @@ done.
       `test_command_honors_an_absolute_deadline_against_a_trickling_peer`
       (verified it reproduces indefinite blocking against the pre-fix
       code).
-- [ ] 23 more Low findings -- see the doc for the full list and suggested
+- [x] L5 -- No fsync before either atomic rename (settings/progress/cache
+      writes, and the finished-download rename) (`config.py` /
+      `services/download.py`). **Fixed** 2026-09-21: `atomic_write_text`
+      now `flush()`s and `os.fsync()`s before its `os.replace`, and
+      `download_book` does the same for the audio file before its rename
+      -- previously power loss shortly after a write could land the
+      rename durable but the data behind it not, contradicting
+      `atomic_write_text`'s own crash-safety docstring. Added
+      `test_atomic_write_text_fsyncs_before_the_rename` and
+      `test_download_book_fsyncs_the_audio_file_before_renaming_it`
+      (verified both catch the regression when the fsync is removed).
+- [ ] 22 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

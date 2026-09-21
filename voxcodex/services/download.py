@@ -132,6 +132,11 @@ def download_book(
                     downloaded += len(chunk)
                     if on_progress:
                         on_progress(downloaded, total)
+                # Without this, power loss shortly after a completed
+                # download can land the rename below durable while the
+                # audio data behind it isn't (L5).
+                f.flush()
+                os.fsync(f.fileno())
 
         # A connection dropped mid-stream leaves a short file that would
         # otherwise be renamed into place and look downloaded until it fails
