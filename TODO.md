@@ -200,7 +200,18 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       `test_action_close_does_not_block_the_event_loop`; adjusted a
       couple of existing tests that asserted on a now-async side effect
       without waiting for it.
-- [ ] 4 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M10 -- The log file loses its 0600 permissions on the first
+      rotation (`app.py`). **Fixed** 2026-09-21: added
+      `_PrivateRotatingFileHandler`, which re-`chmod`s the file to 0600
+      inside `_open()` after every call (initial delayed open and every
+      reopen after a rollover), rather than relying on the one-time
+      pre-creation chmod that a plain `open()` after rotation silently
+      undid. Added `test_log_file_is_created_at_0600` and
+      `test_log_file_keeps_0600_permissions_after_rotation` (the latter
+      forces a rollover via `doRollover()` directly rather than writing a
+      megabyte of log lines, and checks both the live file and its `.1`
+      backup).
+- [ ] 3 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

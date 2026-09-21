@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from io import TextIOWrapper
 from logging.handlers import RotatingFileHandler
 
 from textual import on
@@ -76,6 +78,20 @@ class VoxCodexApp(App[None]):
 _DEBUG_ENV_VAR = "VOXCODEX_DEBUG"
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler.doRollover renames the current file away and
+    reopens the base name via FileHandler._open, which calls plain open()
+    -- umask defaults apply, silently undoing the 0600 this module creates
+    the file at the moment it first crosses maxBytes (M10). Re-chmod on
+    every open, not just the first."""
+
+    def _open(self) -> TextIOWrapper:
+        stream = super()._open()
+        with contextlib.suppress(OSError):
+            os.chmod(self.baseFilename, 0o600)
+        return stream
+
+
 def _setup_logging() -> None:
     config.ensure_dirs()
 
@@ -89,7 +105,7 @@ def _setup_logging() -> None:
     except OSError:
         pass
 
-    handler = RotatingFileHandler(
+    handler = _PrivateRotatingFileHandler(
         config.LOG_FILE, maxBytes=1_000_000, backupCount=2, delay=True
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))

@@ -65,6 +65,11 @@
   -- every transport key (play/pause/seek/speed/volume) and closing the
   player each did at least one blocking round trip on the UI thread. Both
   now run off the event loop.
+- **The log file lost its 0600 (owner-only) permissions the first time it
+  rotated**, coming back at the process's default umask instead -- easily
+  reached under `VOXCODEX_DEBUG`, and the log can contain the account
+  email and (in debug mode) raw API response bodies. The file is now
+  re-secured on every open, not just its initial creation.
 
 ### Security
 - **The Amazon account password and vault password could leak into
