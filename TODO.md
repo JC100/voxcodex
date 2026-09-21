@@ -354,7 +354,17 @@ done.
       -- `CONFIG_DIR` is already 0700 -- but cheap). Added
       `test_load_tightens_an_auth_file_left_at_0644` (verified it fails
       against the pre-fix `load()`).
-- [ ] 15 more Low findings -- see the doc for the full list and suggested
+- [x] L13 -- CAPTCHA/OTP verification-page text is logged at INFO
+      unconditionally, and Amazon's page text typically includes a
+      masked destination (partial email/phone) -- mild PII in a
+      persistent log file (`services/auth.py`). **Fixed** 2026-09-21:
+      demoted all of `_log_cvf_page`'s logging (the page text and its
+      per-field metadata) to DEBUG, so it's only captured when the user
+      opts into `VOXCODEX_DEBUG`. Updated the existing field-length test
+      to capture at DEBUG, and added
+      `test_log_cvf_page_logs_at_debug_not_info` (verified it fails
+      against the pre-fix INFO level).
+- [ ] 14 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

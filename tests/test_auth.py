@@ -86,13 +86,31 @@ def test_log_cvf_page_records_field_length_not_value(caplog):
         "html.parser",
     )
 
-    with caplog.at_level(logging.INFO, logger="voxcodex.auth"):
+    with caplog.at_level(logging.DEBUG, logger="voxcodex.auth"):
         auth._log_cvf_page(soup)
 
     logged = "\n".join(r.message for r in caplog.records)
     assert "super-secret-token" not in logged
     assert "value_len=18" in logged  # len("super-secret-token")
     assert "value_len=0" in logged
+
+
+def test_log_cvf_page_logs_at_debug_not_info(caplog):
+    """L13: the page text typically includes a masked delivery destination
+    (partial email/phone) -- mild PII that shouldn't land in the log file
+    by default (voxcodex's own logger is INFO unless VOXCODEX_DEBUG is
+    set -- see app.py's _setup_logging)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(
+        '<div id="cvf-page-content">We sent a code to j***@e***.com</div>',
+        "html.parser",
+    )
+
+    with caplog.at_level(logging.INFO, logger="voxcodex.auth"):
+        auth._log_cvf_page(soup)
+
+    assert caplog.records == []
 
 
 # -- save() file permissions (M2) -----------------------------------------

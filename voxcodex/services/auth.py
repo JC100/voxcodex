@@ -58,21 +58,26 @@ def _log_cvf_page(soup: Any) -> None:
     phone), the submitted choice may not be the one that looks selected on
     screen. This logs the page's visible text plus every input's name/type/
     value/checked state so we can see what actually got sent.
+
+    Logged at DEBUG, not INFO (L13): the page text typically includes a
+    masked delivery destination (partial email/phone) -- mild PII that
+    shouldn't land in the log file by default, only when the user has
+    explicitly opted into VOXCODEX_DEBUG.
     """
     content = soup.find(id="cvf-page-content") or soup
     text = content.get_text(separator=" | ", strip=True)
-    logger.info("login flow: cvf page text: %s", text[:1500])
+    logger.debug("login flow: cvf page text: %s", text[:1500])
 
     form = soup.find("form")
     if form is None:
-        logger.info("login flow: cvf page has no <form>")
+        logger.debug("login flow: cvf page has no <form>")
         return
     for field in form.find_all(["input", "select"]):
         # Deliberately don't log `value` -- hidden inputs on this page carry
         # session tokens (appActionToken / metadata1 / etc.). The length is
         # enough to tell "prefilled" from "empty" when debugging.
         raw_value = field.get("value") or ""
-        logger.info(
+        logger.debug(
             "login flow: cvf field name=%r type=%r value_len=%d checked=%r",
             field.get("name"),
             field.get("type"),

@@ -125,6 +125,9 @@
   plain hex, and the stream URL is now passed after a `--` terminator.
 - An auth file left at looser permissions by a pre-hardening install is
   now tightened as soon as it's loaded, not just on the next fresh login.
+- A CAPTCHA/OTP verification page's text -- which typically includes a
+  masked delivery destination (partial email/phone) -- no longer lands in
+  the log file by default; it's only captured under `VOXCODEX_DEBUG`.
 
 ## 0.5.0
 
