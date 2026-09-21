@@ -14,6 +14,12 @@
   than blocking anything locally, and titles played before this existed
   (no `license_id` on the saved voucher) are silently skipped until
   re-downloaded or streamed once.
+- **Resuming a book marked "Finished" un-finishes it immediately.**
+  Previously the flag only cleared when you explicitly pressed `u`, so
+  playing a finished book on this device while another device (or the
+  website) still showed "Finished" until you closed the player -- now
+  it clears the moment playback starts, done once per resume rather than
+  on every checkpoint.
 
 ## 0.4.0
 

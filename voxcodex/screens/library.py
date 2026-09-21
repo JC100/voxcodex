@@ -821,6 +821,26 @@ class LibraryScreen(Screen[None]):
         # not from the (stale/irrelevant) prior progress_ms.
         session_start_position_ms = 0 if book.is_finished else book.progress_ms
         session_start_time = datetime.now(UTC)
+        delivery_type = "Download" if book.is_downloaded else "Streaming"
+
+        if book.is_finished:
+            # Resuming a book marked finished implicitly un-finishes it --
+            # matches the real Android app's own behavior, and avoids the
+            # confusing "still shows Finished on my phone while I'm
+            # actively re-listening on my laptop" case. Done once, right
+            # here on the finished -> playing transition, not repeated on
+            # every checkpoint tick.
+            #
+            # A zero-length listening-session push was also tried here, to
+            # immediately reset the tile's stale percent_complete/
+            # time_remaining -- confirmed live (2026-09-21) to be a no-op
+            # server-side (not a recompute-lag artifact; unchanged 20s
+            # later), so it's not sent. `is_finished` clearing is what
+            # actually fixes the reported problem; the tile itself stays
+            # stale until this session's own close-time push corrects it.
+            book.is_finished = False
+            self._refresh_table()
+            self._push_finished(book.asin, False)
 
         def _on_progress(position_ms: int, *, final: bool) -> None:
             # Called both on a ~15s timer during playback and once on close /
@@ -855,7 +875,7 @@ class LibraryScreen(Screen[None]):
                         datetime.now(UTC),
                         book.duration_ms,
                         self.settings.playback_speed,
-                        "Download" if book.is_downloaded else "Streaming",
+                        delivery_type,
                     )
                     if newly_finished:
                         self._push_finished(book.asin, True)

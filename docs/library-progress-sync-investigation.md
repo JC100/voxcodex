@@ -557,6 +557,50 @@ question the capture left open:
 This closes the investigation. Nothing about mid-book progress sync
 remains open — see the "Closed" entry in `TODO.md`.
 
+## 2026-09-21, later the same day: resuming a finished book now un-finishes it
+
+User feedback after checking both test books on the phone/website: they
+were correctly showing real progress instead of "Finished" -- because
+we'd manually cleared `is_finished` via the API as part of testing. The
+user's actual concern: **VoxCodex itself** should do this automatically
+the moment you resume a book marked finished, not leave it stuck showing
+"Finished" everywhere until some manual intervention -- specifically
+called out the cross-device confusion ("been listening on your laptop,
+jump in the car, phone still shows finished").
+
+**Implemented:** `LibraryScreen._launch_player` now checks
+`book.is_finished` once, at the top (same place `session_start_position_ms`
+is computed) -- if true, clears it locally, refreshes the table, and
+fires `_push_finished(asin, False)` immediately, before the player screen
+even mounts. Explicitly *not* repeated per checkpoint tick or on a second
+play of the same session -- the guard is simply "was `is_finished` true at
+open," which by construction only fires once per finished -> playing
+transition. Recommended by the user specifically to keep the overhead of
+this fix to one extra call, not a recurring one.
+
+**Also tried, live, and confirmed NOT to work:** sending a zero-length
+`StartListening`+`Listening` pair (`event_start_position ==
+event_end_position`, both 0) at the same moment, hoping to immediately
+reset the resumed book's stale `percent_complete`/`time_remaining_seconds`
+(left over from whenever it was marked finished) rather than leaving it
+showing old data until the session's close. Tested against `B01L790CUU`:
+marked it finished again via a direct API call, opened it in VoxCodex,
+and while still mid-playback (before closing) re-read the live library
+response twice, 20+ seconds apart -- `is_finished` had correctly flipped
+to `false` immediately, but `percent_complete`/`time_remaining_seconds`
+were byte-for-byte unchanged both times. Ruled out recompute lag (the
+earlier confirmed-working case updated within ~15-20s; this stayed
+identical for 20+s and showed no sign of moving). Conclusion: Audible's
+backend appears to only recompute the tile from an event with real
+forward progress (`end_position > start_position`); a zero-length event
+is accepted (200 OK, as ever) but has no effect on `listening_status`.
+**Removed** the `allow_zero_length` mechanism this had introduced into
+`AudibleAPI.push_listening_session` rather than ship dead weight -- see
+that method's docstring for the final, accurate account. Net effect:
+`is_finished` clears immediately (the thing actually reported as
+confusing); the percent/time-left number itself stays stale until this
+session's own close-time push, same as any other session.
+
 ## Open questions / next steps
 
 1. ~~Capture the real `Listening` payload~~ — **done, 2026-09-21.** Exact
@@ -641,3 +685,22 @@ position on an already-*finished* book is cosmetic (hidden behind the
 "Finished" badge in every Audible client) regardless of its value.
 `is_finished` correctly stayed `True` throughout (confirms the
 no-`MarkAsUnfinished` design choice). Nothing to restore.
+
+**2026-09-21, later the same day, third pass (auto-unfinish-on-resume):**
+played `B07DGFS4LM` for real through VoxCodex (~9 minutes wall clock,
+requested 3-5 -- ran a bit long) to confirm the original send path against
+a second title; real position moved from 0 to ~535s (that title's
+`is_finished` was still `True` at the time, so it also restarted at 0).
+Then, per the user's request, both `B01L790CUU` and `B07DGFS4LM` were
+un-marked via a direct `set_finished(asin, False)` call so their real
+`percent_complete` would actually be visible (rather than hidden behind
+the "Finished" badge) for the user to check on their phone/website --
+confirmed both showing correctly. Following that, `B01L790CUU` was
+deliberately re-marked finished via a direct API call specifically to
+test the new auto-unfinish-on-resume feature (see the section above):
+opened it in VoxCodex, confirmed `is_finished` flipped back to `false`
+immediately server-side (checked while still mid-playback, before
+closing), then stopped playback normally. Real activity throughout, all
+consistent with the user's own testing intent -- nothing to restore
+beyond what's already reflected in each book's real `is_finished`/
+position state as of this session's end.

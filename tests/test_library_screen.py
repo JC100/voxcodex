@@ -1526,8 +1526,8 @@ async def test_playback_close_reports_download_as_the_delivery_type(monkeypatch)
 
 async def test_playback_close_starts_the_session_at_zero_for_a_finished_book(monkeypatch):
     """PlayerScreen.on_mount restarts a finished book from 0 rather than
-    resuming -- the listening session reported must start from the same
-    point, not the stale progress_ms."""
+    resuming -- the listening session reported at close must start from the
+    same point, not the stale progress_ms."""
     from voxcodex.screens import player_screen as player_screen_module
     from voxcodex.screens.player_screen import PlayerScreen
 
@@ -1558,6 +1558,66 @@ async def test_playback_close_starts_the_session_at_zero_for_a_finished_book(mon
     (call,) = api.push_listening_session_calls
     assert call[2] == 0  # start position
     assert call[3] == 60_000  # end position
+
+
+# -- resuming a finished book un-finishes it (session tile stays stale --
+# a zero-length reset push was tried live and confirmed a server-side
+# no-op, see AudibleAPI.push_listening_session's docstring) -------------
+
+
+async def test_resuming_a_finished_book_clears_the_flag_immediately(monkeypatch):
+    """The un-finish must happen the moment playback starts, not deferred
+    to close -- otherwise another device checked mid-session would still
+    see "Finished"."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+
+        # Before closing the player at all -- this must already have fired.
+        assert book.is_finished is False
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+
+        # No listening-session push at open time -- only at close (see the
+        # module docstring above for why a reset push isn't sent at all).
+        assert api.push_listening_session_calls == []
+
+
+async def test_resuming_a_not_finished_book_does_not_touch_the_finished_flag(monkeypatch):
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await pilot.pause()
+
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        assert api.set_finished_calls == []
+        assert api.push_listening_session_calls == []
 
 
 async def test_playback_close_skips_the_listening_session_without_a_license_id(monkeypatch):

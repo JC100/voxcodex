@@ -359,16 +359,31 @@ class AudibleAPI:
         shape drove `percent_complete` to 0% instead of the real value. The
         real app also sends a `MarkAsUnfinished` alongside `StartListening`
         every time playback begins (even on a book that isn't finished);
-        deliberately not mirrored here -- VoxCodex already has an explicit,
-        user-triggered way to un-finish a book (`action_unmark_finished`),
-        and auto-clearing it just because playback resumed would silently
-        fight that.
+        not mirrored here as part of *this* payload -- when VoxCodex needs
+        to un-finish a book on resume, `LibraryScreen._launch_player` does
+        it via a dedicated `set_finished(asin, False)` call instead, kept
+        separate so it only fires on the actual finished -> playing
+        transition rather than being folded into every session.
 
-        Silently does nothing if `license_id` is empty (nothing to report
+        A zero-length session (`event_start_position == event_end_position`)
+        was tried, live, as a way to immediately reset a resumed-from-
+        finished book's stale `percent_complete` -- confirmed (2026-09-21)
+        to be a genuine no-op server-side, not a recompute-lag artifact
+        (checked again 20s later, unchanged). Audible appears to only
+        recompute the tile from an event with real forward progress. So:
+        silently does nothing if `license_id` is empty (nothing to report
         the session against -- e.g. a voucher saved before this field
         existed) or `end_position_ms <= start_position_ms` (no forward
         progress this session: the player was opened and immediately
-        closed, or the listener seeked backward past where they started).
+        closed, the listener seeked backward past where they started, or a
+        would-be reset event like the one above). A resumed-from-finished
+        book's `percent_complete`/`time_remaining_seconds` therefore stay
+        stale until this session's own close-time push corrects them --
+        `is_finished` clearing immediately (see `set_finished` above) is
+        what actually matters for the "still shows Finished on my phone"
+        complaint this was solving; the stale-number window is a smaller,
+        accepted gap.
+
         Raises on HTTP failure like the other push_* methods; callers
         wanting best-effort semantics should use
         `services.progress.push_listening_session` rather than calling this

@@ -56,6 +56,19 @@ now closed.
       recompute path. `is_finished` correctly stayed `True` (this test
       book was already finished; the deliberate no-`MarkAsUnfinished`
       choice above held).
+      **Follow-up, same day:** the user pointed out that a book marked
+      finished on Audible needs to un-finish the moment you *resume* it
+      in VoxCodex, not stay stuck showing "Finished" on other devices
+      while you're actively re-listening. `LibraryScreen._launch_player`
+      now clears `is_finished` + pushes `set_finished(asin, False)`
+      immediately on that transition (once, not per checkpoint). Also
+      tried, live, sending a zero-length listening-session event at the
+      same moment to reset the tile's stale `percent_complete` too --
+      confirmed a genuine no-op server-side (not recompute lag: checked
+      twice, 20+s apart, byte-for-byte unchanged) -- removed rather than
+      shipped as dead weight. So: `is_finished` clears instantly;
+      `percent_complete`/`time_remaining_seconds` stay stale until that
+      session's own close, same as any other session.
       Full trail: `docs/library-progress-sync-investigation.md`,
       `docs/whispersync-research.md`; also noted in `CHANGELOG.md` and
       `README.md`.
