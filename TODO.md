@@ -338,7 +338,16 @@ done.
       no-chapters case. Added
       `test_chapter_row_clears_when_position_is_before_the_first_chapter`
       (verified it fails against the pre-fix missing branch).
-- [ ] 17 more Low findings -- see the doc for the full list and suggested
+- [x] L11 -- content-length is compared against decoded byte count, so
+      a CDN that ever compresses would make every download fail as
+      "truncated" (`services/download.py`). **Fixed** 2026-09-21: the
+      truncation check now compares against `resp.num_bytes_downloaded`
+      (the raw, possibly-still-compressed wire byte count, tracked from
+      `iter_raw` underneath `iter_bytes`) instead of the local decoded-
+      byte counter. Added
+      `test_download_book_does_not_flag_a_compressed_transfer_as_truncated`
+      (verified it fails against the pre-fix decoded-byte comparison).
+- [ ] 16 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

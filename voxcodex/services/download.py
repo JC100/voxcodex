@@ -140,10 +140,16 @@ def download_book(
 
         # A connection dropped mid-stream leaves a short file that would
         # otherwise be renamed into place and look downloaded until it fails
-        # to play. Only accept it when the server told us a size and we got it.
-        if total and downloaded != total:
+        # to play. Only accept it when the server told us a size and we got
+        # it -- compared against resp.num_bytes_downloaded (the raw,
+        # possibly-still-compressed transfer size, tracked from iter_raw
+        # underneath iter_bytes), not the local `downloaded` counter of
+        # decoded bytes actually written to disk: httpx negotiates gzip by
+        # default, so a CDN that ever compresses would otherwise make every
+        # download fail as "truncated" (L11).
+        if total and resp.num_bytes_downloaded != total:
             raise OSError(
-                f"download truncated: got {downloaded} of {total} bytes"
+                f"download truncated: got {resp.num_bytes_downloaded} of {total} bytes"
             )
 
         # Voucher before rename: is_downloaded() requires both files, so a

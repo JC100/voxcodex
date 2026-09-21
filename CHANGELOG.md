@@ -103,6 +103,9 @@
   of assuming exactly one tick per second.
 - The chapter row could show a stale chapter after seeking to before the
   first chapter's start -- it now clears instead.
+- A download from a CDN that compresses its response could have been
+  incorrectly flagged and rejected as truncated, even though nothing was
+  actually lost.
 
 ### Security
 - **The Amazon account password and vault password could leak into

@@ -21,10 +21,20 @@ def _downloads_dir_in_tmp(tmp_path, monkeypatch):
 
 
 class FakeResponse:
-    def __init__(self, chunks, headers=None, raise_exc=None):
+    def __init__(self, chunks, headers=None, raise_exc=None, num_bytes_downloaded=None):
         self._chunks = chunks
         self.headers = headers or {}
         self._raise_exc = raise_exc
+        # Defaults to the decoded byte count, matching real httpx when no
+        # compression is in play; a test simulating a compressed transfer
+        # (L11) overrides this to a different (smaller) value, the way
+        # resp.num_bytes_downloaded (raw wire bytes) would genuinely differ
+        # from the decoded bytes iter_bytes() yields.
+        self.num_bytes_downloaded = (
+            num_bytes_downloaded
+            if num_bytes_downloaded is not None
+            else sum(len(c) for c in chunks)
+        )
 
     def raise_for_status(self):
         if self._raise_exc is not None:
@@ -289,6 +299,30 @@ def test_download_book_rejects_a_truncated_stream_and_cleans_up():
     assert not download.audio_path_for("B001").exists()
     assert _no_part_files_left()
     assert not download.voucher_path_for("B001").exists()
+
+
+def test_download_book_does_not_flag_a_compressed_transfer_as_truncated():
+    # L11: content-length describes the raw (possibly gzip-compressed)
+    # transfer size, but the old code compared it against the *decoded*
+    # byte count iter_bytes() yields -- httpx negotiates gzip by default,
+    # so a CDN that ever compresses would make every download fail as
+    # "truncated" even though nothing was actually lost. Decoded content
+    # here (11 bytes) is larger than the compressed content-length (4) --
+    # exactly what a real gzip response looks like -- and must not raise.
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        key="k", iv="i",
+    )
+    response = FakeResponse(
+        [b"hello world"],  # decoded content actually written to disk
+        headers={"content-length": "4"},  # the compressed transfer size
+        num_bytes_downloaded=4,  # raw wire bytes, matching content-length
+    )
+    api = FakeAPI(license_, response)
+
+    result_path = download.download_book(_book("B001"), api)  # must not raise
+
+    assert result_path.read_bytes() == b"hello world"
 
 
 def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
