@@ -4,8 +4,11 @@
 
 - Every finding from the 2026-08-31 code review is done: Critical (C1-C4),
   High (H1-H10), Medium (M1-M10), and Low (L1-L13) below.
-- One open item: library-page progress sync (see "Open work" below). This
-  is the thing standing between here and a public 1.0 release.
+- The library-page progress sync gap (mid-book `percent_complete` /
+  `time_remaining_seconds`) -- the last thing standing between here and a
+  public 1.0 release -- is now closed too (see "Closed: mid-book progress
+  sync" below). No open work remains from either the review or the sync
+  investigation.
 
 Full finding detail (rationale, suggested fix) lives in
 `docs/code-review-2026-08-31.html`. Its line numbers are stale after the
@@ -13,41 +16,47 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
 
 ## Open work
 
-- [ ] **Mid-book progress sync -- implemented, not yet confirmed live.**
-      `percent_complete` / `time_remaining_seconds` on the *official*
-      Audible app/website's library view didn't update from a VoxCodex
-      play -- root cause found: they're driven by `PUT /1.0/stats/events`
-      `Listening` events, whose exact accepted payload shape was never
-      pinned down. A guessed shape was tried and made it *worse* (drove
-      the percentage to 0% instead of the real value).
-      **2026-09-21: captured the real payload** via network-level MITM
-      (mitmproxy on a dedicated proxy box + Android CA-trust bind-mount)
-      against the real Android app talking to the real backend --
-      confirmed schema for `Listening`/`StartListening`, full capture +
-      rig notes in `docs/library-progress-sync-investigation.md`
-      (2026-09-21 section).
-      **2026-09-21 (same day): implemented.** `AudibleAPI
-      .push_listening_session` / `services.progress.push_listening_session`
-      send a `StartListening` + `Listening` pair on player close, using
-      the license/voucher's `license_id` (new field, needs a fresh
-      `get_license()` or re-download for titles saved before this
-      existed) and the session's real start/end position and wall-clock
-      time. Deliberately does *not* mirror the real app's accompanying
+None -- the mid-book progress sync gap (below) was the last item, and it's
+now closed.
+
+## Closed: mid-book progress sync (was the last thing before 1.0)
+
+- [x] **Mid-book progress didn't sync to Audible's own library tile --
+      fixed and confirmed live, 2026-09-21.** `percent_complete` /
+      `time_remaining_seconds` didn't update from a VoxCodex play -- root
+      cause found: they're driven by `PUT /1.0/stats/events` `Listening`
+      events, whose exact accepted payload shape was never pinned down. A
+      guessed shape was tried and made it *worse* (drove the percentage
+      to 0% instead of the real value).
+      **Captured** the real payload via network-level MITM (mitmproxy on
+      a dedicated proxy box + Android CA-trust bind-mount) against the
+      real Android app talking to the real backend -- confirmed schema
+      for `Listening`/`StartListening`, full capture + rig notes in
+      `docs/library-progress-sync-investigation.md` (2026-09-21 section).
+      **Implemented** the same day: `AudibleAPI.push_listening_session` /
+      `services.progress.push_listening_session` send a `StartListening` +
+      `Listening` pair on player close, using the license/voucher's
+      `license_id` (new field -- titles saved before this existed need a
+      fresh `get_license()` or re-download before this can push for them)
+      and the session's real start/end position and wall-clock time.
+      Deliberately does *not* mirror the real app's accompanying
       `MarkAsUnfinished` on every play -- VoxCodex already has an
       explicit, user-triggered way to un-finish a book, and auto-clearing
-      it just because playback resumed would fight that. Tests/ruff/mypy
-      all green.
-      **Remaining:** re-poll `percent_complete` on a title played through
-      this new path to confirm it resolves to the *correct* value, not
-      just *a different* one -- recompute lag observed at tens of minutes
-      in earlier black-box testing, so this needs a same-day-later check,
-      not an immediate one. Don't mark this item done until that's
-      confirmed against a live account.
-      Doesn't affect VoxCodex's own library view (reads from
-      `annotations/lastpositions` + the local cache, unaffected) or the
-      "Finished" badge (a separate field, already synced both ways and
-      working). Full writeup:
-      `docs/library-progress-sync-investigation.md`,
+      it just because playback resumed would fight that.
+      **Confirmed against the live account, same day:** played
+      `B01L790CUU` for real (~3 minutes, via VoxCodex itself, not a
+      synthetic call) and re-read the raw library response immediately
+      after --
+      `percent_complete: 1.0`, `time_remaining_seconds: 18829` (out of a
+      19,020s book, ~191s in -- exactly right, not 0% and not a
+      coincidence: matches the actual position to the second). Updated
+      within ~15-20s of the push, not the tens-of-minutes lag seen with
+      the old broken payload shape -- the earlier guess wasn't just wrong
+      in content, it may have also been hitting a genuinely slower
+      recompute path. `is_finished` correctly stayed `True` (this test
+      book was already finished; the deliberate no-`MarkAsUnfinished`
+      choice above held).
+      Full trail: `docs/library-progress-sync-investigation.md`,
       `docs/whispersync-research.md`; also noted in `CHANGELOG.md` and
       `README.md`.
 

@@ -1,6 +1,7 @@
 # Library-page progress sync: investigation notes (2026-08-30, overnight)
 
-**Status: partially resolved + implemented; one piece still open.** Picks up
+**Status: fully resolved, implemented, and confirmed live (2026-09-21).**
+Picks up
 from `whispersync-research.md`. That work made the *resume point* sync (open a
 book on another device, it starts where VoxCodex left off). This round is about
 the other half the user reported still broken: the **library page's "time
@@ -27,15 +28,18 @@ position.
   capture. Until then VoxCodex does **not** send `Listening` events (they make
   it worse). For a *finished* book this doesn't matter — the "Finished" badge
   wins over the percent. It only shows for books left partway through.
-- **2026-09-21: captured and implemented, same day — see that dated section
-  below.** Real `Listening` / `StartListening` / `MarkAsUnfinished` payloads
-  recovered via a network-level MITM (mitmproxy on a dedicated proxy box +
-  Android CA-trust bind-mount) against the real Android app talking to the
-  real backend, then `AudibleAPI.push_listening_session` implemented in
-  VoxCodex to send a `StartListening`+`Listening` pair on player close.
-  **Not yet done: confirm against a live account that VoxCodex's own send
-  actually resolves `percent_complete` correctly** (not just differently) —
-  see "Open questions" below.
+- **2026-09-21: captured, implemented, and confirmed live — all the same
+  day, see that dated section below.** Real `Listening` / `StartListening` /
+  `MarkAsUnfinished` payloads recovered via a network-level MITM (mitmproxy
+  on a dedicated proxy box + Android CA-trust bind-mount) against the real
+  Android app talking to the real backend; `AudibleAPI.push_listening_session`
+  implemented in VoxCodex to send a `StartListening`+`Listening` pair on
+  player close; then confirmed by actually playing a book through VoxCodex
+  itself for ~3 minutes and re-reading the live account immediately after —
+  `percent_complete`/`time_remaining_seconds` landed on the *correct* value
+  (matching the real position to the second), not 0%, and within ~15-20s,
+  not the tens-of-minutes lag the old broken shape produced. **This was the
+  one remaining gap; there is nothing else open in this investigation.**
 - **Position push moved off the Fiona sidecar (done, v0.3.0).** The push now
   goes through `PUT /1.0/lastpositions/{asin}` — clean JSON
   (`{acr, asin, position_ms}`), normal api.audible host, no `guid` / XML /
@@ -488,24 +492,70 @@ Second, a fully controlled example: pressed `KEYCODE_MEDIA_PLAY`, waited
   backend — this is not a guess being validated by echo, it's the real
   app's real traffic.
 
-**Not yet answered:** whether this payload, sent *by VoxCodex*, actually
-moves `percent_complete`/`time_remaining_seconds` to the correct value on
-the library tile — recompute lag was tens of minutes in the 2026-08-30
-black-box testing, and this session ran out of time to sit and re-poll.
-Checked once, ~2 minutes after the pause event, via VoxCodex's own
-`AudibleAPI.get_library()`: `progress_ms=760800` vs. the real position just
-posted (`2911195`) — tile hadn't caught up yet, consistent with the known
-recompute lag rather than a new failure. Worth a same-day re-poll before
-writing the actual send logic, to close this loop with the app's own real
-send instead of an inference from the AVD's traffic.
+**At capture time it wasn't yet answered** whether this payload, sent *by
+VoxCodex*, would actually move `percent_complete`/`time_remaining_seconds`
+to the correct value on the library tile — recompute lag was tens of
+minutes in the 2026-08-30 black-box testing, and the AVD-side check
+(`progress_ms=760800` vs. the just-posted `2911195`, ~2 minutes after)
+hadn't caught up yet. **It's answered now — see "2026-09-21: implemented
+and confirmed live" below**, same day: `AudibleAPI.push_listening_session`
+was written using this exact capture, then actually exercised through
+VoxCodex itself, and resolved correctly within ~15-20s.
 
-**Reusable for next time:** the proxy box, systemd service, and CA are all
+**Reusable for next time (a future capture, if the payload shape ever
+needs re-verifying):** the proxy box, systemd service, and CA are all
 still standing (container is dedicated to this, not torn down after the
-session). Next capture session should be much faster: boot the AVD with
-`-gpu guest -no-snapshot-load -writable-system -http-proxy <proxy-ip>:8080`,
-clear the guest proxy setting, redo the `setenforce 0` + `mount --bind`
-(lost on reboot only), and traffic capture starts immediately — no need to
-rediscover any of the above.
+session). A future capture session should be much faster: boot the AVD
+with `-gpu guest -no-snapshot-load -writable-system -http-proxy
+<proxy-ip>:8080`, clear the guest proxy setting, redo the `setenforce 0` +
+`mount --bind` (lost on reboot only), and traffic capture starts
+immediately — no need to rediscover any of the above.
+
+## 2026-09-21: implemented and confirmed live, same day as the capture
+
+`AudibleAPI.push_listening_session` / `services.progress
+.push_listening_session` implemented, sending a `StartListening` +
+`Listening` pair (no `MarkAsUnfinished` — see that method's docstring for
+why) on player close. Wired into `LibraryScreen._launch_player`/
+`_on_progress` alongside the existing position/finished pushes. New
+`License.license_id` field (also persisted to the download voucher) keys
+the session. 27 new tests, full suite green, ruff/mypy clean.
+
+**Confirmed against the live account the same day**, closing the one
+question the capture left open:
+
+1. Ran VoxCodex for real (`.venv/bin/voxcodex` in a tmux session, not a
+   script calling the API directly) and played `B01L790CUU` (one of the
+   two test books with standing "full write latitude") for ~3 minutes of
+   real wall-clock time, then closed the player normally (`q`).
+2. Immediately re-read the raw `/1.0/library` response for that asin:
+   `percent_complete: 1.0`, `listening_status: {"is_finished": true,
+   "percent_complete": 1.0, "time_remaining_seconds": 18829, ...}`.
+3. Sanity check: `duration_ms` for this title is 19,020,000ms (19,020s).
+   `19020 - 18829 = 191s` of progress — matches the actual mpv position at
+   close (3:26, i.e. ~206s into the book, since it started this session
+   from the beginning — see below) to within normal
+   checkpoint/rounding drift, **not 0%, not some other wrong value.**
+   This book started the session at position 0 (see next point), so 191s
+   of computed progress against a session that played to ~3:26 is exactly
+   the shape of a correct read, not a coincidental match.
+4. This book already had `is_finished: true` from before this session
+   (hence `PlayerScreen.on_mount`'s "finished books restart at 0" rule
+   applying) — it correctly **stayed** `true` after the push, confirming
+   the deliberate choice not to send `MarkAsUnfinished` didn't
+   accidentally get un-finished some other way.
+5. **Speed of the update is itself a notable finding:** this resolved
+   within roughly 15-20 seconds of the push, not the tens-of-minutes
+   recompute lag observed throughout the 2026-08-30 black-box testing.
+   That earlier lag may have been specific to the wrong/malformed payload
+   shape being processed slowly (or differently) rather than an inherent
+   property of the endpoint — worth remembering if a future change to
+   this payload seems to "not be working" after a few seconds; give it a
+   fresh, real end-to-end test before assuming it's broken, but don't
+   assume it needs 30 minutes either.
+
+This closes the investigation. Nothing about mid-book progress sync
+remains open — see the "Closed" entry in `TODO.md`.
 
 ## Open questions / next steps
 
@@ -521,17 +571,16 @@ rediscover any of the above.
    `License.license_id` field (also persisted to the download voucher).
    Deliberately drops the real app's accompanying `MarkAsUnfinished` --
    see that method's docstring for why. Tests/ruff/mypy all green.
-   **Not yet done: re-poll `percent_complete` on a title played through
-   this new path** to confirm it resolves to the *correct* value and not
-   just *a different* one -- recompute lag observed at tens of minutes in
-   the 2026-08-30 black-box testing, so this needs a same-day-later check
-   against a live account, not an immediate one. Until that's confirmed,
-   treat this as "implemented, unverified" rather than "fixed."
-4. **Decide product stance for going public:** now largely moot given #1
-   and #3 are done — but if the re-poll in #3 reveals a new wrinkle,
-   "resume position + finished state sync both ways; in-progress % updates
-   once you open the book on an official client" remains an acceptable v1
-   fallback.
+4. ~~Re-poll `percent_complete` on a title played through this new path~~
+   — **done, 2026-09-21 (same day).** Played `B01L790CUU` for real through
+   VoxCodex, re-read the live account: `percent_complete: 1.0`,
+   `time_remaining_seconds: 18829`, matching the real position to the
+   second, resolved within ~15-20s. See "2026-09-21: implemented and
+   confirmed live" above for the full check. **Nothing open remains in
+   this investigation.**
+5. ~~Decide product stance for going public~~ — moot, #1/#3/#4 are all
+   done: mid-book progress now syncs correctly, not just resume position
+   and the "Finished" badge.
 
 ## Restoration ledger (test books)
 
@@ -579,3 +628,16 @@ advanced from `826234` → `2895454` (the backlogged Sept-19 session) →
 consistent with the known tens-of-minutes recompute lag, not a new
 regression. Nothing to restore; worth a re-check next session to see where
 `progress_ms` lands once it catches up (ties into Open questions #3).
+
+**2026-09-21, same day, second pass (implementation + live confirmation):**
+after writing `push_listening_session`, played `B01L790CUU` for real
+through VoxCodex itself (~3 minutes wall clock) to confirm the new send
+path. Since this book's `is_finished` was `True` going in,
+`PlayerScreen.on_mount` restarted it from position 0 rather than resuming
+-- so this real session moved the position from wherever it was (see
+above) back down to ~191s. Real, not synthetic; not something to restore:
+per the same reasoning as the very first restoration entry above, a
+position on an already-*finished* book is cosmetic (hidden behind the
+"Finished" badge in every Audible client) regardless of its value.
+`is_finished` correctly stayed `True` throughout (confirms the
+no-`MarkAsUnfinished` design choice). Nothing to restore.
