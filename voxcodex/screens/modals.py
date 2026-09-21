@@ -12,6 +12,11 @@ from textual.widgets import Button, Input, Static
 class PromptModal(ModalScreen[str]):
     """Asks for a single line of text (optionally masked) and returns it, or "" on cancel."""
 
+    # A lower screen's own bindings don't reach an active modal -- without
+    # this, the only way out of a CAPTCHA/OTP prompt is to tab to the
+    # Cancel button (L18).
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     DEFAULT_CSS = """
     PromptModal {
         align: center middle;
@@ -69,7 +74,7 @@ class PromptModal(ModalScreen[str]):
         self._submit()
 
     @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss("")
 
     def _submit(self) -> None:
@@ -79,6 +84,12 @@ class PromptModal(ModalScreen[str]):
 
 
 class ConfirmModal(ModalScreen[bool]):
+    # A lower screen's own bindings don't reach an active modal -- without
+    # this, the only way out of a delete-confirmation is to tab to the No
+    # button (L18). Escape maps to "No" -- the safe, non-destructive
+    # default -- not just an unanswered dismiss.
+    BINDINGS = [("escape", "no", "No")]
+
     DEFAULT_CSS = """
     ConfirmModal {
         align: center middle;
@@ -117,5 +128,5 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(True)
 
     @on(Button.Pressed, "#no")
-    def _no(self) -> None:
+    def action_no(self) -> None:
         self.dismiss(False)

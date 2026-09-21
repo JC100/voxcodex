@@ -112,6 +112,10 @@
 - A book title or other interpolated text containing certain bracketed
   text could crash a confirmation or prompt dialog outright.
 
+### Added
+- Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation
+  dialog, instead of requiring a tab-to-button.
+
 ### Security
 - **The Amazon account password and vault password could leak into
   Textual's worker logging** (devtools console, or a crash traceback

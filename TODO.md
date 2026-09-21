@@ -404,7 +404,13 @@ done.
       above it is untouched -- never interpolated with untrusted data).
       Added 2 tests using an unmatched-closing-tag-shaped message
       (verified both fail against the pre-fix markup-enabled rendering).
-- [ ] 10 more Low findings -- see the doc for the full list and suggested
+- [x] L18 -- Neither modal is dismissible by keyboard -- the only way out
+      of a CAPTCHA/OTP prompt or a delete-confirmation is to tab to a
+      button (`screens/modals.py`). **Fixed** 2026-09-21: added an escape
+      binding to both -- `PromptModal` maps it to Cancel, `ConfirmModal`
+      maps it to No (the safe, non-destructive default). Added 2 tests
+      (verified both fail without the binding).
+- [ ] 9 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

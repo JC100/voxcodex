@@ -56,6 +56,22 @@ async def test_prompt_modal_cancel_returns_empty_string():
     assert results == [""]
 
 
+async def test_prompt_modal_escape_cancels():
+    """L18: a lower screen's own bindings don't reach an active modal --
+    without an escape binding on the modal itself, the only way out of a
+    CAPTCHA/OTP prompt is to tab to the Cancel button."""
+    results = []
+    modal = PromptModal("Title", "Message")
+    app = ModalHostApp(modal, results.append)
+
+    async with app.run_test() as pilot:
+        await pilot.press(*"typed but cancelled")
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert results == [""]
+
+
 async def test_prompt_modal_rejects_empty_submit_by_default():
     """Submitting blank should not dismiss the modal at all when allow_empty
     is False -- the caller is still waiting on a real answer."""
@@ -120,6 +136,20 @@ async def test_confirm_modal_no_returns_false():
 
     async with app.run_test() as pilot:
         await pilot.click("#no")
+        await pilot.pause()
+
+    assert results == [False]
+
+
+async def test_confirm_modal_escape_answers_no():
+    """L18: escape maps to "No" -- the safe, non-destructive default --
+    not just an unanswered dismiss."""
+    results = []
+    modal = ConfirmModal("Delete?", "Are you sure?")
+    app = ModalHostApp(modal, results.append)
+
+    async with app.run_test() as pilot:
+        await pilot.press("escape")
         await pilot.pause()
 
     assert results == [False]
