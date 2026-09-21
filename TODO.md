@@ -5,21 +5,46 @@
 - Every finding from the 2026-08-31 code review is done: Critical (C1-C4),
   High (H1-H10), Medium (M1-M10), and Low (L1-L13) below.
 - The library-page progress sync gap (mid-book `percent_complete` /
-  `time_remaining_seconds`) -- the last thing standing between here and a
-  public 1.0 release -- is now closed too (see "Closed: mid-book progress
-  sync" below). No open work remains from either the review or the sync
-  investigation.
-- v0.5.0 closes this out. Plan: one more code review / bug-fix pass, then
-  1.0.
+  `time_remaining_seconds`) is closed (see "Closed: mid-book progress
+  sync" below).
+- **2026-09-21: the planned second code review is done** -- four
+  fresh-context reviewers plus manual verification, full detail in
+  `docs/code-review-2026-09-21.html`. 0 Critical, 6 High, 16 Medium, 27
+  Low. This is now the last thing standing before 1.0; see "Open work"
+  below for the punch list.
 
-Full finding detail (rationale, suggested fix) lives in
-`docs/code-review-2026-08-31.html`. Its line numbers are stale after the
-M1-M10 rewrites -- relocate a finding by file/description, not by line.
+Full finding detail (rationale, suggested fix) for either review lives in
+`docs/code-review-2026-08-31.html` / `docs/code-review-2026-09-21.html`.
+The 08-31 doc's line numbers are stale after the M1-M10 rewrites --
+relocate a finding by file/description, not by line.
 
 ## Open work
 
-None -- the mid-book progress sync gap (below) was the last item, and it's
-now closed.
+From `docs/code-review-2026-09-21.html` (not yet actioned):
+
+- [ ] H1 -- Resuming a "Finished" book seeks to the end instead of
+      restarting (`screens/library.py` / `screens/player_screen.py`). Also
+      the still-open Major finding from PR #2's CodeRabbit review.
+- [ ] H2 -- A duplicate ASIN silently truncates the library table, then
+      crashes on the next keypress (`screens/library.py`).
+- [ ] H3 -- A transient mpv read failure silently zeroes the saved
+      position and pushes that to Audible (`screens/player_screen.py` /
+      `services/player.py`).
+- [ ] H4 -- Amazon account password and vault password leak into Textual
+      worker descriptions/logs (`screens/login.py`).
+- [ ] H5 -- Unvalidated DRM key/IV are newline-injectable into the mpv
+      options file (`services/player.py`).
+- [ ] H6 -- The stream URL is passed to mpv as a bare positional arg with
+      no `--` terminator (`services/player.py`).
+- [ ] 16 Medium and 27 Low findings -- see the doc for the full list and
+      suggested order of work.
+- [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
+      stale step cross-reference; contradictory TL;DR in
+      `docs/library-progress-sync-investigation.md:23-30`; the
+      finished-state explanation below (under "Closed: mid-book progress
+      sync") is stale -- it claims VoxCodex deliberately does *not*
+      auto-clear `is_finished` on resume, but the follow-up two entries
+      below it says the opposite is now true.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 
