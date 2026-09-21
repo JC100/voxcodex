@@ -192,7 +192,16 @@ class MpvPlayer:
 
     @property
     def position_seconds(self) -> float:
-        return float(self.get_property("time-pos", 0.0) or 0.0)
+        # No default here, unlike the other properties below: a failed IPC
+        # read (timeout, a stall mid-seek, mpv exiting between the caller's
+        # is_running check and this call) must not be indistinguishable
+        # from "genuinely at position 0" -- callers persist this value and
+        # push it to Audible, so a swallowed failure silently erases the
+        # real resume point (see docs/code-review-2026-09-21.html H3).
+        value = self.get_property("time-pos")
+        if value is None:
+            raise MpvError("time-pos unavailable")
+        return float(value)
 
     @property
     def duration_seconds(self) -> float:

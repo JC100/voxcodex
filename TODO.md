@@ -36,17 +36,37 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       review noted was entirely missing).
 - [ ] H2 -- A duplicate ASIN silently truncates the library table, then
       crashes on the next keypress (`screens/library.py`).
-- [ ] H3 -- A transient mpv read failure silently zeroes the saved
+- [x] H3 -- A transient mpv read failure silently zeroes the saved
       position and pushes that to Audible (`screens/player_screen.py` /
-      `services/player.py`).
+      `services/player.py`). **Fixed** 2026-09-21: `MpvPlayer.position_seconds`
+      no longer defaults to 0.0 on a failed IPC read -- it now raises
+      `MpvError`, which `_poll_player`'s existing `except MpvError: return`
+      already skips the tick on, and `action_close` now catches to keep
+      the last known-good position instead of overwriting it. Together
+      with M9 (below), also deleted the dead `_tick(snap=None)` branch
+      that let this ship untested, and re-pointed the affected tests at
+      real `_Playback` snapshots / the real `_poll()` path. Added
+      `test_poll_skips_a_tick_instead_of_committing_a_failed_read_as_zero`
+      (player_screen) and `test_position_seconds_raises_instead_of_defaulting_when_not_connected`
+      / a dropped-connection assertion (player), covering the exact gap
+      the review noted (`FakePlayer.position_seconds` never raised).
 - [ ] H4 -- Amazon account password and vault password leak into Textual
       worker descriptions/logs (`screens/login.py`).
 - [ ] H5 -- Unvalidated DRM key/IV are newline-injectable into the mpv
       options file (`services/player.py`).
 - [ ] H6 -- The stream URL is passed to mpv as a bare positional arg with
       no `--` terminator (`services/player.py`).
-- [ ] 16 Medium and 27 Low findings -- see the doc for the full list and
-      suggested order of work.
+- [x] M9 -- A dead `_tick(snap=None)` code path is what most of the
+      player-screen test suite actually exercised, masking H3 from the
+      tests (`screens/player_screen.py` / `tests/test_player_screen.py`).
+      **Fixed** 2026-09-21 alongside H3: `snap` is now a required
+      parameter, the dead branch is deleted, and tests either build a real
+      `_Playback` snapshot or go through the real `_poll()` path
+      (`test_poll_shows_finished_when_mpv_has_exited`, renamed from the
+      old direct-`_tick()` version, since the is_running check it exercises
+      lives in `_poll_player`, not `_tick`).
+- [ ] 15 more Medium and 27 Low findings -- see the doc for the full list
+      and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
       `docs/library-progress-sync-investigation.md:23-30`; the

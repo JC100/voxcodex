@@ -261,21 +261,13 @@ class PlayerScreen(Screen[int]):
         with contextlib.suppress(NoMatches):
             self.query_one("#state", Static).update("Finished")
 
-    def _tick(self, snap: _Playback | None = None) -> None:
-        """Render playback state. `snap` comes from the background poll worker;
-        when called without one (the first render, and tests) it reads mpv
-        directly -- fine off the hot path, not on the 1 Hz timer."""
+    def _tick(self, snap: _Playback) -> None:
+        """Render playback state from a snapshot read by the background poll
+        worker (see _poll_player) -- never reads mpv directly, so this never
+        runs on the Textual event loop."""
         player = self._player
         if player is None:
             return
-        if snap is None:
-            if not player.is_running:
-                self._render_finished()
-                return
-            try:
-                snap = _Playback.read(player, self.book.duration_ms)
-            except MpvError:
-                return
 
         position = snap.position
         duration = snap.duration or (self.book.duration_ms / 1000)
@@ -424,11 +416,11 @@ class PlayerScreen(Screen[int]):
     def action_close(self) -> None:
         if self._player and self._player.is_running:
             # Grab a fresh position before stopping -- the last _tick can be
-            # up to a second stale. Ignore a 0 (a transient IPC read failure
-            # shouldn't rewind the resume point to the start of the book).
-            pos_ms = int(self._player.position_seconds * 1000)
-            if pos_ms > 0:
-                self._last_position_ms = pos_ms
+            # up to a second stale. A failed read (MpvError) must not
+            # overwrite _last_position_ms with a phantom value -- keep the
+            # last known-good position instead.
+            with contextlib.suppress(MpvError):
+                self._last_position_ms = int(self._player.position_seconds * 1000)
             self._player.stop()
         self.dismiss(self._last_position_ms)
 

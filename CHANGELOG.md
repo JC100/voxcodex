@@ -11,6 +11,12 @@
   book, that's ~100% through, so mpv hit EOF immediately and nothing
   played. The start position is now computed once by the caller and
   passed in explicitly.
+- **A transient mpv read failure could silently erase the saved listening
+  position, locally and on every other device.** A failed IPC read of
+  mpv's playback position was indistinguishable from "genuinely at
+  position 0", so a single dropped read could zero out and push a bogus
+  position to Audible. Reads that fail now raise instead of silently
+  defaulting, and are skipped rather than treated as real progress.
 
 ## 0.5.0
 

@@ -35,13 +35,23 @@ def test_get_property_returns_default_when_not_connected(monkeypatch):
     assert p.get_property("time-pos", 1.23) == 1.23
 
 
-def test_position_and_duration_default_to_zero_when_not_connected(monkeypatch):
+def test_duration_paused_eof_default_when_not_connected(monkeypatch):
     monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
     p = MpvPlayer()
-    assert p.position_seconds == 0.0
     assert p.duration_seconds == 0.0
     assert p.paused is False
     assert p.eof_reached is False
+
+
+def test_position_seconds_raises_instead_of_defaulting_when_not_connected(monkeypatch):
+    """Unlike the other properties above, a failed read of time-pos must not
+    silently default to 0.0 -- callers persist this value and push it to
+    Audible, so a swallowed failure would erase a real resume point
+    (see docs/code-review-2026-09-21.html H3)."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    with pytest.raises(MpvError):
+        _ = p.position_seconds
 
 
 def test_volume_defaults_to_100_when_not_connected(monkeypatch):
@@ -291,6 +301,7 @@ def test_commands_round_trip_over_the_real_socket(fake_mpv):
     p.start("src", "key", "iv")
 
     assert p.get_property("time-pos") == 42  # FakeMpv answers every read with 42
+    assert p.position_seconds == 42.0
     p.set_property("pause", True)
     p.seek_relative(-30)
 
@@ -310,6 +321,12 @@ def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
         p.set_property("pause", True)
     # get_property swallows it and returns the default
     assert p.get_property("time-pos", 1.5) == 1.5
+    # position_seconds must not swallow the same failure into a phantom 0
+    # (see docs/code-review-2026-09-21.html H3) -- it has to raise so the
+    # caller's poll loop skips the tick instead of committing a lost read
+    # as the real position.
+    with pytest.raises(MpvError):
+        _ = p.position_seconds
     p.stop()
 
 
