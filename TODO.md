@@ -347,7 +347,14 @@ done.
       byte counter. Added
       `test_download_book_does_not_flag_a_compressed_transfer_as_truncated`
       (verified it fails against the pre-fix decoded-byte comparison).
-- [ ] 16 more Low findings -- see the doc for the full list and suggested
+- [x] L12 -- An auth file left at 0644 by a pre-hardening install is
+      never tightened on `load()`, only re-chmod'd on the next fresh
+      login (`services/auth.py`). **Fixed** 2026-09-21: `load()` now also
+      `chmod`s the file to 0600 before reading it (defense in depth only
+      -- `CONFIG_DIR` is already 0700 -- but cheap). Added
+      `test_load_tightens_an_auth_file_left_at_0644` (verified it fails
+      against the pre-fix `load()`).
+- [ ] 15 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

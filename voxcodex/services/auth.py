@@ -190,6 +190,12 @@ def save(auth: audible.Authenticator, vault_password: str | None) -> None:
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:
+    # An auth file left at 0644 by a pre-hardening install was previously
+    # only ever tightened on the *next* fresh login (save()'s own chmod) --
+    # defense in depth only, since CONFIG_DIR is already 0700, but cheap to
+    # close (L12).
+    with contextlib.suppress(OSError):
+        config.AUTH_FILE.chmod(0o600)
     return audible.Authenticator.from_file(config.AUTH_FILE, password=vault_password)
 
 

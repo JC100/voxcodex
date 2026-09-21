@@ -123,6 +123,8 @@
   with a path-traversal ASIN could otherwise write outside the downloads
   directory). The key/iv are now rejected unless they're
   plain hex, and the stream URL is now passed after a `--` terminator.
+- An auth file left at looser permissions by a pre-hardening install is
+  now tightened as soon as it's loaded, not just on the next fresh login.
 
 ## 0.5.0
 

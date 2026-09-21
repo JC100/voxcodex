@@ -158,6 +158,23 @@ def test_load_passes_the_auth_file_path_and_vault_password(tmp_path, monkeypatch
     assert result == "AUTHENTICATOR"
 
 
+def test_load_tightens_an_auth_file_left_at_0644(tmp_path, monkeypatch):
+    """L12: an auth file left at 0644 by a pre-hardening install was
+    previously only ever tightened on the *next* fresh login (save()'s own
+    chmod) -- load() now re-chmods it too, rather than leaving it world/
+    group-readable for the whole session in between."""
+    _patch_dirs(monkeypatch, tmp_path)
+    config.AUTH_FILE.write_text("{}")
+    config.AUTH_FILE.chmod(0o644)
+    monkeypatch.setattr(
+        audible.Authenticator, "from_file", lambda filename, password=None: "AUTHENTICATOR"
+    )
+
+    auth.load()
+
+    assert _mode(config.AUTH_FILE) == 0o600
+
+
 def test_is_registered_false_when_no_auth_file_exists(tmp_path, monkeypatch):
     _patch_dirs(monkeypatch, tmp_path)
     assert auth.is_registered() is False
