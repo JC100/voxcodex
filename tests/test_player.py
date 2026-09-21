@@ -398,6 +398,48 @@ def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
     p.stop()
 
 
+def test_command_honors_an_absolute_deadline_against_a_trickling_peer(monkeypatch):
+    """L4: _read_line used to re-arm a fixed per-recv timeout on every
+    iteration instead of shrinking it against the overall deadline -- a
+    peer sending a byte just before each recv's timeout fired could keep
+    resetting the clock and hold _io_lock (and every transport key,
+    compounding M8) far past the requested timeout."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    server_sock, client_sock = socket.socketpair()
+    p._sock = client_sock
+
+    stop_trickling = threading.Event()
+
+    def trickle():
+        # One byte well inside the command timeout, forever -- never a
+        # newline, so _read_line's inner loop never completes a message.
+        while not stop_trickling.wait(0.05):
+            try:
+                server_sock.sendall(b"x")
+            except OSError:
+                return
+
+    thread = threading.Thread(target=trickle, daemon=True)
+    thread.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(MpvError, match="timed out"):
+            p._command("get_property", "time-pos", timeout=0.3)
+        elapsed = time.monotonic() - started
+
+        # Bounded by the deadline (with slack for scheduling), not reset on
+        # every trickled byte -- the trickle interval (0.05s) is well under
+        # the 0.3s command timeout, so the bug this guards against would
+        # keep this blocked for several seconds at least.
+        assert elapsed < 1.0
+    finally:
+        stop_trickling.set()
+        thread.join(timeout=2)
+        server_sock.close()
+        client_sock.close()
+
+
 def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     p = MpvPlayer()
     p.start("src", "de", "ad")

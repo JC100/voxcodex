@@ -267,7 +267,18 @@ done.
       **Fixed** 2026-09-21: added `proc.wait(timeout=1.0)` after
       `proc.kill()` -- SIGKILL alone doesn't reap the process. Added
       `test_stop_reaps_the_process_after_a_sigkill`.
-- [ ] 24 more Low findings -- see the doc for the full list and suggested
+- [x] L4 -- `_read_line` re-arms its full timeout on every recv rather
+      than honoring an absolute deadline, so a peer trickling bytes with
+      no newline can hold `_io_lock` indefinitely, blocking every
+      transport key (`services/player.py`). **Fixed** 2026-09-21:
+      `_read_line` now takes an absolute deadline and shrinks the
+      per-recv timeout against it, raising `TimeoutError` (caught
+      specifically in `_command` for the existing message) rather than
+      letting each trickled byte reset a fixed timeout window. Added
+      `test_command_honors_an_absolute_deadline_against_a_trickling_peer`
+      (verified it reproduces indefinite blocking against the pre-fix
+      code).
+- [ ] 23 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

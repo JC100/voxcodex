@@ -163,13 +163,21 @@ class MpvPlayer:
             time.sleep(0.05)
         raise MpvError(f"Could not connect to mpv IPC socket: {last_err}")
 
-    def _read_line(self, sock: socket.socket, timeout: float) -> bytes | None:
-        """Read one newline-terminated IPC message off `sock`. Returns None if
-        the peer closed the connection. Buffers manually rather than via
-        socket.makefile(), whose internal state is left inconsistent by a
-        timeout on the underlying socket."""
+    def _read_line(self, sock: socket.socket, deadline: float) -> bytes | None:
+        """Read one newline-terminated IPC message off `sock`, honoring an
+        absolute deadline across the whole read. Re-arming a fixed per-recv
+        timeout on every iteration (rather than shrinking it against this
+        deadline) would let a peer trickling bytes with no newline reset
+        the clock on every recv() and hold this -- and the _io_lock a
+        caller holds around it -- indefinitely (L4, compounds M8). Returns
+        None if the peer closed the connection. Buffers manually rather
+        than via socket.makefile(), whose internal state is left
+        inconsistent by a timeout on the underlying socket."""
         while b"\n" not in self._recv_buf:
-            sock.settimeout(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for mpv IPC response")
+            sock.settimeout(remaining)
             chunk = sock.recv(65536)
             if not chunk:
                 return None
@@ -189,10 +197,7 @@ class MpvPlayer:
                 sock.settimeout(timeout)
                 sock.sendall(payload.encode())
                 while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise MpvError(f"timed out waiting for mpv response to {args[0]!r}")
-                    line = self._read_line(sock, remaining)
+                    line = self._read_line(sock, deadline)
                     if line is None:
                         raise MpvError("mpv IPC connection closed")
                     try:
@@ -203,10 +208,12 @@ class MpvPlayer:
                         if msg.get("error") not in (None, "success"):
                             raise MpvError(str(msg.get("error")))
                         return msg.get("data")
+            except TimeoutError as exc:
+                raise MpvError(f"timed out waiting for mpv response to {args[0]!r}") from exc
             except OSError as exc:
-                # Socket I/O fails as BrokenPipeError / ConnectionResetError /
-                # socket.timeout -- all OSError, none MpvError. Funnel them into
-                # the one exception type callers actually catch.
+                # Socket I/O fails as BrokenPipeError / ConnectionResetError --
+                # all OSError, none MpvError. Funnel them into the one
+                # exception type callers actually catch.
                 raise MpvError(f"mpv IPC error: {exc}") from exc
 
     def get_property(self, name: str, default: object = None) -> Any:

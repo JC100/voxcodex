@@ -83,6 +83,9 @@
 - Closed a rare race where stopping playback while a transport command
   was in flight could let its socket file descriptor be reused before
   that command's read finished.
+- A stalled or misbehaving mpv could hold every transport key hostage far
+  longer than the intended timeout, by trickling bytes with no newline
+  fast enough to keep resetting an internal read timer.
 
 ### Security
 - **The Amazon account password and vault password could leak into
