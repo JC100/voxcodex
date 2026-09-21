@@ -60,16 +60,34 @@ class Settings:
         with _FILE_LOCK:
             self._data = _read_file(self._path)
 
+    def _float(
+        self, key: str, default: float, *, min_value: float, max_value: float
+    ) -> float:
+        # A corrupted-but-parseable value here (e.g. "1.5x" from a bad
+        # write, or null) must not take the whole app to the fatal-error
+        # screen -- PlayerScreen.__init__ reads these on the main thread
+        # when opening a book (M12). The clamp also catches an in-range-
+        # type but out-of-range value (e.g. a speed of 999) slipping past
+        # that same read -- the actual range is otherwise only enforced
+        # incrementally, by the +/- actions' own min()/max() calls.
+        try:
+            value = float(self._data.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(min_value, min(max_value, value))
+
     @property
     def playback_speed(self) -> float:
-        return float(self._data.get("playback_speed", DEFAULT_PLAYBACK_SPEED))
+        return self._float("playback_speed", DEFAULT_PLAYBACK_SPEED, min_value=0.5, max_value=3.0)
 
     def set_playback_speed(self, speed: float) -> None:
         self._set("playback_speed", float(speed))
 
     @property
     def playback_volume(self) -> float:
-        return float(self._data.get("playback_volume", DEFAULT_PLAYBACK_VOLUME))
+        return self._float(
+            "playback_volume", DEFAULT_PLAYBACK_VOLUME, min_value=0.0, max_value=100.0
+        )
 
     def set_playback_volume(self, volume: float) -> None:
         self._set("playback_volume", float(volume))

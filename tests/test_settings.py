@@ -25,6 +25,45 @@ def test_playback_volume_round_trips(tmp_path):
     assert s.playback_volume == 65.0
 
 
+# -- M12: a corrupted-but-parseable value must not crash the app ------------
+
+
+def test_playback_speed_falls_back_to_default_on_a_non_numeric_value(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_speed": "1.5x"}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_speed == settings.DEFAULT_PLAYBACK_SPEED  # must not raise
+
+
+def test_playback_volume_falls_back_to_default_on_null(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_volume": null}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_volume == settings.DEFAULT_PLAYBACK_VOLUME  # must not raise
+
+
+def test_playback_speed_is_clamped_to_its_valid_range(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_speed": 999}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_speed == 3.0
+
+
+def test_playback_volume_is_clamped_to_its_valid_range(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_volume": -50}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_volume == 0.0
+
+
 def test_settings_persist_across_instances(tmp_path):
     path = tmp_path / "settings.json"
     settings.Settings(path=path).set_playback_speed(2.0)

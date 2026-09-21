@@ -221,7 +221,16 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       round-tripping, a corrupted file, a drifted `Chapter` schema, all
       five non-object top-level JSON shapes (list/null/string/number/
       bool), and a best-effort `save()` failure.
-- [ ] 2 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M12 -- `playback_speed`/`playback_volume` crash on a
+      corrupted-but-parseable settings value (`services/settings.py`).
+      **Fixed** 2026-09-21: added a `_float(key, default, min_value,
+      max_value)` helper -- guards the conversion (`TypeError`/
+      `ValueError`) and clamps the result to each property's valid range,
+      since an in-range-type-but-out-of-range value (e.g. speed 999)
+      otherwise only gets clamped incrementally, by the +/- actions' own
+      `min()`/`max()`. Added four tests covering a non-numeric value,
+      `null`, and an out-of-range value for each property.
+- [ ] 1 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

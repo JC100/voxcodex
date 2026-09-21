@@ -74,6 +74,9 @@
   login.** A cache file whose top-level JSON was valid but not an object
   (truncation, a sync-tool mishap, a future schema change) raised instead
   of being treated as unreadable.
+- **A corrupted playback speed or volume setting could crash the app the
+  moment a book was opened.** Both are now guarded and clamped to their
+  valid range instead of crashing or silently going out of range.
 
 ### Security
 - **The Amazon account password and vault password could leak into
