@@ -49,6 +49,9 @@
   no message shown.** Both now raise a typed error the existing failure
   handling already catches, so the user gets "Could not start
   playback..." instead of nothing.
+- **A malformed entry in the local progress cache could crash the whole
+  library load.** Reading or writing a position now tolerates a
+  wrong-shape cache entry instead of raising.
 
 ### Security
 - **The Amazon account password and vault password could leak into

@@ -75,6 +75,42 @@ def test_progress_store_write_does_not_drop_another_titles_entry(tmp_path):
     assert reloaded.get_position_ms("B002") == 2_000
 
 
+# -- M5: malformed cache entries must not take down the whole load ---------
+
+
+def test_get_position_ms_ignores_a_non_dict_entry(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_position_ms("B001") == 0
+
+
+def test_get_position_ms_ignores_a_non_numeric_position(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": {"position_ms": "abc"}}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_position_ms("B001") == 0
+
+
+def test_get_updated_at_ignores_a_non_dict_entry(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_updated_at("B001") is None
+
+
+def test_set_position_ms_replaces_a_non_dict_entry_instead_of_crashing(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+
+    store.set_position_ms("B001", 1_234)  # must not raise
+
+    assert store.get_position_ms("B001") == 1_234
+    reloaded = progress.ProgressStore(path=path)
+    assert reloaded.get_position_ms("B001") == 1_234
+
+
 # -- fetch_remote_annotations / positions_from_annotations --------------
 #
 # Response shape confirmed directly against a live account (see

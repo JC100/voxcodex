@@ -69,14 +69,26 @@ class ProgressStore:
         return data if isinstance(data, dict) else {}
 
     def get_position_ms(self, asin: str) -> int:
-        return int(self._data.get(asin, {}).get("position_ms", 0))
+        entry = self._data.get(asin)
+        if not isinstance(entry, dict):
+            # A valid-JSON, wrong-shape entry (e.g. {"B001": 5000}) --
+            # called once per book on every library load, so one bad entry
+            # must not take down the whole load (M5).
+            return 0
+        try:
+            return int(entry.get("position_ms", 0))
+        except (TypeError, ValueError):
+            return 0
 
     def get_updated_at(self, asin: str) -> float | None:
         """Unix timestamp of the last local write for `asin`, or None if
         there isn't one -- lets a caller compare recency against Audible's
         own `last_updated` for the same title (see
         `positions_with_updated_at_from_annotations`)."""
-        value = self._data.get(asin, {}).get("updated_at")
+        entry = self._data.get(asin)
+        if not isinstance(entry, dict):
+            return None
+        value = entry.get("updated_at")
         return float(value) if isinstance(value, (int, float)) else None
 
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
@@ -85,7 +97,13 @@ class ProgressStore:
         # must not truncate the file or drop another title's entry.
         with _FILE_LOCK:
             data = self._read_file()
-            entry = data.setdefault(asin, {})
+            entry = data.get(asin)
+            if not isinstance(entry, dict):
+                # Replace rather than mutate -- setdefault would return the
+                # existing non-dict value as-is, and item assignment on it
+                # (below) would raise TypeError.
+                entry = {}
+                data[asin] = entry
             entry["position_ms"] = int(position_ms)
             if duration_ms:
                 entry["duration_ms"] = int(duration_ms)

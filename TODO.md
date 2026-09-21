@@ -150,7 +150,15 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       true once the mid-book sync push shipped. Removed the now-dead tests
       in `test_progress.py`, `test_settings.py`, `test_library_screen.py`,
       and `test_player_screen.py`.
-- [ ] 8 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M5 -- `ProgressStore` has no type guard on cache entries, unlike its
+      siblings -- a malformed entry takes down the whole library load
+      (`services/progress.py`). **Fixed** 2026-09-21: `get_position_ms`
+      and `get_updated_at` now guard against a non-dict entry (not just a
+      non-numeric value inside one), and `set_position_ms` replaces a
+      non-dict entry instead of trying to mutate it (which would raise
+      `TypeError` on item assignment). Added four tests covering both
+      malformed shapes on read and the replace-on-write behavior.
+- [ ] 7 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
