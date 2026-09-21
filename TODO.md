@@ -9,6 +9,8 @@
   public 1.0 release -- is now closed too (see "Closed: mid-book progress
   sync" below). No open work remains from either the review or the sync
   investigation.
+- v0.5.0 closes this out. Plan: one more code review / bug-fix pass, then
+  1.0.
 
 Full finding detail (rationale, suggested fix) lives in
 `docs/code-review-2026-08-31.html`. Its line numbers are stale after the

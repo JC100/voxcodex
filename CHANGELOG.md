@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.5.0
+
+Closes the mid-book progress sync investigation -- the last known gap
+before a 1.0 release. Progress sync (resume position, finished state,
+and now mid-book percent/time-left) is fully two-directional.
+
 ### Added
 - **Mid-book progress now pushed to Audible's own library tile.** Closing
   the player reports the session's `StartListening`/`Listening` events

@@ -170,20 +170,22 @@ than merged into one "last played".
   playable as when you're online -- only actions that inherently need a live
   connection (downloading something new, streaming something you haven't
   downloaded, fetching chapter metadata) are actually unavailable.
-- **Progress sync is mostly two-directional now, with one known gap.** This
-  app reads your real position from Audible, always keeps its own local
-  record of where you left off (`~/.local/share/voxcodex/` by default), and
-  pushes back:
+- **Progress sync is fully two-directional.** This app reads your real
+  position from Audible, always keeps its own local record of where you
+  left off (`~/.local/share/voxcodex/` by default), and pushes back:
   - **Resume position** -- your position here propagates to Audible's
     cross-device sync, so the app/website resume where you stopped in
     VoxCodex. See [`docs/whispersync-research.md`](docs/whispersync-research.md).
   - **Finished state** -- reach the end of a book here and it's marked
-    finished on Audible too (and vice versa on load).
-  - **Known gap:** the library-page *percent / "time left"* number for a book
-    you're partway through does not update from a VoxCodex play -- that field
-    is fed by a separate Audible system whose exact write format isn't pinned
-    down yet. A *finished* book shows correctly (the "Finished" badge wins).
-    See [`docs/library-progress-sync-investigation.md`](docs/library-progress-sync-investigation.md).
+    finished on Audible too (and vice versa on load); resuming a book
+    already marked finished un-finishes it immediately, so another device
+    won't keep showing "Finished" while you're actively re-listening here.
+  - **Mid-book progress** -- the library-page *percent / "time left"*
+    number for a book you're partway through now updates from a VoxCodex
+    play too, via the same event shape the real Android app sends. Update
+    lands within seconds of closing the player, not instantly mid-session.
+    See [`docs/library-progress-sync-investigation.md`](docs/library-progress-sync-investigation.md)
+    for the full capture-and-fix writeup.
   (The *read* side of position sync had been silently broken since day one,
   returning nothing on every real account despite looking like it worked --
   fixed in `services/progress.py`.)
