@@ -211,7 +211,17 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       forces a rollover via `doRollover()` directly rather than writing a
       megabyte of log lines, and checks both the live file and its `.1`
       backup).
-- [ ] 3 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M11 -- `chapter_cache.load()` raises on a non-dict cache file,
+      despite documenting that it never raises (`services/chapter_cache.py`).
+      **Fixed** 2026-09-21: added an `isinstance(data, dict)` guard (the
+      root cause was `.items()` on a non-dict raising `AttributeError`,
+      which wasn't in the except tuple -- also added there for defense in
+      depth). Created `tests/test_chapter_cache.py`, which didn't exist at
+      all despite the repo's one-file-per-module convention -- covers
+      round-tripping, a corrupted file, a drifted `Chapter` schema, all
+      five non-object top-level JSON shapes (list/null/string/number/
+      bool), and a best-effort `save()` failure.
+- [ ] 2 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -40,10 +40,12 @@ def load() -> dict[str, list[Chapter]]:
         return {}
     try:
         data = json.loads(config.CHAPTER_CACHE_FILE.read_text())
+        if not isinstance(data, dict):
+            return {}
         return {
             asin: [Chapter(**item) for item in chapters]
             for asin, chapters in data.items()
         }
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, OSError, AttributeError, KeyError, TypeError, ValueError):
         logger.debug("failed to read chapter cache", exc_info=True)
         return {}

@@ -70,6 +70,10 @@
   reached under `VOXCODEX_DEBUG`, and the log can contain the account
   email and (in debug mode) raw API response bodies. The file is now
   re-secured on every open, not just its initial creation.
+- **A damaged chapter cache file could crash the app immediately after
+  login.** A cache file whose top-level JSON was valid but not an object
+  (truncation, a sync-tool mishap, a future schema change) raised instead
+  of being treated as unreadable.
 
 ### Security
 - **The Amazon account password and vault password could leak into
