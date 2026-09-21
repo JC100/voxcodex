@@ -299,6 +299,12 @@ class MpvPlayer:
                     proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    # SIGKILL doesn't reap the process itself -- without
+                    # this wait() it stays a zombie until this MpvPlayer
+                    # (and its self._proc reference) is garbage collected,
+                    # rather than being reaped promptly (L3).
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=1.0)
 
             tmp_dir, self._dir = self._dir, None
             self._socket_path = None

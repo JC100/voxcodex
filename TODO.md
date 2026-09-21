@@ -263,7 +263,11 @@ done.
       could let the fd be reused by an unrelated new socket before that
       blocked read wakes up. Added
       `test_stop_shuts_down_the_socket_before_closing_it`.
-- [ ] 25 more Low findings -- see the doc for the full list and suggested
+- [x] L3 -- A SIGKILLed mpv process is never reaped (`services/player.py`).
+      **Fixed** 2026-09-21: added `proc.wait(timeout=1.0)` after
+      `proc.kill()` -- SIGKILL alone doesn't reap the process. Added
+      `test_stop_reaps_the_process_after_a_sigkill`.
+- [ ] 24 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

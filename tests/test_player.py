@@ -446,6 +446,45 @@ def test_stop_shuts_down_the_socket_before_closing_it(fake_mpv, monkeypatch):
     assert calls == ["shutdown", "close"]
 
 
+def test_stop_reaps_the_process_after_a_sigkill(fake_mpv):
+    """L3: proc.kill() alone doesn't reap the process -- nothing calls
+    wait() on it afterwards, so it lingers as a zombie until this
+    MpvPlayer (and its self._proc reference) is garbage collected, rather
+    than until the next book is played."""
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+
+    class NeverTerminates:
+        def __init__(self):
+            self.kill_called = False
+            self.wait_calls = 0
+            self._killed = False
+
+        def poll(self):
+            return 0 if self._killed else None
+
+        def terminate(self):
+            pass  # ignored -- the process doesn't actually die
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if not self._killed:
+                raise player_module.subprocess.TimeoutExpired(cmd="mpv", timeout=timeout)
+            return 0
+
+        def kill(self):
+            self.kill_called = True
+            self._killed = True
+
+    fake_proc = NeverTerminates()
+    p._proc = fake_proc
+
+    p.stop()
+
+    assert fake_proc.kill_called is True
+    assert fake_proc.wait_calls == 2  # once after terminate() times out, once after kill()
+
+
 def test_command_is_serialised_across_threads(fake_mpv):
     """The player screen polls position from a background worker while
     transport actions run on theirs -- interleaved sendall/recv on one
