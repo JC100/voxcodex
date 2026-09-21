@@ -109,6 +109,8 @@
 - A library item with an explicit null title, or a runtime/progress value
   sent as a string, is now parsed correctly instead of producing a blank
   title or corrupted duration.
+- A book title or other interpolated text containing certain bracketed
+  text could crash a confirmation or prompt dialog outright.
 
 ### Security
 - **The Amazon account password and vault password could leak into

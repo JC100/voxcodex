@@ -395,7 +395,16 @@ done.
       and `runtime_min`/`percent_complete` are coerced with
       `int()`/`float()`, matching the equivalent chapter-parsing code.
       Added 2 tests (verified both fail against the pre-fix code).
-- [ ] 11 more Low findings -- see the doc for the full list and suggested
+- [x] L17 -- Modal message text is rendered as Rich markup, and at least
+      one call site interpolates a publisher-supplied book title into it
+      -- a title containing `[/...]`-shaped text raises `MarkupError`
+      inside the confirm dialog (`screens/modals.py`). **Fixed**
+      2026-09-21: both `PromptModal` and `ConfirmModal` now render their
+      message `Static` with `markup=False` (the bold-markup title line
+      above it is untouched -- never interpolated with untrusted data).
+      Added 2 tests using an unmatched-closing-tag-shaped message
+      (verified both fail against the pre-fix markup-enabled rendering).
+- [ ] 10 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

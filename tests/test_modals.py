@@ -1,5 +1,5 @@
 from textual.app import App
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from voxcodex.screens.modals import ConfirmModal, PromptModal
 
@@ -83,6 +83,21 @@ async def test_prompt_modal_allows_empty_submit_when_configured():
     assert results == [""]
 
 
+async def test_prompt_modal_message_with_markup_shaped_text_does_not_raise():
+    """L17: the message is rendered as Rich markup by default -- a
+    publisher-supplied book title, or an Amazon-provided CAPTCHA URL,
+    could contain "[...]"-shaped text and raise MarkupError, crashing the
+    modal. Confirmed: common Audible suffixes like "[Unabridged]" happen
+    to survive only because of Rich's tag-character rules (an unrecognized
+    tag name is tolerated); an unmatched *closing* tag like "[/foo]" is
+    what actually raises, and is the shape this test uses."""
+    modal = PromptModal("Title", "Open this URL: http://x/[/not_a_real_tag]")
+    app = ModalHostApp(modal, lambda result: None)
+
+    async with app.run_test():  # must not raise
+        assert "[/not_a_real_tag]" in str(modal.query_one(".message", Static).content)
+
+
 # -- ConfirmModal -------------------------------------------------------
 
 
@@ -108,3 +123,17 @@ async def test_confirm_modal_no_returns_false():
         await pilot.pause()
 
     assert results == [False]
+
+
+async def test_confirm_modal_message_with_markup_shaped_title_does_not_raise():
+    """L17: at least one real call site interpolates a publisher-supplied
+    book title into this message (library.py's delete-download confirm)
+    -- a title containing an unmatched closing-tag-shaped substring like
+    "[/something]" raised MarkupError inside the confirm dialog."""
+    title = "Some Book [/vol_two] Extended Edition"
+    modal = ConfirmModal("Delete download", f"Delete the local copy of '{title}'?")
+    app = ModalHostApp(modal, lambda result: None)
+
+    async with app.run_test():  # must not raise
+        statics = modal.query(Static)
+        assert title in str(statics[1].content)

@@ -47,7 +47,11 @@ class PromptModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"[b]{self._title}[/b]")
-            yield Static(self._message, classes="message")
+            # markup=False: self._message can carry untrusted interpolated
+            # text (e.g. a CAPTCHA URL from Amazon's login flow) -- Rich
+            # markup parsing on that would raise MarkupError on a value
+            # containing "[...]"-shaped text and crash the modal (L17).
+            yield Static(self._message, classes="message", markup=False)
             yield Input(password=self._password, id="prompt-input")
             with Vertical():
                 yield Button("Submit", variant="primary", id="submit")
@@ -96,7 +100,14 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"[b]{self._title}[/b]")
-            yield Static(self._message)
+            # markup=False: self._message can carry untrusted interpolated
+            # text (a publisher-supplied book title, at least) -- Rich
+            # markup parsing on that would raise MarkupError on a title
+            # containing "[...]"-shaped text and crash the modal (L17).
+            # Confirmed: common Audible suffixes like "[Unabridged]"
+            # happen to survive only because of Rich's tag-character
+            # rules, not by design.
+            yield Static(self._message, markup=False)
             with Vertical():
                 yield Button("Yes", variant="primary", id="yes")
                 yield Button("No", id="no")
