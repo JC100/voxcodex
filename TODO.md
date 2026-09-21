@@ -21,11 +21,18 @@ M1-M10 rewrites -- relocate a finding by file/description, not by line.
       pinned down. A guessed shape was tried and made it *worse* (drove
       the percentage to 0% instead of the real value), so VoxCodex
       deliberately does not send `Listening` events at all right now.
-      Needs a packet capture of the real Android app's own `Listening`
-      traffic (exact field set, position mapping, batching, cadence) to
-      move forward -- an emulator capture attempt was blocked on tooling
-      (AVD instability under `-gpu guest`; the app doesn't honor the
-      system HTTP proxy, so mitmproxy never saw any Audible traffic).
+      **2026-09-21: the payload capture is done** -- network-level MITM
+      (mitmproxy on a dedicated proxy box + Android CA-trust bind-mount)
+      against the real Android app talking to the real backend confirmed
+      the exact schema for `Listening` / `StartListening` /
+      `MarkAsUnfinished`, including batching and the
+      `StartListening`+`MarkAsUnfinished` pairing on playback start. Full
+      capture + rig notes in
+      `docs/library-progress-sync-investigation.md` (2026-09-21 section).
+      **Remaining:** implement sending it from VoxCodex, then re-poll
+      `percent_complete` on a real send to confirm it resolves correctly
+      (recompute lag observed at tens of minutes, so this needs a
+      same-day-later check, not an immediate one).
       Doesn't affect VoxCodex's own library view (reads from
       `annotations/lastpositions` + the local cache, unaffected) or the
       "Finished" badge (a separate field, already synced both ways and

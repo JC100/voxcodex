@@ -27,6 +27,12 @@ position.
   capture. Until then VoxCodex does **not** send `Listening` events (they make
   it worse). For a *finished* book this doesn't matter — the "Finished" badge
   wins over the percent. It only shows for books left partway through.
+- **2026-09-21: the capture is done — see that dated section below.** Real
+  `Listening` / `StartListening` / `MarkAsUnfinished` payloads recovered via a
+  network-level MITM (mitmproxy on a dedicated proxy box + Android CA-trust
+  bind-mount), exact field set confirmed against the real Android app talking
+  to the real backend. **Implementing it in VoxCodex is now the only
+  remaining step** — see "Open questions" below.
 - **Position push moved off the Fiona sidecar (done, v0.3.0).** The push now
   goes through `PUT /1.0/lastpositions/{asin}` — clean JSON
   (`{acr, asin, position_ms}`), normal api.audible host, no `guid` / XML /
@@ -280,24 +286,247 @@ instance) and the CA-trust + SSL-unpinning work above are still needed
 regardless of where the proxy itself lives. Session paused here; no
 capture attempted yet against the new Squid box.
 
+## 2026-09-21: capture achieved — network-level MITM via dedicated proxy box
+
+Picking up "Plan for next time" from the 2026-09-20 entry: the user stood up
+a Debian 13 LXC container on their Proxmox cluster for exactly this. Full
+rig, end to end:
+
+**Proxy box.** Plain Debian 13 container, dedicated to this. Ended up using
+**mitmproxy**, not Squid — Squid's SSL-bump terminates TLS fine but getting
+at decrypted request/response *bodies* needs ICAP/eCAP plumbing on top;
+mitmproxy does body capture natively and was simpler to stand up
+(`pipx install mitmproxy`, no Debian package available on trixie). Runs as
+a systemd service (`mitmdump --mode regular --listen-port 8080 -s
+<addon> -w <flow file> --set allow_hosts='.*\.(audible|amazon|amazonalexa)\..*'`).
+`allow_hosts` is the important bit — it's "opposite of `--ignore-hosts`":
+only hosts matching the regex get MITM'd; everything else (Google Play
+Services, GCM, etc.) gets a plain TCP passthrough with the real upstream
+cert, so the rest of the emulator's traffic — and its normal function —
+is undisturbed. **Gotcha:** `--set allow_hosts=a,b,c` does **not** split on
+commas for a sequence-typed option — it becomes one literal regex containing
+literal commas, matching nothing. Use one regex with `|` alternation
+instead, or repeat `--set allow_hosts=X` once per pattern.
+A small addon script logs full request/response headers+bodies for matched
+flows to a plain text file (`response()` hook, `flow.request.get_text()` /
+`flow.response.get_text()`).
+
+**Getting the AVD's traffic to the proxy, transparently.** The 2026-09-20
+finding stands: the app's real network stack ignores Android's
+`settings put global http_proxy`. What *does* work and needed no discovery
+this time: the **emulator's own `-http-proxy host:port` command-line flag**.
+This operates at the QEMU/slirp layer, below the guest's entire network
+stack — every guest-originated TCP connection gets tunneled out through
+that HTTP CONNECT proxy regardless of whether the app (or even Android
+itself) has any proxy awareness. Confirmed by watching real app traffic
+(`api.audible.com.au`, `todo-ta-g7g.amazon.com`, `arcus-uswest.amazon.com`,
+`unagi-fe.amazon.com`) arrive at the external proxy with **zero** proxy
+configuration inside the guest OS. This is the piece that made network-level
+capture finally *possible* — no iptables/transparent-redirect needed
+anywhere, laptop or guest.
+
+Two rough edges hit along the way, both fixable and worth knowing for next
+time:
+- `-http-proxy` **also** auto-sets the guest's `settings global http_proxy`
+  to `10.0.2.2:<port>` (the slirp host alias). Something in the guest (looked
+  like the captive-portal/NetworkMonitor check) then hammered
+  `CONNECT 127.0.0.1:8080` in a tight loop via that *second*, redundant proxy
+  path, pegging the emulator process at 700% CPU on the host. Fix: `adb shell
+  settings put global http_proxy :0` right after boot to clear the
+  guest-side setting — the QEMU-level redirect from `-http-proxy` keeps
+  working fine without it, since it never depended on the guest knowing
+  about a proxy in the first place.
+- IPv6: the proxy box has no IPv6 route, so Google's IPv6-first connection
+  attempts (`2001:4860:...`) log as "Network is unreachable" noise. Harmless
+  — IPv4 fallback works — but don't mistake it for something broken.
+
+**CA trust: two more gotchas, both now resolved.** Android 15's system CA
+store lives in a read-only, dm-verity-backed `com.android.conscrypt` APEX —
+confirmed (again) that `-writable-system`'s `/system` overlay does **not**
+cover it (it's a separate ext4 loop device, `/dev/block/dm-24` in this
+session). The fix that worked, in order:
+1. `adb root && adb shell setenforce 0` (userdebug/eng image — permissive
+   avoids chasing SELinux file-context labels on files copied out of
+   `/data/local/tmp`).
+2. Copy the APEX's existing `cacerts` dir out to a scratch dir on `/data`,
+   drop the new CA cert in alongside the originals (keeps every existing
+   root trusted — don't replace the dir, extend it), then
+   `mount -o bind <scratch dir> /apex/com.android.conscrypt/cacerts`. This
+   is a **kernel-level VFS mount** — it does not touch the read-only APEX
+   image on disk, so it survives an Android framework restart
+   (`adb shell stop && adb shell start`) but **not** a real reboot (`adb
+   reboot` unmounts everything and you're back to square one; redo the
+   `mount --bind` after each boot).
+3. **The actual blocker, and the one that cost the most time:** the cert
+   file must be named after OpenSSL's **legacy** `subject_hash_old`, not
+   the modern `subject_hash` (`-hash`). Android's `TrustedCertificateStore`
+   predates OpenSSL's post-1.0.0 hash algorithm change and was never
+   updated — it still does the old MD5-based hash for the `<hash>.0`
+   filename lookup. Using the new-style hash gets you a file that's present
+   in `ls` but never found by any real TLS handshake — which looks exactly
+   like "the OS just isn't picking up the CA," and burned a long stretch of
+   this session chasing framework-restart / zygote-caching theories before
+   the hash format itself turned out to be the bug.
+   `openssl x509 -in ca.pem -noout -subject_hash_old` → rename to
+   `<that>.0`.
+4. mitmproxy always self-signs its default CA with the identical hardcoded
+   subject (`CN=mitmproxy, O=mitmproxy`) — since `subject_hash_old` hashes
+   only the Subject Name (not the key), **every mitmproxy-generated default
+   CA has the same hash: `c8750f0d`.** That's not a coincidence with the
+   value referenced in the 2026-08-30 section above — it's a mitmproxy
+   constant, not something to recompute each time you regenerate its CA
+   (only the underlying key changes between installs, not the filename it
+   needs).
+5. **Also had to force-restart the target app after each CA change.** Even
+   with the correctly-hashed file in place, an already-running app process
+   kept failing the handshake against the old (cached-at-first-use, not
+   file-scanned-per-handshake) trust decision — `adb shell am force-stop
+   com.audible.application` then relaunch was required before a given
+   process would honor a freshly-added CA.
+
+**The payload — captured clean, twice.** First, the app's own backlog: on
+first launch this session it flushed four queued stat events from
+2026-09-19's real listening (see the 2026-09-20 entry — that ~40 min
+session was captured logcat-side but never seen server-side until now):
+
+```
+PUT https://api.audible.com.au/1.0/stats/events
+{"stats":[
+  {"asin":"B01L790CUU","asin_owned":true,"event_type":"Listening",
+   "event_timestamp":"2026-09-19T20:50:18.471Z",
+   "event_end_timestamp":"2026-09-19T21:23:49.296Z",
+   "local_timezone":"Australia/West",
+   "event_start_position":924414,"event_end_position":2935357,
+   "playing_immersion_reading":false,"narration_speed":1.0,
+   "length_of_book":19040890,"version_of_app":"26.32.06",
+   "delivery_type":"Download","listening_mode":"Online","store":"Audible",
+   "license_id":"40f2193e-602f-4fb2-8905-90451f2ed5e0","audio_type":"FullTitle",
+   "secondary_device_type_id":"None","session_id":"738-9874918-7065541"},
+  {"asin":"B01L790CUU","asin_owned":true,"event_type":"MarkAsUnfinished",
+   "event_timestamp":"2026-09-19T20:46:38.981Z","local_timezone":"Australia/West",
+   "event_start_position":0,"event_end_position":0,
+   "playing_immersion_reading":false,"narration_speed":1.0,
+   "length_of_book":19040890,"version_of_app":"26.32.06",
+   "delivery_type":"Download","listening_mode":"Offline","store":"Audible",
+   "license_id":"40f2193e-602f-4fb2-8905-90451f2ed5e0","audio_type":"FullTitle",
+   "session_id":"738-9874918-7065541"},
+  {"asin":"B01L790CUU","asin_owned":true,"event_type":"StartListening",
+   "event_timestamp":"2026-09-19T20:46:38.974Z","local_timezone":"Australia/West",
+   "event_start_position":826234,"event_end_position":0,
+   "playing_immersion_reading":false,"narration_speed":1.0,
+   "length_of_book":19040890,"version_of_app":"26.32.06",
+   "delivery_type":"Download","listening_mode":"Online","store":"Audible",
+   "license_id":"40f2193e-602f-4fb2-8905-90451f2ed5e0","audio_type":"FullTitle",
+   "secondary_device_type_id":"None","session_id":"738-9874918-7065541"},
+  {"asin":"B01L790CUU","asin_owned":true,"event_type":"Listening",
+   "event_timestamp":"2026-09-19T20:46:38.974Z",
+   "event_end_timestamp":"2026-09-19T20:48:18.240Z",
+   "local_timezone":"Australia/West",
+   "event_start_position":826234,"event_end_position":924414,
+   "playing_immersion_reading":false,"narration_speed":1.0,
+   "length_of_book":19040890,"version_of_app":"26.32.06",
+   "delivery_type":"Download","listening_mode":"Online","store":"Audible",
+   "license_id":"40f2193e-602f-4fb2-8905-90451f2ed5e0","audio_type":"FullTitle",
+   "secondary_device_type_id":"None","session_id":"738-9874918-7065541"}
+]}
+→ 200 {"stats_response":{"stats_posted_timestamp":"2026-09-21T02:38:46.784Z"}}
+```
+
+Second, a fully controlled example: pressed `KEYCODE_MEDIA_PLAY`, waited
+~17s wall clock, pressed `KEYCODE_MEDIA_PAUSE`. Two separate `PUT`s:
+
+```
+# fired at play:
+{"stats":[
+  {"event_type":"MarkAsUnfinished", "event_start_position":0,"event_end_position":0,
+   "listening_mode":"Offline", ...no secondary_device_type_id...},
+  {"event_type":"StartListening", "event_start_position":2895454,"event_end_position":0,
+   "listening_mode":"Online", "secondary_device_type_id":"None", ...}
+]}
+# fired at pause, ~17s later:
+{"stats":[
+  {"event_type":"Listening",
+   "event_timestamp":"2026-09-21T02:39:57.059Z",
+   "event_end_timestamp":"2026-09-21T02:40:13.671Z",
+   "event_start_position":2895454,"event_end_position":2911195,
+   "listening_mode":"Online","secondary_device_type_id":"None", ...}
+]}
+→ both 200 {"stats_response":{"stats_posted_timestamp":"..."}}
+```
+
+**Confirmed field-level takeaways:**
+- Events **batch** — a single `PUT` carries a `stats` array, can mix event
+  types, and can include backlogged events from a much earlier session
+  (the app queues locally and flushes on next successful connectivity).
+- `StartListening` is **always paired with a `MarkAsUnfinished`** in the same
+  batch when playback begins — looks like a defensive "wake up, this book
+  is being listened to" signal independent of whether it was actually
+  finished. `event_start_position`/`event_end_position` are both `0` for
+  that `MarkAsUnfinished`; it does not carry a real position.
+- `Listening` is the only type carrying `event_end_timestamp` — it
+  represents a *closed interval* (`event_start_position` →
+  `event_end_position`, wall-clock `event_timestamp` →
+  `event_end_timestamp`). `StartListening`/`MarkAsUnfinished` are point
+  events (no end timestamp).
+- Positions and `length_of_book` are **milliseconds**, integer.
+- `listening_mode` is `"Online"` for `StartListening`/`Listening` in every
+  sample seen, `"Offline"` for every `MarkAsUnfinished` — looks like a
+  fixed-per-event-type value rather than a reflection of actual
+  connectivity state at the time (all samples had `delivery_type:
+  "Download"` regardless).
+- `secondary_device_type_id: "None"` is present on `StartListening`/
+  `Listening` but **absent** (not present, not null) on `MarkAsUnfinished`.
+- `session_id` is shared across every event in a listening session
+  (matches the HTTP `session-id` header value) — ties the whole batch
+  together server-side.
+- `license_id` is the DRM license id VoxCodex already fetches per-title
+  (same field noted in the TODO L2 finding) — no new lookup needed.
+- The endpoint returned `200` for all of the above against the real
+  backend — this is not a guess being validated by echo, it's the real
+  app's real traffic.
+
+**Not yet answered:** whether this payload, sent *by VoxCodex*, actually
+moves `percent_complete`/`time_remaining_seconds` to the correct value on
+the library tile — recompute lag was tens of minutes in the 2026-08-30
+black-box testing, and this session ran out of time to sit and re-poll.
+Checked once, ~2 minutes after the pause event, via VoxCodex's own
+`AudibleAPI.get_library()`: `progress_ms=760800` vs. the real position just
+posted (`2911195`) — tile hadn't caught up yet, consistent with the known
+recompute lag rather than a new failure. Worth a same-day re-poll before
+writing the actual send logic, to close this loop with the app's own real
+send instead of an inference from the AVD's traffic.
+
+**Reusable for next time:** the proxy box, systemd service, and CA are all
+still standing (container is dedicated to this, not torn down after the
+session). Next capture session should be much faster: boot the AVD with
+`-gpu guest -no-snapshot-load -writable-system -http-proxy <proxy-ip>:8080`,
+clear the guest proxy setting, redo the `setenforce 0` + `mount --bind`
+(lost on reboot only), and traffic capture starts immediately — no need to
+rediscover any of the above.
+
 ## Open questions / next steps
 
-1. **Capture the real `Listening` payload** (see above) — the one thing
-   blocking full mid-book progress sync. This is what stands between here and
-   the v1.0.0 bar (feature parity with the Android app on position + finished
-   + progateted percent + royalty-side listening events).
+1. ~~Capture the real `Listening` payload~~ — **done, 2026-09-21.** Exact
+   schema confirmed for `Listening` / `StartListening` / `MarkAsUnfinished`,
+   see that dated section above. **Next:** implement sending it from
+   VoxCodex (mirror the app's pairing behavior — `MarkAsUnfinished` +
+   `StartListening` on playback start, closing `Listening` event on
+   pause/stop with the real elapsed interval), then re-poll
+   `percent_complete` on a real send to confirm it resolves correctly
+   rather than repeating the 2026-08-30 black-box session's 0%-regression
+   (that session's synthetic guesses were a *different*, wrong shape — this
+   one is the real thing, but hasn't been round-tripped through VoxCodex's
+   own send path yet).
 2. ~~Switch the position push to `PUT /1.0/lastpositions/{asin}`~~ — **done in
    v0.3.0.** `push_last_heard` → `push_last_position`; Fiona sidecar,
    `content_version`, and the constructed `guid` are all gone.
-3. **Re-poll `percent_complete` on the test titles over the next day** to see
-   whether the backend eventually self-corrects the 0 % it's showing now
-   (would tell us whether the pipeline is just slow vs. genuinely needs the
-   right event shape).
-4. **Decide product stance for going public:** "resume position + finished
-   state sync both ways; the in-progress % on the library tile updates once you
-   open the book on an official client" may be an acceptable v1 if the capture
-   turns out hard. The finished-state sync (shipped) covers the most visible
-   case.
+3. **Re-poll `percent_complete` on the test titles** after implementing the
+   real send (see #1) — recompute lag observed at tens of minutes, so check
+   well after sending, not immediately.
+4. **Decide product stance for going public:** now largely moot given #1 is
+   solved — but if implementation + re-poll reveals a new wrinkle, "resume
+   position + finished state sync both ways; in-progress % updates once you
+   open the book on an official client" remains an acceptable v1 fallback.
 
 ## Restoration ledger (test books)
 
@@ -331,3 +560,17 @@ from before this session started, so the ~40 minutes of in-app playback
 was never flushed to the server (app process was killed with the
 emulator before it pushed, and/or its push cadence is longer than the
 session). Nothing to restore; no ledger update needed.
+
+**2026-09-21 session:** again no synthetic events — all account activity
+was the app's own genuine backlog flush (2026-09-19's real ~40 min session,
+finally delivered once this session gave the app working connectivity) plus
+a deliberate ~17s real play/pause via media keys to capture a clean
+isolated example. Real, not synthetic: `B01L790CUU`'s position legitimately
+advanced from `826234` → `2895454` (the backlogged Sept-19 session) →
+`2911195` ms (this session's 17s test). All server responses were genuine
+200s from the real backend, not something to roll back. Checked via
+`AudibleAPI.get_library()` ~2 min after the last event: `is_finished=True`
+(unchanged), `progress_ms=760800` — well behind the just-posted `2911195`,
+consistent with the known tens-of-minutes recompute lag, not a new
+regression. Nothing to restore; worth a re-check next session to see where
+`progress_ms` lands once it catches up (ties into Open questions #3).
