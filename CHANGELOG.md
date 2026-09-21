@@ -21,6 +21,20 @@
   then crash the app on the next keypress.** The library load now dedupes
   by ASIN (keeping the first occurrence), the same way it already handled
   a missing ASIN.
+- **The library table's active filter and its downloaded-size label could
+  go stale after a download, delete, unmark, or a playback session** --
+  e.g. downloading a book while filtered to "Downloaded" left it invisible,
+  and deleting a download left the size label reading the pre-deletion
+  total. All five affected actions now recompute the filter instead of
+  just re-rendering the previous (now stale) result.
+- **"Unmark finished" could leave a book unreachable by any library
+  filter.** Clearing the flag alone left a book still at ~100% progress
+  matching only the "Finished" filter -- not "In progress", not "Not
+  started" -- so the state was stuck and a second press was a no-op.
+  Unmarking now also pulls the tracked position back under the threshold.
+- **The Chapter column stopped advancing after a listening session.** It
+  stayed at whatever chapter the book was on when the library was last
+  loaded, even after playing well past it, until the next full refresh.
 
 ### Security
 - **The Amazon account password and vault password could leak into

@@ -90,7 +90,34 @@ From `docs/code-review-2026-09-21.html` (not yet actioned):
       (`test_poll_shows_finished_when_mpv_has_exited`, renamed from the
       old direct-`_tick()` version, since the is_running check it exercises
       lives in `_poll_player`, not `_tick`).
-- [ ] 15 more Medium and 27 Low findings -- see the doc for the full list
+- [x] M13 -- The table's active filter and the downloaded-size label go
+      stale after download, delete, unmark, or a playback session
+      (`screens/library.py`). **Fixed** 2026-09-21: the five handlers
+      (`_download_succeeded`, the two delete confirmations,
+      `action_unmark_finished`, and `_on_progress`'s final branch) now
+      call `_apply_filters_and_sort()` instead of `_refresh_table()`, so
+      the filtered list and the size/count label are recomputed instead of
+      just re-rendered stale. Added
+      `test_download_succeeded_recomputes_the_active_filter`,
+      `test_delete_confirmed_updates_the_total_downloaded_size_label`, a
+      size-label assertion in the existing delete-finished-downloads test,
+      and `test_unmark_finished_recomputes_the_active_filter`.
+- [x] M15 -- "Unmark finished" (`u`) can leave a book unreachable by any
+      filter (`screens/library.py`). **Fixed** 2026-09-21:
+      `action_unmark_finished` now also pulls `progress_ms` back to just
+      under the finished threshold when it's still at/above it, so the
+      book actually lands in "In progress" instead of staying stuck
+      matching only "Finished". Added
+      `test_unmark_finished_makes_the_book_reachable_by_in_progress_filter`.
+- [x] M16 -- The Chapter column doesn't advance after a listening session
+      (`screens/library.py`). **Fixed** 2026-09-21: `_on_progress`'s final
+      branch now recomputes `chapter_total`/`chapter_current` from
+      `_chapter_cache` (not the session's local `chapters`, which can be
+      an empty placeholder from a deliberately-uncached transient fetch
+      failure -- see `_open_player`) before the table rebuild. Added
+      `test_chapter_column_advances_after_a_listening_session_closes` and
+      `test_chapter_column_unchanged_when_the_chapter_fetch_never_succeeded`.
+- [ ] 12 more Medium and 27 Low findings -- see the doc for the full list
       and suggested order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

@@ -21,6 +21,7 @@ from voxcodex.screens.library import (
     COLUMNS,
     LibraryScreen,
     _current_chapter_number,
+    _FINISHED_PCT,
     _reached_end,
     _resolve_progress_ms,
 )
@@ -902,6 +903,28 @@ async def test_download_skipped_when_already_downloaded(monkeypatch):
         assert "Already downloaded" in screen.query_one("#status").content
 
 
+async def test_download_succeeded_recomputes_the_active_filter():
+    """M13: _download_succeeded used to call _refresh_table() (re-renders
+    self._filtered as it was last computed) instead of
+    _apply_filters_and_sort() (recomputes it from self._books) -- so a
+    download that completes while filtered to "Downloaded" left the
+    newly-downloaded book invisible: the row count stayed at 0 even though
+    the download succeeded."""
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen._filter_key = "downloaded"
+        screen._apply_filters_and_sort()
+        assert screen._filtered == []  # not downloaded yet
+
+        screen._download_succeeded(screen._books[0])
+
+        assert [b.title for b in screen._filtered] == ["One"]
+
+
 async def test_download_success_updates_status_and_table(monkeypatch):
     download_calls = []
 
@@ -999,6 +1022,35 @@ async def test_delete_confirmed_removes_download(monkeypatch):
 
         assert delete_calls == ["B1"]
         assert screen._books[0].is_downloaded is False
+
+
+async def test_delete_confirmed_updates_the_total_downloaded_size_label(monkeypatch):
+    """M13: the size label used to go stale after a delete -- it kept
+    reading the pre-deletion total because the handler called
+    _refresh_table() instead of _apply_filters_and_sort() (which is what
+    actually recomputes _update_sort_filter_label's total)."""
+    monkeypatch.setattr(library_module.download, "is_downloaded", lambda asin: True)
+    monkeypatch.setattr(library_module.download, "delete_download", lambda asin: None)
+    monkeypatch.setattr(
+        library_module.download, "downloaded_size", lambda asin: 245 * 1024 * 1024
+    )
+
+    books = [_book("B1", "One")]
+    screen = LibraryScreen(FakeAPI(books))
+    books[0].is_downloaded = True
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        assert "245 MB downloaded" in str(screen.query_one("#sort-filter").content)
+
+        screen.query_one(DataTable).focus()
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.click("#yes")
+        await pilot.pause()
+
+        assert "downloaded" not in str(screen.query_one("#sort-filter").content)
 
 
 # -- download size column, total, and bulk cleanup (L13) --------------------
@@ -1107,6 +1159,10 @@ async def test_delete_finished_downloads_requires_confirmation_and_removes_match
         assert "Removed 1 finished download (100 MB)" in str(
             screen.query_one("#status").content
         )
+        # M13: the size label must reflect the deletion (100 MB left, not
+        # the pre-deletion 200 MB) -- it used to go stale here because the
+        # handler called _refresh_table() instead of _apply_filters_and_sort().
+        assert "100 MB downloaded" in str(screen.query_one("#sort-filter").content)
 
 
 async def test_delete_finished_downloads_cancelled_removes_nothing(monkeypatch):
@@ -1167,6 +1223,62 @@ async def test_unmark_finished_clears_the_flag_and_pushes_the_change():
         await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
         assert screen._books[0].is_finished is False
         assert "Unmarked as finished" in str(screen.query_one("#status").content)
+
+
+async def test_unmark_finished_recomputes_the_active_filter():
+    """M13: action_unmark_finished used to call _refresh_table() instead of
+    _apply_filters_and_sort() -- so with the filter set to "Finished", an
+    unmarked book stayed visible in that filtered view until some other
+    action recomputed it."""
+    book = _book("B1", "One")
+    book.is_finished = True
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen._filter_key = "finished"
+        screen._apply_filters_and_sort()
+        assert screen._filtered == [book]
+
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+
+        assert screen._filtered == []
+
+
+async def test_unmark_finished_makes_the_book_reachable_by_in_progress_filter():
+    """M15: clearing is_finished alone left a book still at ~100% progress
+    matching only the "Finished" filter (is_finished OR pct >=
+    _FINISHED_PCT) -- not "In progress", not "Not started" -- so the state
+    was permanently unreachable by any further keypress, and a second `u`
+    was a no-op since the flag was already clear."""
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.progress_ms = 1000
+    book.duration_ms = 1000  # mis-fired at ~100%, per the "u" feature's purpose
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+
+        assert book.is_finished is False
+        assert book.progress_pct < _FINISHED_PCT
+
+        screen._filter_key = "in_progress"
+        screen._apply_filters_and_sort()
+        assert screen._filtered == [book]
+
+        screen._filter_key = "finished"
+        screen._apply_filters_and_sort()
+        assert screen._filtered == []
 
 
 async def test_unmark_finished_is_a_no_op_when_not_finished():
@@ -1759,6 +1871,87 @@ async def test_play_still_works_when_chapter_fetch_fails(monkeypatch):
 
         # Chapter navigation is degraded, not the whole play action.
         assert app.screen._chapters == []
+
+
+async def test_chapter_column_advances_after_a_listening_session_closes(monkeypatch):
+    """M16: _on_progress updated progress_ms and rebuilt the table on
+    close, but never recomputed chapter_current -- so a book listened to
+    well past chapter 1 still showed its pre-session chapter number (a
+    real, non-placeholder value, so it doesn't fall back to blank) until
+    the next full library refresh."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 70.0  # inside "Chapter 3" (starts at 65s)
+        duration_seconds = 130.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    chapters = [
+        Chapter(title="Chapter 1", start_ms=0, length_ms=5_000),
+        Chapter(title="Chapter 2", start_ms=5_000, length_ms=60_000),
+        Chapter(title="Chapter 3", start_ms=65_000, length_ms=65_000),
+    ]
+    book = _book("B1", "One")
+    book.duration_ms = 130_000
+    api = FakeAPI([book], chapters=chapters)
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+        assert screen._books[0].chapter_current == 0  # not started yet
+
+        await pilot.press("q")
+        await pilot.pause()
+
+        await _wait_until(lambda: screen._books[0].chapter_current == 3)
+        assert screen._books[0].chapter_total == 3
+
+
+async def test_chapter_column_unchanged_when_the_chapter_fetch_never_succeeded(
+    monkeypatch,
+):
+    """A transient chapter-fetch failure is deliberately never cached (see
+    _open_player) -- closing the player must not regress an unrelated,
+    already-known chapter_total/chapter_current to 0/None on the strength
+    of that session's empty `chapters` list."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    class PlayingMpv(_FakeMpvPlayer):
+        position_seconds = 70.0
+        duration_seconds = 130.0
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", PlayingMpv)
+
+    book = _book("B1", "One")
+    book.duration_ms = 130_000
+    book.chapter_total = 5  # from an earlier, successful fetch this session
+    book.chapter_current = 2
+    api = FakeAPI([book], chapters_exc=httpx.HTTPError("metadata endpoint exploded"))
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+
+        await pilot.press("q")
+        await pilot.pause()
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+
+        assert screen._books[0].chapter_total == 5
+        assert screen._books[0].chapter_current == 2
 
 
 # -- narrowed exception handling on the license path (M7) -----------------

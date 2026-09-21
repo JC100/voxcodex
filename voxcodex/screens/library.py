@@ -661,7 +661,7 @@ class LibraryScreen(Screen[None]):
         except NoMatches:
             return
         book.is_downloaded = True
-        self._refresh_table()
+        self._apply_filters_and_sort()
         self._set_status(f"Downloaded: {book.title}")
 
     def action_delete_selected(self) -> None:
@@ -674,7 +674,7 @@ class LibraryScreen(Screen[None]):
                 return
             download.delete_download(book.asin)
             book.is_downloaded = False
-            self._refresh_table()
+            self._apply_filters_and_sort()
             self._set_status(f"Removed local copy of {book.title}")
 
         self.app.push_screen(
@@ -703,7 +703,7 @@ class LibraryScreen(Screen[None]):
             for book in targets:
                 download.delete_download(book.asin)
                 book.is_downloaded = False
-            self._refresh_table()
+            self._apply_filters_and_sort()
             self._set_status(
                 f"Removed {len(targets)} finished download"
                 f"{'s' if len(targets) != 1 else ''} ({_format_size(total_size)})"
@@ -728,7 +728,16 @@ class LibraryScreen(Screen[None]):
         if book is None or not book.is_finished:
             return
         book.is_finished = False
-        self._refresh_table()
+        if book.progress_pct >= _FINISHED_PCT:
+            # Clearing the flag alone leaves the book unreachable by any
+            # filter: "Finished" matches on is_finished OR pct >=
+            # _FINISHED_PCT, so a book still at ~100% keeps matching
+            # "Finished" and only "Finished" -- not "In progress", not "Not
+            # started" -- and a second `u` press is a no-op since the flag
+            # is already clear. Pull the tracked position back just under
+            # the threshold so the book actually lands in "In progress".
+            book.progress_ms = round(book.duration_ms * (_FINISHED_FRACTION - 0.01))
+        self._apply_filters_and_sort()
         self._set_status(f"Unmarked as finished: {book.title}")
         self._push_finished(book.asin, False)
 
@@ -858,10 +867,25 @@ class LibraryScreen(Screen[None]):
             if newly_finished:
                 book.is_finished = True
             if final:
+                # The Chapter column otherwise stays at whatever it was when
+                # the library was last loaded/refreshed -- a session that
+                # crosses chapter boundaries would return to a stale number
+                # until the next full refresh, even though Progress and the
+                # Finished checkmark both update fine. Re-read from
+                # _chapter_cache (not the local `chapters`) so a transient
+                # fetch failure this session -- deliberately never cached,
+                # see _open_player -- doesn't regress an already-known
+                # count to 0/None.
+                cached_chapters = self._chapter_cache.get(book.asin)
+                if cached_chapters is not None:
+                    book.chapter_total = len(cached_chapters)
+                    book.chapter_current = _current_chapter_number(
+                        cached_chapters, position_ms
+                    )
                 # The library table is behind the player during a periodic
                 # checkpoint -- only worth rebuilding when we're heading back
                 # to it. The push to Audible is also close-only.
-                self._refresh_table()
+                self._apply_filters_and_sort()
                 # On a hard app quit the screen may already be tearing down,
                 # in which case spawning a push worker can fail -- the local
                 # save above is what actually matters, so don't let this
