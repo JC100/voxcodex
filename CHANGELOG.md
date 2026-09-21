@@ -106,6 +106,9 @@
 - A download from a CDN that compresses its response could have been
   incorrectly flagged and rejected as truncated, even though nothing was
   actually lost.
+- A library item with an explicit null title, or a runtime/progress value
+  sent as a string, is now parsed correctly instead of producing a blank
+  title or corrupted duration.
 
 ### Security
 - **The Amazon account password and vault password could leak into

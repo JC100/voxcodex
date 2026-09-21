@@ -52,6 +52,28 @@ def test_book_from_item_defaults_when_fields_missing():
     assert book.is_finished is False
 
 
+def test_book_from_item_title_falls_back_to_untitled_on_explicit_null():
+    # L16: title defaulted via .get(..., "Untitled"), which only fires
+    # when the key is missing entirely -- an explicit "title": null (key
+    # present, value None) fell through as book.title = None, unlike the
+    # `or ""` pattern used for subtitle/purchase_date a few lines away.
+    book = _book_from_item({"title": None})
+    assert book.title == "Untitled"
+
+
+def test_book_from_item_coerces_string_runtime_and_percent_complete():
+    # L16: runtime_min/percent_complete were used arithmetically
+    # (runtime_min * 60_000, percent_complete / 100) with no numeric
+    # coercion, unlike the equivalent chapter-parsing code -- a string
+    # value wouldn't error so much as silently produce nonsense
+    # ("45" * 60_000 is a valid Python expression, just not a duration).
+    item = {"runtime_length_min": "100", "percent_complete": "50"}
+    book = _book_from_item(item)
+    assert book.runtime_min == 100
+    assert book.duration_ms == 100 * 60_000
+    assert book.progress_ms == 50 * 60_000
+
+
 def test_book_from_item_multiple_authors():
     item = {"authors": [{"name": "A"}, {"name": "B"}, {"name": None}]}
     book = _book_from_item(item)

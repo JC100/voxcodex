@@ -386,7 +386,16 @@ done.
       instead of duplicating it. Added 5 tests (verified
       `test_get_license_rejects_a_malformed_asin` fails against the
       pre-fix unguarded interpolation).
-- [ ] 12 more Low findings -- see the doc for the full list and suggested
+- [x] L16 -- `_book_from_item`'s type coercion is inconsistent: `title`
+      defaults via `.get(..., "Untitled")` (doesn't catch an explicit
+      `null`), and `runtime_min`/`percent_complete` are used
+      arithmetically with no numeric coercion (`services/api.py`).
+      **Fixed** 2026-09-21: `title` now falls back via `or "Untitled"`
+      (matching the `subtitle`/`purchase_date` pattern two lines away),
+      and `runtime_min`/`percent_complete` are coerced with
+      `int()`/`float()`, matching the equivalent chapter-parsing code.
+      Added 2 tests (verified both fail against the pre-fix code).
+- [ ] 11 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in

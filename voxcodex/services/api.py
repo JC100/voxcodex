@@ -540,15 +540,24 @@ def _book_from_item(item: dict[str, Any]) -> Book:
     series_sequence = series_list[0].get("sequence", "") if series_list else ""
     images = item.get("product_images") or {}
     cover_url = images.get("500") or images.get("300") or ""
-    runtime_min = item.get("runtime_length_min") or 0
-    percent_complete = item.get("percent_complete") or 0
+    # Coerced with int()/float(), matching the equivalent chapter-parsing
+    # code below -- used arithmetically a few lines down, and (unlike a
+    # plain `or 0`) this also catches the API ever sending these as
+    # strings, which int/float multiplication wouldn't error on so much as
+    # silently produce nonsense (L16).
+    runtime_min = int(item.get("runtime_length_min") or 0)
+    percent_complete = float(item.get("percent_complete") or 0)
     duration_ms = runtime_min * 60_000
     progress_ms = round(duration_ms * (percent_complete / 100)) if duration_ms else 0
     is_finished = bool(item.get("is_finished"))
 
     return Book(
         asin=item.get("asin", ""),
-        title=item.get("title", "Untitled"),
+        # `or "Untitled"`, not `.get(..., "Untitled")`, so an explicit
+        # `"title": null` (key present, value None) falls back too --
+        # `.get()`'s own default only ever fires when the key is missing
+        # entirely (L16).
+        title=item.get("title") or "Untitled",
         subtitle=item.get("subtitle", "") or "",
         authors=authors,
         narrators=narrators,
