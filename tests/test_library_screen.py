@@ -1216,8 +1216,8 @@ class _FakeMpvPlayer:
     paused = False
     eof_reached = False
 
-    def start(self, *args, **kwargs):
-        pass
+    def start(self, source, key, iv, start_seconds=0.0):
+        self.start_seconds = start_seconds
 
     def stop(self):
         pass
@@ -1594,6 +1594,37 @@ async def test_resuming_a_finished_book_clears_the_flag_immediately(monkeypatch)
         # No listening-session push at open time -- only at close (see the
         # module docstring above for why a reset push isn't sent at all).
         assert api.push_listening_session_calls == []
+
+
+async def test_resuming_a_finished_book_starts_mpv_at_zero_not_at_the_stale_progress(
+    monkeypatch,
+):
+    """Regression test for H1 (docs/code-review-2026-09-21.html): a finished
+    book's mpv start position must actually be 0, not just its is_finished
+    flag flip -- _launch_player clears the flag before PlayerScreen is
+    constructed, so PlayerScreen must not re-derive the start position from
+    that (by-then-cleared) flag."""
+    from voxcodex.screens import player_screen as player_screen_module
+    from voxcodex.screens.player_screen import PlayerScreen
+
+    monkeypatch.setattr(player_screen_module, "MpvPlayer", _FakeMpvPlayer)
+
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.progress_ms = 900_000
+    book.duration_ms = 1_000_000
+    api = FakeAPI([book], license_id="lic-abc")
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("p")
+        await _wait_until(lambda: isinstance(app.screen, PlayerScreen))
+        await _wait_until(lambda: app.screen._player is not None)
+
+        assert app.screen._player.start_seconds == 0.0
 
 
 async def test_resuming_a_not_finished_book_does_not_touch_the_finished_flag(monkeypatch):

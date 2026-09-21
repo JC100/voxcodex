@@ -115,6 +115,7 @@ class PlayerScreen(Screen[int]):
         chapters: list[Chapter] | None = None,
         settings: Settings | None = None,
         on_progress: Callable[..., None] | None = None,
+        start_position_ms: int | None = None,
     ) -> None:
         super().__init__()
         self.book = book
@@ -123,11 +124,22 @@ class PlayerScreen(Screen[int]):
         self._iv = iv
         self._chapters = chapters or []
         self._player: MpvPlayer | None = None
-        self._last_position_ms = book.progress_ms
+        # The caller (LibraryScreen._launch_player) owns the finished ->
+        # restart decision and passes the resolved value explicitly, since
+        # it mutates book.is_finished before this screen is constructed --
+        # re-deriving "0 if book.is_finished else book.progress_ms" here
+        # would see that already-cleared flag and resume instead of
+        # restart. Falling back to that same expression when unset keeps
+        # direct construction (tests) working as before.
+        self._start_position_ms = (
+            start_position_ms if start_position_ms is not None
+            else (0 if book.is_finished else book.progress_ms)
+        )
+        self._last_position_ms = self._start_position_ms
         # (position_ms, *, final) -> None. The owner persists it and, when
         # final, pushes it to Audible. See LibraryScreen._launch_player.
         self._on_progress = on_progress
-        self._saved_position_ms = book.progress_ms
+        self._saved_position_ms = self._start_position_ms
         self._ticks_since_checkpoint = 0
         self._poll_inflight = False
         self._settings = settings if settings is not None else Settings()
@@ -147,8 +159,7 @@ class PlayerScreen(Screen[int]):
         yield Footer()
 
     def on_mount(self) -> None:
-        start_seconds = 0.0 if self.book.is_finished else self.book.progress_ms / 1000
-        self._start_player(start_seconds)
+        self._start_player(self._start_position_ms / 1000)
 
     @work(thread=True, exclusive=True, exit_on_error=False)
     def _start_player(self, start_seconds: float) -> None:

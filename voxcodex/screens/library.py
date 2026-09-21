@@ -815,10 +815,12 @@ class LibraryScreen(Screen[None]):
     ) -> None:
         self._set_status("")
 
-        # Matches what PlayerScreen.on_mount actually starts mpv from --
-        # a finished book restarts at 0 rather than resuming, so the
-        # listening session reported below must start from the same point,
-        # not from the (stale/irrelevant) prior progress_ms.
+        # Computed before is_finished is mutated below, and passed to
+        # PlayerScreen explicitly (start_position_ms=) rather than letting
+        # it re-derive the same expression from book.is_finished -- by the
+        # time PlayerScreen.on_mount would run, that flag is already False,
+        # which silently turned "restart a finished book at 0" into "resume
+        # from progress_ms" (see docs/code-review-2026-09-21.html H1).
         session_start_position_ms = 0 if book.is_finished else book.progress_ms
         session_start_time = datetime.now(UTC)
         delivery_type = "Download" if book.is_downloaded else "Streaming"
@@ -888,6 +890,7 @@ class LibraryScreen(Screen[None]):
                 chapters=chapters,
                 settings=self.settings,
                 on_progress=_on_progress,
+                start_position_ms=session_start_position_ms,
             )
         )
 

@@ -22,9 +22,18 @@ relocate a finding by file/description, not by line.
 
 From `docs/code-review-2026-09-21.html` (not yet actioned):
 
-- [ ] H1 -- Resuming a "Finished" book seeks to the end instead of
+- [x] H1 -- Resuming a "Finished" book seeks to the end instead of
       restarting (`screens/library.py` / `screens/player_screen.py`). Also
       the still-open Major finding from PR #2's CodeRabbit review.
+      **Fixed** 2026-09-21: `LibraryScreen._launch_player` now passes the
+      already-computed `session_start_position_ms` into `PlayerScreen` as
+      an explicit `start_position_ms` constructor kwarg, instead of
+      `PlayerScreen.on_mount` re-deriving it from `book.is_finished` --
+      which by then had already been cleared by the same method. Added
+      `test_resuming_a_finished_book_starts_mpv_at_zero_not_at_the_stale_progress`,
+      which asserts the actual mpv start position through the full
+      `LibraryScreen` -> `p` -> `PlayerScreen` path (the class of test the
+      review noted was entirely missing).
 - [ ] H2 -- A duplicate ASIN silently truncates the library table, then
       crashes on the next keypress (`screens/library.py`).
 - [ ] H3 -- A transient mpv read failure silently zeroes the saved

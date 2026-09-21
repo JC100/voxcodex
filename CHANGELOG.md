@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- **Resuming a "Finished" book now actually restarts at 0 instead of
+  seeking to the end.** `PlayerScreen` was re-deriving its mpv start
+  position from `book.is_finished` after `LibraryScreen._launch_player`
+  had already cleared that flag (to un-finish the book on resume), so it
+  always took the "resume from saved progress" branch -- for a finished
+  book, that's ~100% through, so mpv hit EOF immediately and nothing
+  played. The start position is now computed once by the caller and
+  passed in explicitly.
+
 ## 0.5.0
 
 Closes the mid-book progress sync investigation -- the last known gap
