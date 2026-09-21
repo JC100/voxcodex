@@ -111,6 +111,9 @@
   title or corrupted duration.
 - A book title or other interpolated text containing certain bracketed
   text could crash a confirmation or prompt dialog outright.
+- Closed a rare race where the chapter cache could silently fail to save
+  if a background chapter fetch happened to be updating it at the same
+  moment.
 
 ### Added
 - Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation

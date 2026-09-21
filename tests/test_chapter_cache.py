@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from voxcodex import config
@@ -67,6 +69,41 @@ def test_save_overwrites_previous_cache():
     chapter_cache.save({"B2": []})
 
     assert chapter_cache.load() == {"B2": []}
+
+
+def test_save_tolerates_the_dict_being_mutated_concurrently():
+    """L19: the caller passes its own live dict (LibraryScreen's
+    self._chapter_cache), which a background worker (_fetch_chapter_counts)
+    can be extending on another thread at the same moment save() iterates
+    it -- raising "dictionary changed size during iteration", which isn't
+    an OSError, so save()'s own except wouldn't have caught it, silently
+    losing that session's chapter cache write. dict(...) snapshots
+    atomically before iterating, closing the race."""
+    # A large dict (a wide iteration window per save() call, so the race
+    # actually lands within a handful of attempts) and a small sleep per
+    # mutation (not a tight busy loop -- that starves the main thread of
+    # the GIL badly enough that save() barely makes progress at all,
+    # rather than genuinely racing it). Calibrated to reliably reproduce
+    # "dictionary changed size during iteration" within ~50 attempts
+    # against the pre-fix code, and to complete in well under a second
+    # either way.
+    chapters_by_asin = {f"B{i}": _chapters() for i in range(2000)}
+    stop = threading.Event()
+
+    def mutate():
+        i = 2000
+        while not stop.wait(0.0002):
+            chapters_by_asin[f"B{i}"] = _chapters()
+            i += 1
+
+    thread = threading.Thread(target=mutate, daemon=True)
+    thread.start()
+    try:
+        for _ in range(50):
+            chapter_cache.save(chapters_by_asin)  # must not raise
+    finally:
+        stop.set()
+        thread.join(timeout=2)
 
 
 def test_save_is_a_best_effort_write_that_does_not_raise(monkeypatch):

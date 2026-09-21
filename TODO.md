@@ -410,7 +410,19 @@ done.
       binding to both -- `PromptModal` maps it to Cancel, `ConfirmModal`
       maps it to No (the safe, non-destructive default). Added 2 tests
       (verified both fail without the binding).
-- [ ] 9 more Low findings -- see the doc for the full list and suggested
+- [x] L19 -- `chapter_cache.save()` iterates a dict a different worker
+      thread can concurrently mutate, which can raise `RuntimeError:
+      dictionary changed size during iteration` -- not caught by
+      `save()`'s own `except OSError`, silently losing that session's
+      chapter cache write (`services/chapter_cache.py`). **Fixed**
+      2026-09-21: snapshot with `dict(chapters_by_asin)` before iterating
+      (a single atomic C-level copy). Added
+      `test_save_tolerates_the_dict_being_mutated_concurrently` -- a real
+      background thread mutating a 2000-entry dict while `save()` runs
+      repeatedly, calibrated to reliably reproduce the `RuntimeError`
+      within ~50 attempts against the pre-fix code (verified 3/3 runs)
+      and to complete in well under a second either way.
+- [ ] 8 more Low findings -- see the doc for the full list and suggested
       order of work.
 - [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
       stale step cross-reference; contradictory TL;DR in
