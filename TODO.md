@@ -521,14 +521,17 @@ done.
 
 All 27 Low findings are now done, alongside all 6 High and 16 Medium
 findings -- the full 2026-09-21 code review is closed out.
-- [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
-- [ ] Still-open Minor findings from PR #2's external review: `CLAUDE.md:68`
-      stale step cross-reference; contradictory TL;DR in
-      `docs/library-progress-sync-investigation.md:23-30`; the
-      finished-state explanation below (under "Closed: mid-book progress
-      sync") is stale -- it claims VoxCodex deliberately does *not*
-      auto-clear `is_finished` on resume, but the follow-up two entries
-      below it says the opposite is now true.
+- [x] Minor findings from PR #2's external review. **Fixed** 2026-09-22:
+      `CLAUDE.md:68`'s stale "step 7" cross-reference now correctly says
+      "step 8"; the mid-book-progress TL;DR bullet in
+      `docs/library-progress-sync-investigation.md:23-30` is now marked as
+      the state as of the investigation's start with an explicit forward
+      pointer to the 2026-09-21 entry that superseded it, instead of
+      reading as still-current; the finished-state explanation below
+      (under "Closed: mid-book progress sync") no longer wrongly claims
+      VoxCodex avoids auto-clearing `is_finished` on resume -- it now
+      points at the Follow-up entry, which is where that (real, deliberate)
+      behavior actually lives.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 
@@ -551,9 +554,13 @@ findings -- the full 2026-09-21 code review is closed out.
       fresh `get_license()` or re-download before this can push for them)
       and the session's real start/end position and wall-clock time.
       Deliberately does *not* mirror the real app's accompanying
-      `MarkAsUnfinished` on every play -- VoxCodex already has an
-      explicit, user-triggered way to un-finish a book, and auto-clearing
-      it just because playback resumed would fight that.
+      `MarkAsUnfinished` on every play as part of *this* payload -- kept
+      separate so it only fires on the actual finished -> playing
+      transition rather than being folded into every session. (Un-finishing
+      on resume itself is real and deliberate -- see the Follow-up below,
+      which auto-clears `is_finished` the moment a finished book is
+      resumed, matching the real app's own behavior. An earlier version of
+      this note wrongly implied VoxCodex avoids that; it doesn't.)
       **Confirmed against the live account, same day:** played
       `B01L790CUU` for real (~3 minutes, via VoxCodex itself, not a
       synthetic call) and re-read the raw library response immediately
