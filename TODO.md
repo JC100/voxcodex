@@ -14,8 +14,13 @@
 - **2026-09-22: every finding from that review (all 6 High, 16 Medium, 27
   Low) is fixed, tested, and confirmed green on CI** -- see "Open work"
   below for the closed-out punch list. The three carryover Minor findings
-  from PR #2's external review are fixed too. Nothing is open; this is
-  the 1.0.0 release.
+  from PR #2's external review are fixed too. This is the 1.0.0 release,
+  merged into `main` 2026-09-22 (PR #3). One Minor finding (a
+  progress-store write-failure edge case in `action_unmark_finished`,
+  caught by CodeRabbit after the rest of PR #3 was already fixed and
+  pushed) was deliberately shipped as a known issue rather than holding
+  the release -- see "Open work" below and `CHANGELOG.md`'s 1.0.0 "Known
+  issues".
 
 Full finding detail (rationale, suggested fix) for either review lives in
 `docs/code-review-2026-08-31.html` / `docs/code-review-2026-09-21.html`.
@@ -573,6 +578,19 @@ findings -- the full 2026-09-21 code review is closed out.
         `test_get_license_raises_invalid_response_when_content_metadata_malformed`,
         and `test_get_license_raises_invalid_response_when_position_ms_is_malformed`
         in `tests/test_api.py`.
+  - [ ] `action_unmark_finished` mutates `book.is_finished`/`book.progress_ms`
+        before calling `progress_store.set_position_ms` (Minor). If that
+        write raises `OSError`, the method returns with in-memory state
+        already changed but the table not refreshed and `_push_finished`
+        never called -- a partial, inconsistent state until the next
+        unrelated refresh. Flagged by CodeRabbit 2026-09-22 (comment
+        4068279446) after PR #3's other findings were already fixed and
+        pushed; **known issue, deliberately shipped in 1.0.0** rather than
+        holding the release -- see `CHANGELOG.md`'s 1.0.0 "Known issues".
+        Fix: persist the candidate position first, and only mutate
+        `book.is_finished`/`book.progress_ms` (and refresh/push) after that
+        write succeeds; on failure, leave the book's state untouched and
+        show a save-failure status.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 
@@ -677,6 +695,73 @@ findings -- the full 2026-09-21 code review is closed out.
       cleanup, or per-item size display. Added a "Size" column, a total
       downloaded size in the sort/filter label, and a "X" (delete finished
       downloads) bulk-cleanup keybinding.
+
+## Nits (N1-N8)
+
+These were filed in `docs/code-review-2026-08-31.html`'s "Nits" section,
+below the tracked Critical/High/Medium/Low severities -- never picked up
+into this file's "Open work"/L-item tracking, so they sat unfixed through
+0.4.0/0.5.0/1.0.0. Addressed 2026-09-22 as pre-public-launch cleanup
+(the repo is about to go public).
+
+- [x] N1 -- `scratch/whispersync/probe.py` was committed with a
+      hardcoded absolute local path (`sys.path.insert(0,
+      "/home/jake/..."`), the developer's Audible marketplace, and two
+      titles from their personal library. **Fixed**: moved to
+      `tools/whispersync_probe.py`, dropped the unneeded `sys.path` hack
+      entirely, genericized the marketplace mention, and replaced the
+      real ASINs with placeholder constants + a comment telling the
+      reader to substitute their own.
+- [x] N2 -- `scratch-whispersync/` (an untracked, byte-identical
+      duplicate of N1's script) and an empty `scratch-ws/` were leftover
+      clutter; `.gitignore` covered neither them nor `.claude/`. **Fixed**:
+      removed both untracked dirs (nothing lost -- N1's move already
+      preserved the script's content under `tools/`), and added
+      `scratch*/` and `.claude/` to `.gitignore`.
+- [x] N3 -- `docs/whispersync-research.md` captured a live account
+      identifier (a real `guid="{acr}:{version}"` from an actual
+      request) verbatim. **Fixed**: redacted the `acr` component (now
+      `CR!REDACTED-ACR:...`) in both the URL-encoded and readable forms;
+      left the ASIN/version/timestamps, which aren't account-specific
+      credentials, so the capture is still legible as a worked example.
+- [x] N4 -- README's library-screen keybinding table listed `q` for
+      Quit; `LibraryScreen.BINDINGS` has no `q` (only the app-level
+      `ctrl+q`). **Fixed**: corrected to `ctrl+q`, and while in there,
+      added the `X` (delete finished downloads), `u` (unmark finished),
+      and `esc` (clear search) rows the table was also missing.
+- [x] N5 -- README's "Local data" section never mentioned
+      `voxcodex.log`, the largest and most sensitive artifact the app
+      produces (raw API responses/licence data under `VOXCODEX_DEBUG`).
+      **Fixed**: added it, with its location, rotation, permissions, and
+      the `VOXCODEX_DEBUG` caveat.
+- [x] N6 -- `asyncio_mode = "auto"` with no
+      `asyncio_default_fixture_loop_scope` risked a
+      `PytestDeprecationWarning` on newer pytest-asyncio. **Fixed**: set
+      it explicitly to `"function"` in `pyproject.toml`.
+- [ ] N7 -- `_current_chapter_index` (`screens/player_screen.py`) reads
+      `_last_position_ms`, which only updates once per ~1Hz poll tick --
+      pressing `n`/`p` immediately after a seek can act on the pre-seek
+      chapter until the next tick lands. **Not fixed**: the Nit's own
+      suggested fix ("read `player.position_seconds` in the action
+      instead") would call mpv's IPC synchronously from the action
+      handler, i.e. back on the UI/event-loop thread -- exactly the
+      blocking-round-trip freeze that `_control`'s later fix (see H3 /
+      "wedged mpv" in `CHANGELOG.md`) deliberately moved off that thread.
+      That fix is now stale and would reintroduce a worse, already-fixed
+      bug. Left open as a rare, low-severity edge case (a seek followed
+      by a chapter-nav press inside the same ~1s window); a real fix
+      needs an off-thread read or an optimistic local update on seek, not
+      attempted here without dedicated test coverage.
+- [ ] N8 -- The sleep timer expiring gives no feedback beyond its
+      countdown vanishing from the time row (reverts to a plain "paused"
+      state, indistinguishable from a manual pause); separately,
+      `eof_reached` only updates the state text to "Finished" with no
+      auto-close/finish-mark/poll-stop. **Not fixed**: these are UX/
+      product-behavior decisions (should sleep-timer-pause be visually
+      distinct? should EOF auto-close the player or auto-mark finished?)
+      rather than clear-cut bugs, and change user-visible playback
+      behavior -- left for a deliberate product decision rather than
+      guessed at here.
 
 ## Known flaky tests
 

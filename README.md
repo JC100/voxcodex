@@ -81,11 +81,14 @@ Library screen:
 | `d` | Download selected book |
 | `p` / `space` | Play selected book (streams if not downloaded) |
 | `x` | Delete local download |
+| `X` | Delete all finished downloads (one confirmation) |
+| `u` | Unmark a "Finished" book (undo a mis-detected end) |
 | `r` | Refresh library |
 | `o` | Cycle sort (Recent → Title → Author → Series → Progress → Recent) |
 | `f` | Cycle filter (All → Downloaded → In progress → Finished → Not started → All) |
 | `t` | Cycle progress column (% → time left → both → %) |
-| `q` | Quit |
+| `esc` | Clear search |
+| `ctrl+q` | Quit |
 
 The search box has focus by default, so `d`/`p`/`o`/`f`/etc. would just be
 typed as search text until you leave it -- `↓` or `Enter` moves focus to the
@@ -212,6 +215,11 @@ you don't control.
 - Config/auth/settings: platform config dir (e.g. `~/.config/voxcodex/`)
 - Downloads, progress cache, and the offline library cache: platform data
   dir (e.g. `~/.local/share/voxcodex/`)
+- Log file (`voxcodex.log`, rotated at 1 MB, kept `0600` owner-only): same
+  platform data dir. Normally just warnings/errors, but under
+  `VOXCODEX_DEBUG=1` it also captures raw Audible API responses (licence
+  data, signed CDN URLs) and login-page contents -- only turn that on for
+  troubleshooting, and treat the file as sensitive while it's set.
 
 ## License
 

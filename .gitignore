@@ -11,3 +11,5 @@ downloads/
 *.aax
 *.voucher
 .env
+scratch*/
+.claude/

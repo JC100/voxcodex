@@ -4,8 +4,8 @@
 
 Closes out the second full code review pass (0 Critical, 6 High, 16
 Medium, 27 Low -- see `docs/code-review-2026-09-21.html`), plus three
-carryover documentation findings from PR #2's external review. No known
-correctness, security, or consistency issues remain open.
+carryover documentation findings from PR #2's external review. One
+Minor issue remains open -- see "Known issues" below.
 
 ### Fixed
 - **Resuming a "Finished" book now actually restarts at 0 instead of
@@ -178,6 +178,18 @@ correctness, security, or consistency issues remain open.
   path, not just a download/voucher filename -- a hostile library
   response with a path-injection-shaped ASIN could otherwise smuggle a
   query string or fragment into a request.
+
+### Known issues
+- **"Unmark finished" can leave a book in a half-updated state if the
+  local progress write fails.** `action_unmark_finished` changes
+  `book.is_finished`/`book.progress_ms` before writing the lowered
+  position to the local progress store; if that write raises `OSError`,
+  the in-memory change stands but the table isn't refreshed and the
+  change isn't pushed to Audible, until some unrelated action next
+  refreshes the screen. Caught by CodeRabbit after the rest of this
+  release's findings were already fixed and merged -- judged low-severity
+  (a rare local write failure, on an already-Minor-rated action) and
+  deliberately shipped rather than holding the release. See `TODO.md`.
 
 ## 0.5.0
 
