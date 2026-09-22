@@ -84,6 +84,12 @@ class MpvPlayer:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self, source: str, key: str, iv: str, start_seconds: float = 0.0) -> None:
+        """Start mpv for a stream or local file and connect its control socket.
+
+        ``key`` and ``iv`` must be non-empty, even-length hexadecimal strings.
+        Process-launch and IPC-connection failures clean up the child process and
+        private temporary files.
+        """
         # key/iv are server-controlled plaintext (from a licenserequest
         # response) written verbatim into mpv's line-oriented config-file
         # parser -- an embedded newline plus a follow-on option line (e.g.
@@ -186,6 +192,7 @@ class MpvPlayer:
         return line
 
     def _command(self, *args: object, timeout: float = 1.5) -> Any:
+        """Send one serialised IPC command and return its data or raise ``MpvError``."""
         with self._io_lock:
             sock = self._sock
             if sock is None:
@@ -227,6 +234,7 @@ class MpvPlayer:
 
     @property
     def position_seconds(self) -> float:
+        """Return the current position, raising ``MpvError`` when it cannot be read."""
         # No default here, unlike the other properties below: a failed IPC
         # read (timeout, a stall mid-seek, mpv exiting between the caller's
         # is_running check and this call) must not be indistinguishable
@@ -273,6 +281,7 @@ class MpvPlayer:
         self.set_property("volume", max(0.0, min(100.0, volume)))
 
     def stop(self) -> None:
+        """Stop playback and remove private IPC files; repeated calls are safe."""
         # Called from the event loop (on_unmount / action_close) as well as
         # the player-screen worker, so it stays deliberately quick: a best-
         # effort quit with a short timeout, then SIGTERM, then SIGKILL.

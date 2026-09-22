@@ -119,6 +119,11 @@ class PlayerScreen(Screen[int]):
         on_progress: Callable[..., None] | None = None,
         start_position_ms: int | None = None,
     ) -> None:
+        """Create a player screen for a resolved source and optional explicit resume point.
+
+        ``on_progress`` receives the position in milliseconds and a keyword-only
+        ``final`` flag for periodic checkpoints and final teardown respectively.
+        """
         super().__init__()
         self.book = book
         self._source = source
@@ -172,6 +177,7 @@ class PlayerScreen(Screen[int]):
 
     @work(thread=True, exclusive=True, exit_on_error=False)
     def _start_player(self, start_seconds: float) -> None:
+        """Start mpv off the event loop and report failure or readiness back to the UI."""
         worker = get_current_worker()
         try:
             player = MpvPlayer()
@@ -290,9 +296,7 @@ class PlayerScreen(Screen[int]):
             self.query_one("#state", Static).update("Finished")
 
     def _tick(self, snap: _Playback) -> None:
-        """Render playback state from a snapshot read by the background poll
-        worker (see _poll_player) -- never reads mpv directly, so this never
-        runs on the Textual event loop."""
+        """Update playback UI and timers from a snapshot without doing IPC on the event loop."""
         player = self._player
         if player is None:
             return
@@ -457,6 +461,7 @@ class PlayerScreen(Screen[int]):
         self._saved_position_ms = self._last_position_ms
 
     def action_close(self) -> None:
+        """Stop a running player in a worker, then dismiss with its last known position."""
         player = self._player
         if player is not None and player.is_running:
             # A position read plus stop()'s socket write, process wait, and
@@ -471,6 +476,7 @@ class PlayerScreen(Screen[int]):
 
     @work(thread=True, exclusive=True, group="close", exit_on_error=False)
     def _close_player(self, player: MpvPlayer) -> None:
+        """Capture a final position if available, stop mpv and dismiss on the UI thread."""
         # Grab a fresh position before stopping -- the last _tick can be up
         # to a second stale. A failed read (MpvError) must not overwrite
         # _last_position_ms with a phantom value -- keep the last

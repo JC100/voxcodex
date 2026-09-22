@@ -211,6 +211,7 @@ def save(auth: audible.Authenticator, vault_password: str | None) -> None:
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:
+    """Load the saved authenticator after attempting to tighten the auth file permissions."""
     # An auth file left at 0644 by a pre-hardening install was previously
     # only ever tightened on the *next* fresh login (save()'s own chmod) --
     # defense in depth only, since CONFIG_DIR is already 0700, but cheap to

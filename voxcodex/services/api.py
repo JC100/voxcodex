@@ -104,6 +104,7 @@ _VALID_ASIN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
 def require_valid_asin(asin: str) -> str:
+    """Return an alphanumeric ASIN unchanged, or raise ``InvalidAsin``."""
     if not _VALID_ASIN_RE.fullmatch(asin):
         raise InvalidAsin(f"invalid asin: {asin!r}")
     return asin
@@ -196,6 +197,7 @@ class AudibleAPI:
     # -- library -----------------------------------------------------
 
     def get_library(self) -> list[Book]:
+        """Fetch library pages to a safety limit, omitting invalid or duplicate entries."""
         books: list[Book] = []
         seen_asins: set[str] = set()
         page = 1
@@ -271,6 +273,11 @@ class AudibleAPI:
     # -- licensing / download -----------------------------------------
 
     def get_license(self, asin: str) -> License:
+        """Fetch the high-quality playback licence, decrypting its voucher when present.
+
+        Raises ``InvalidAsin``, ``InvalidResponse``, ``LicenseDenied`` or
+        ``NoDownloadUrl`` when the corresponding validation or response check fails.
+        """
         require_valid_asin(asin)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
@@ -489,6 +496,8 @@ class AudibleAPI:
 
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
+        Raises ``InvalidAsin`` for a malformed identifier and ``InvalidResponse``
+        when a successful response is not a JSON object.
         """
         require_valid_asin(asin)
         params: dict[str, Any] = {
@@ -516,6 +525,7 @@ class AudibleAPI:
 
 
 def _book_from_item(item: dict[str, Any]) -> Book:
+    """Normalise a library API item and derive its duration and progress fields."""
     authors = [a.get("name", "") for a in (item.get("authors") or []) if a.get("name")]
     narrators = [
         n.get("name", "") for n in (item.get("narrators") or []) if n.get("name")

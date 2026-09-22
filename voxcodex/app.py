@@ -62,6 +62,7 @@ class VoxCodexApp(App[None]):
 
     @on(LoginScreen.Authenticated)
     def _authenticated(self, message: LoginScreen.Authenticated) -> None:
+        """Replace any existing API session and show the authenticated library."""
         if self.api is not None:
             # A second successful login (e.g. re-auth) would otherwise leak
             # the first Client's httpx connection pool.
@@ -98,6 +99,7 @@ class _PrivateRotatingFileHandler(RotatingFileHandler):
 
 
 def _setup_logging() -> None:
+    """Configure rotating logs with best-effort private permissions and opt-in debug output."""
     config.ensure_dirs()
 
     # Create the file ourselves at 0600 before the handler opens it -- it can

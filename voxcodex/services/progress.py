@@ -69,6 +69,7 @@ class ProgressStore:
         return data if isinstance(data, dict) else {}
 
     def get_position_ms(self, asin: str) -> int:
+        """Return the cached position, or zero when the entry is absent or malformed."""
         entry = self._data.get(asin)
         if not isinstance(entry, dict):
             # A valid-JSON, wrong-shape entry (e.g. {"B001": 5000}) --
@@ -92,6 +93,7 @@ class ProgressStore:
         return float(value) if isinstance(value, (int, float)) else None
 
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
+        """Atomically store a position and timestamp, retaining a known non-zero duration."""
         # Reload-modify-write atomically: the player screen checkpoints
         # position on a timer as well as on close, so writes land often and
         # must not truncate the file or drop another title's entry.

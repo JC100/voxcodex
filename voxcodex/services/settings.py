@@ -59,6 +59,7 @@ class Settings:
     def _float(
         self, key: str, default: float, *, min_value: float, max_value: float
     ) -> float:
+        """Read a numeric setting, using the default if invalid and clamping its range."""
         # A corrupted-but-parseable value here (e.g. "1.5x" from a bad
         # write, or null) must not take the whole app to the fatal-error
         # screen -- PlayerScreen.__init__ reads these on the main thread
@@ -74,6 +75,7 @@ class Settings:
 
     @property
     def playback_speed(self) -> float:
+        """Return playback speed clamped to 0.5–3.0x, or 1.0 for invalid stored data."""
         return self._float("playback_speed", DEFAULT_PLAYBACK_SPEED, min_value=0.5, max_value=3.0)
 
     def set_playback_speed(self, speed: float) -> None:
@@ -81,6 +83,7 @@ class Settings:
 
     @property
     def playback_volume(self) -> float:
+        """Return volume clamped to 0–100 per cent, or 100 for invalid stored data."""
         return self._float(
             "playback_volume", DEFAULT_PLAYBACK_VOLUME, min_value=0.0, max_value=100.0
         )

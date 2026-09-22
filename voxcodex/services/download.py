@@ -33,14 +33,17 @@ class DownloadCancelled(Exception):
 
 
 def voucher_path_for(asin: str) -> Path:
+    """Return the voucher path, raising ``InvalidAsin`` for a malformed identifier."""
     return config.DOWNLOADS_DIR / f"{require_valid_asin(asin)}.voucher.json"
 
 
 def audio_path_for(asin: str) -> Path:
+    """Return the audio path, raising ``InvalidAsin`` for a malformed identifier."""
     return config.DOWNLOADS_DIR / f"{require_valid_asin(asin)}.aaxc"
 
 
 def is_downloaded(asin: str) -> bool:
+    """Return whether both local files exist, treating a malformed ASIN as not downloaded."""
     # Read-only and called unconditionally for every book on every library
     # load -- an invalid ASIN should make this title report "not
     # downloaded" rather than take the whole load down.
@@ -83,6 +86,12 @@ def download_book(
     on_progress: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
 ) -> Path:
+    """Download a book and its decryption voucher, returning the final audio path.
+
+    Progress is reported as downloaded and total bytes. If ``cancel_check``
+    becomes true, ``DownloadCancelled`` is raised. Any failure removes this
+    attempt's temporary audio and voucher before being re-raised.
+    """
     config.ensure_dirs()
     license_ = api.get_license(book.asin)
 
@@ -199,6 +208,7 @@ def load_voucher(asin: str) -> dict[str, str] | None:
 
 
 def delete_download(asin: str) -> None:
+    """Remove both local files for ``asin``; missing files are ignored."""
     # unlink(missing_ok=True) rather than a separate exists() check -- a
     # second instance, or the bulk-delete loop below racing this same
     # title, can otherwise remove the file in the gap between the two,

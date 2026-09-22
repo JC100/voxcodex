@@ -41,6 +41,7 @@ class Book:
 
     @property
     def runtime_display(self) -> str:
+        """Format the runtime for display, or return blank when it is unknown."""
         # runtime_min == 0 means "unknown" (never a genuine runtime), same
         # as duration_ms == 0 in progress_pct/time_left_display below --
         # used to render "0m" here while those rendered blank (L24).
@@ -61,6 +62,7 @@ class Book:
 
     @property
     def time_left_display(self) -> str:
+        """Format the remaining duration, distinguishing unknown, short and finished titles."""
         if not self.duration_ms:
             return ""
         remaining_ms = max(0, self.duration_ms - self.progress_ms)

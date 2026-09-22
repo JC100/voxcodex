@@ -277,6 +277,7 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="library", exit_on_error=False)
     def _fetch_library(self) -> None:
+        """Load live books and positions, falling back to the last library cache on failure."""
         worker = get_current_worker()
         try:
             books = self.api.get_library()
@@ -658,6 +659,7 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="download", exit_on_error=False)
     def _do_download(self, book: Book) -> None:
+        """Download a book and marshal progress and completion updates to the UI thread."""
         worker = get_current_worker()
         last_bar_update = 0.0
 
@@ -840,6 +842,7 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="player", exit_on_error=False)
     def _open_player(self, book: Book) -> None:
+        """Resolve playback, resume and chapter data before launching the player screen."""
         worker = get_current_worker()
         try:
             if book.is_downloaded:
@@ -912,6 +915,7 @@ class LibraryScreen(Screen[None]):
         acr: str,
         license_id: str,
     ) -> None:
+        """Open playback and persist its checkpoints, restarting finished books from zero."""
         self._set_status("")
 
         # Computed before is_finished is mutated below, and passed to
