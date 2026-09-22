@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
+
+Closes out the second full code review pass (0 Critical, 6 High, 16
+Medium, 27 Low -- see `docs/code-review-2026-09-21.html`), plus three
+carryover documentation findings from PR #2's external review. No known
+correctness, security, or consistency issues remain open.
 
 ### Fixed
 - **Resuming a "Finished" book now actually restarts at 0 instead of

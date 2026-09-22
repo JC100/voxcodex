@@ -10,8 +10,12 @@
 - **2026-09-21: the planned second code review is done** -- four
   fresh-context reviewers plus manual verification, full detail in
   `docs/code-review-2026-09-21.html`. 0 Critical, 6 High, 16 Medium, 27
-  Low. This is now the last thing standing before 1.0; see "Open work"
-  below for the punch list.
+  Low.
+- **2026-09-22: every finding from that review (all 6 High, 16 Medium, 27
+  Low) is fixed, tested, and confirmed green on CI** -- see "Open work"
+  below for the closed-out punch list. The three carryover Minor findings
+  from PR #2's external review are fixed too. Nothing is open; this is
+  the 1.0.0 release.
 
 Full finding detail (rationale, suggested fix) for either review lives in
 `docs/code-review-2026-08-31.html` / `docs/code-review-2026-09-21.html`.
@@ -20,7 +24,7 @@ relocate a finding by file/description, not by line.
 
 ## Open work
 
-From `docs/code-review-2026-09-21.html` (not yet actioned):
+From `docs/code-review-2026-09-21.html` -- all closed out as of 2026-09-22:
 
 - [x] H1 -- Resuming a "Finished" book seeks to the end instead of
       restarting (`screens/library.py` / `screens/player_screen.py`). Also
