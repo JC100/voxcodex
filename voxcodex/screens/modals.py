@@ -12,6 +12,11 @@ from textual.widgets import Button, Input, Static
 class PromptModal(ModalScreen[str]):
     """Asks for a single line of text (optionally masked) and returns it, or "" on cancel."""
 
+    # A lower screen's own bindings don't reach an active modal -- without
+    # this, the only way out of a CAPTCHA/OTP prompt is to tab to the
+    # Cancel button (L18).
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     DEFAULT_CSS = """
     PromptModal {
         align: center middle;
@@ -47,7 +52,11 @@ class PromptModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"[b]{self._title}[/b]")
-            yield Static(self._message, classes="message")
+            # markup=False: self._message can carry untrusted interpolated
+            # text (e.g. a CAPTCHA URL from Amazon's login flow) -- Rich
+            # markup parsing on that would raise MarkupError on a value
+            # containing "[...]"-shaped text and crash the modal (L17).
+            yield Static(self._message, classes="message", markup=False)
             yield Input(password=self._password, id="prompt-input")
             with Vertical():
                 yield Button("Submit", variant="primary", id="submit")
@@ -65,7 +74,7 @@ class PromptModal(ModalScreen[str]):
         self._submit()
 
     @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss("")
 
     def _submit(self) -> None:
@@ -75,6 +84,12 @@ class PromptModal(ModalScreen[str]):
 
 
 class ConfirmModal(ModalScreen[bool]):
+    # A lower screen's own bindings don't reach an active modal -- without
+    # this, the only way out of a delete-confirmation is to tab to the No
+    # button (L18). Escape maps to "No" -- the safe, non-destructive
+    # default -- not just an unanswered dismiss.
+    BINDINGS = [("escape", "no", "No")]
+
     DEFAULT_CSS = """
     ConfirmModal {
         align: center middle;
@@ -96,7 +111,14 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"[b]{self._title}[/b]")
-            yield Static(self._message)
+            # markup=False: self._message can carry untrusted interpolated
+            # text (a publisher-supplied book title, at least) -- Rich
+            # markup parsing on that would raise MarkupError on a title
+            # containing "[...]"-shaped text and crash the modal (L17).
+            # Confirmed: common Audible suffixes like "[Unabridged]"
+            # happen to survive only because of Rich's tag-character
+            # rules, not by design.
+            yield Static(self._message, markup=False)
             with Vertical():
                 yield Button("Yes", variant="primary", id="yes")
                 yield Button("No", id="no")
@@ -106,5 +128,5 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(True)
 
     @on(Button.Pressed, "#no")
-    def _no(self) -> None:
+    def action_no(self) -> None:
         self.dismiss(False)

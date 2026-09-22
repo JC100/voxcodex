@@ -1,5 +1,8 @@
 import json
+import os
 import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -18,10 +21,20 @@ def _downloads_dir_in_tmp(tmp_path, monkeypatch):
 
 
 class FakeResponse:
-    def __init__(self, chunks, headers=None, raise_exc=None):
+    def __init__(self, chunks, headers=None, raise_exc=None, num_bytes_downloaded=None):
         self._chunks = chunks
         self.headers = headers or {}
         self._raise_exc = raise_exc
+        # Defaults to the decoded byte count, matching real httpx when no
+        # compression is in play; a test simulating a compressed transfer
+        # (L11) overrides this to a different (smaller) value, the way
+        # resp.num_bytes_downloaded (raw wire bytes) would genuinely differ
+        # from the decoded bytes iter_bytes() yields.
+        self.num_bytes_downloaded = (
+            num_bytes_downloaded
+            if num_bytes_downloaded is not None
+            else sum(len(c) for c in chunks)
+        )
 
     def raise_for_status(self):
         if self._raise_exc is not None:
@@ -63,8 +76,8 @@ class FakeAPI:
         self._license_or_exc = license_or_exc
         self.license_calls = []
 
-    def get_license(self, asin, quality="high"):
-        self.license_calls.append((asin, quality))
+    def get_license(self, asin):
+        self.license_calls.append(asin)
         if isinstance(self._license_or_exc, Exception):
             raise self._license_or_exc
         return self._license_or_exc
@@ -74,12 +87,43 @@ def _book(asin="B001"):
     return Book(asin=asin, title="Test Book")
 
 
+def _no_part_files_left():
+    """M7: tmp filenames are no longer the deterministic {asin}.part, so a
+    leftover-tmp-file check must glob for *.part rather than checking one
+    specific path."""
+    return list(config.DOWNLOADS_DIR.glob("*.part")) == []
+
+
 # -- path helpers --------------------------------------------------------
 
 
 def test_audio_and_voucher_paths_are_under_downloads_dir():
     assert download.audio_path_for("B001") == config.DOWNLOADS_DIR / "B001.aaxc"
     assert download.voucher_path_for("B001") == config.DOWNLOADS_DIR / "B001.voucher.json"
+
+
+# -- ASIN validation before it's used as a filename (L1) --------------------
+
+
+@pytest.mark.parametrize(
+    "asin", ["../../../../etc/cron.d/x", "../secret", "a/b", "", "B00-1", "B00 1"]
+)
+def test_path_helpers_reject_a_non_alphanumeric_asin(asin):
+    with pytest.raises(download.InvalidAsin):
+        download.audio_path_for(asin)
+    with pytest.raises(download.InvalidAsin):
+        download.voucher_path_for(asin)
+
+
+def test_is_downloaded_false_for_an_invalid_asin_not_raised():
+    # Called unconditionally for every book on every library load -- an
+    # invalid ASIN must make the title report "not downloaded", not crash
+    # the whole load.
+    assert download.is_downloaded("../etc/passwd") is False
+
+
+def test_downloaded_size_none_for_an_invalid_asin_not_raised():
+    assert download.downloaded_size("../etc/passwd") is None
 
 
 def test_is_downloaded_false_when_nothing_exists():
@@ -126,6 +170,19 @@ def test_delete_download_is_a_no_op_when_nothing_exists():
     download.delete_download("B001")  # must not raise
 
 
+def test_delete_download_does_not_raise_when_only_one_file_exists():
+    # L6: a TOCTOU between an exists() check and unlink() -- e.g. a second
+    # instance, or the bulk-delete loop, racing this same title -- must
+    # not trip a FileNotFoundError. unlink(missing_ok=True) sidesteps the
+    # check entirely rather than needing to reproduce the exact race.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.audio_path_for("B001").write_bytes(b"data")
+
+    download.delete_download("B001")  # must not raise
+
+    assert not download.audio_path_for("B001").exists()
+
+
 def test_load_voucher_returns_none_when_missing():
     assert download.load_voucher("B001") is None
 
@@ -136,12 +193,23 @@ def test_load_voucher_parses_saved_json():
     assert download.load_voucher("B001") == {"key": "k", "iv": "i"}
 
 
+def test_load_voucher_returns_none_for_corrupted_json():
+    # M14: a corrupt voucher (partial disk, a bad sync -- atomic_write_text
+    # only protects the write itself, not later corruption) used to raise
+    # json.JSONDecodeError uncaught, hanging the play flow forever with no
+    # error shown, instead of being treated the same as a missing voucher.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    download.voucher_path_for("B001").write_text("{not valid json")
+
+    assert download.load_voucher("B001") is None
+
+
 # -- download_book --------------------------------------------------------
 
 
 def test_download_book_writes_audio_and_voucher_and_reports_progress():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv", acr="CR!ABC", license_id="lic-123",
     )
     response = FakeResponse([b"hello ", b"world"], headers={"content-length": "11"})
@@ -154,14 +222,13 @@ def test_download_book_writes_audio_and_voucher_and_reports_progress():
 
     assert result_path == download.audio_path_for("B001")
     assert result_path.read_bytes() == b"hello world"
-    assert not result_path.with_suffix(".part").exists()
+    assert _no_part_files_left()
 
     voucher = json.loads(download.voucher_path_for("B001").read_text())
     assert voucher == {
         "asin": "B001",
         "key": "thekey",
         "iv": "theiv",
-        "codec": "AAXC",
         "acr": "CR!ABC",
         "license_id": "lic-123",
     }
@@ -173,7 +240,7 @@ def test_download_book_writes_the_voucher_private():
     """M2: the voucher holds the AES key + iv, so it should never be left
     at the process's default umask (typically 0644)."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv", acr="CR!ABC",
     )
     response = FakeResponse([b"hello world"], headers={"content-length": "11"})
@@ -201,7 +268,7 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
         pass
 
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="thekey", iv="theiv",
     )
     response = FakeResponse([], raise_exc=FakeHTTPError("403 Forbidden"))
@@ -211,7 +278,7 @@ def test_download_book_leaves_no_files_when_cdn_request_fails():
         download.download_book(_book("B001"), api)
 
     assert not download.audio_path_for("B001").exists()
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.voucher_path_for("B001").exists()
 
 
@@ -219,7 +286,7 @@ def test_download_book_rejects_a_truncated_stream_and_cleans_up():
     # Server promises 100 bytes, connection delivers 4 -- the old code renamed
     # the short file into place and it looked downloaded until playback failed.
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"abcd"], headers={"content-length": "100"})
@@ -229,13 +296,37 @@ def test_download_book_rejects_a_truncated_stream_and_cleans_up():
         download.download_book(_book("B001"), api)
 
     assert not download.audio_path_for("B001").exists()
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.voucher_path_for("B001").exists()
+
+
+def test_download_book_does_not_flag_a_compressed_transfer_as_truncated():
+    # L11: content-length describes the raw (possibly gzip-compressed)
+    # transfer size, but the old code compared it against the *decoded*
+    # byte count iter_bytes() yields -- httpx negotiates gzip by default,
+    # so a CDN that ever compresses would make every download fail as
+    # "truncated" even though nothing was actually lost. Decoded content
+    # here (11 bytes) is larger than the compressed content-length (4) --
+    # exactly what a real gzip response looks like -- and must not raise.
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc",
+        key="k", iv="i",
+    )
+    response = FakeResponse(
+        [b"hello world"],  # decoded content actually written to disk
+        headers={"content-length": "4"},  # the compressed transfer size
+        num_bytes_downloaded=4,  # raw wire bytes, matching content-length
+    )
+    api = FakeAPI(license_, response)
+
+    result_path = download.download_book(_book("B001"), api)  # must not raise
+
+    assert result_path.read_bytes() == b"hello world"
 
 
 def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"one", b"two", b"three"], headers={"content-length": "11"})
@@ -250,13 +341,13 @@ def test_download_book_stops_and_cleans_up_when_cancel_check_fires():
     with pytest.raises(download.DownloadCancelled):
         download.download_book(_book("B001"), api, cancel_check=cancel_after_first_chunk)
 
-    assert not download.audio_path_for("B001").with_suffix(".part").exists()
+    assert _no_part_files_left()
     assert not download.audio_path_for("B001").exists()
 
 
 def test_download_book_passes_content_url_and_uses_get_method():
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"x"], headers={"content-length": "1"})
@@ -275,7 +366,7 @@ def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
     orphaned voucher -- never a "downloaded" audio file with no voucher to
     decrypt it."""
     license_ = License(
-        asin="B001", content_url="https://cdn.example/x.aaxc", codec="AAXC",
+        asin="B001", content_url="https://cdn.example/x.aaxc",
         key="k", iv="i",
     )
     response = FakeResponse([b"hello"], headers={"content-length": "5"})
@@ -296,6 +387,134 @@ def test_download_book_writes_the_voucher_before_renaming_the_audio_file():
         download._write_voucher = original_write_voucher
 
     assert seen_audio_exists_when_voucher_written is False
+
+
+def test_download_book_fsyncs_the_audio_file_before_renaming_it(monkeypatch):
+    """L5: without an fsync, power loss shortly after a completed download
+    can land the rename durable but the audio data behind it not."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    calls = []
+    original_fsync = os.fsync
+    original_replace = Path.replace
+
+    def recording_fsync(fd):
+        calls.append("fsync")
+        return original_fsync(fd)
+
+    def recording_replace(self, target):
+        calls.append("replace")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(download.os, "fsync", recording_fsync)
+    monkeypatch.setattr(Path, "replace", recording_replace)
+
+    download.download_book(_book("B001"), api)
+
+    # _write_voucher's atomic_write_text also fsyncs (its own rename) --
+    # assert only that the audio file's own fsync precedes its rename.
+    assert calls[-1] == "replace"
+    assert "fsync" in calls[:-1]
+
+
+def test_download_book_uses_a_unique_tmp_name_per_attempt():
+    """M7: two downloads racing on the same book must not collide on one
+    deterministic {asin}.part -- each attempt gets its own unique temp
+    file (still matched by sweep_stale_downloads's *.part glob)."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc",
+        key="k", iv="i",
+    )
+    seen_tmp_names = []
+    original_mkstemp = download.tempfile.mkstemp
+
+    def _spy(*args, **kwargs):
+        fd, name = original_mkstemp(*args, **kwargs)
+        if name.endswith(".part"):  # atomic_write_text also calls mkstemp
+            seen_tmp_names.append(name)
+        return fd, name
+
+    download.tempfile.mkstemp = _spy
+    try:
+        for _ in range(2):
+            response = FakeResponse([b"hello"], headers={"content-length": "5"})
+            api = FakeAPI(license_, response)
+            download.download_book(_book("B001"), api)
+    finally:
+        download.tempfile.mkstemp = original_mkstemp
+
+    assert len(seen_tmp_names) == 2
+    assert seen_tmp_names[0] != seen_tmp_names[1]
+    assert all(name.endswith(".part") for name in seen_tmp_names)
+    assert all("B001" in name for name in seen_tmp_names)
+
+
+def test_download_book_a_second_attempt_does_not_disturb_the_first_still_running():
+    """M7: the concrete race -- one attempt's temp file must survive
+    another attempt for the same book still being in progress, not get
+    unlinked out from under it."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc",
+        key="k", iv="i",
+    )
+
+    # Start "attempt A" far enough to create its own unique tmp file, but
+    # don't let download_book finish yet.
+    config.DOWNLOADS_DIR.mkdir(parents=True)
+    fd_a, tmp_name_a = tempfile.mkstemp(
+        dir=config.DOWNLOADS_DIR, prefix="B001-", suffix=".part"
+    )
+    os.close(fd_a)
+    tmp_path_a = Path(tmp_name_a)
+    tmp_path_a.write_bytes(b"partial-from-attempt-a")
+
+    # "Attempt B" runs a full, independent download_book() for the same
+    # book while attempt A's tmp file is still sitting on disk.
+    response_b = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api_b = FakeAPI(license_, response_b)
+    download.download_book(_book("B001"), api_b)
+
+    # Attempt A's still-in-flight tmp file must be untouched by B's run.
+    assert tmp_path_a.exists()
+    assert tmp_path_a.read_bytes() == b"partial-from-attempt-a"
+    assert download.audio_path_for("B001").read_bytes() == b"hello"
+
+    tmp_path_a.unlink()
+
+
+def test_download_book_a_failed_replace_also_removes_the_just_written_voucher():
+    """M7: replace() failing after a successful voucher write used to
+    leave an orphaned voucher (the AES key) on disk with no audio file to
+    match it and nothing ever sweeping it -- invisible to is_downloaded()
+    since that checks both files. Both are now inside the same cleanup
+    try, so a failure in the rename also removes the voucher."""
+    license_ = License(
+        asin="B001", content_url="https://cdn.example/x.aaxc",
+        key="k", iv="i",
+    )
+    response = FakeResponse([b"hello"], headers={"content-length": "5"})
+    api = FakeAPI(license_, response)
+
+    original_replace = Path.replace
+
+    def _boom_replace(self, target):
+        raise OSError("simulated rename failure")
+
+    Path.replace = _boom_replace
+    try:
+        with pytest.raises(OSError, match="simulated rename failure"):
+            download.download_book(_book("B001"), api)
+    finally:
+        Path.replace = original_replace
+
+    assert not download.voucher_path_for("B001").exists()
+    assert not download.audio_path_for("B001").exists()
+    assert _no_part_files_left()
 
 
 # -- sweep_stale_downloads (M3) -------------------------------------------

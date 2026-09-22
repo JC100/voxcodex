@@ -185,7 +185,10 @@ class LoginScreen(Screen[None]):
         self._set_status("")
         self._do_unlock(password)
 
-    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
+    @work(
+        thread=True, exclusive=True, group="login", exit_on_error=False,
+        description="unlocking vault",
+    )
     def _do_unlock(self, password: str | None) -> None:
         try:
             authenticator = auth.load(password)
@@ -212,7 +215,10 @@ class LoginScreen(Screen[None]):
         self._set_status("Signing in...")
         self._do_login(username, password, locale, vault_password)
 
-    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
+    @work(
+        thread=True, exclusive=True, group="login", exit_on_error=False,
+        description="signing in",
+    )
     def _do_login(
         self, username: str, password: str, locale: str, vault_password: str | None
     ) -> None:
@@ -250,7 +256,10 @@ class LoginScreen(Screen[None]):
         self._set_status("Starting browser login...")
         self._do_external_login(locale, vault_password)
 
-    @work(thread=True, exclusive=True, group="login", exit_on_error=False)
+    @work(
+        thread=True, exclusive=True, group="login", exit_on_error=False,
+        description="signing in via browser",
+    )
     def _do_external_login(self, locale: str, vault_password: str | None) -> None:
         callbacks = auth.LoginCallbacks(login_url=self._external_url_prompt)
         try:

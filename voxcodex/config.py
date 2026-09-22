@@ -41,15 +41,20 @@ def ensure_dirs() -> None:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    """Write `text` to `path` via a temp file in the same directory followed
-    by `os.replace`, so a crash mid-write or a concurrent reader never sees a
-    half-written or truncated file. The rename is atomic on POSIX when both
-    paths are on the same filesystem, which they are (same parent dir)."""
+    """Write `text` to `path` via a temp file in the same directory,
+    fsync'd before an atomic `os.replace`, so a crash mid-write or a
+    concurrent reader never sees a half-written or truncated file, and
+    (the fsync) so power loss shortly after a write doesn't land the
+    rename durable while the data behind it isn't (L5). The rename is
+    atomic on POSIX when both paths are on the same filesystem, which they
+    are (same parent dir)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):

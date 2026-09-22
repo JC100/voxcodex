@@ -58,21 +58,26 @@ def _log_cvf_page(soup: Any) -> None:
     phone), the submitted choice may not be the one that looks selected on
     screen. This logs the page's visible text plus every input's name/type/
     value/checked state so we can see what actually got sent.
+
+    Logged at DEBUG, not INFO (L13): the page text typically includes a
+    masked delivery destination (partial email/phone) -- mild PII that
+    shouldn't land in the log file by default, only when the user has
+    explicitly opted into VOXCODEX_DEBUG.
     """
     content = soup.find(id="cvf-page-content") or soup
     text = content.get_text(separator=" | ", strip=True)
-    logger.info("login flow: cvf page text: %s", text[:1500])
+    logger.debug("login flow: cvf page text: %s", text[:1500])
 
     form = soup.find("form")
     if form is None:
-        logger.info("login flow: cvf page has no <form>")
+        logger.debug("login flow: cvf page has no <form>")
         return
     for field in form.find_all(["input", "select"]):
         # Deliberately don't log `value` -- hidden inputs on this page carry
         # session tokens (appActionToken / metadata1 / etc.). The length is
         # enough to tell "prefilled" from "empty" when debugging.
         raw_value = field.get("value") or ""
-        logger.info(
+        logger.debug(
             "login flow: cvf field name=%r type=%r value_len=%d checked=%r",
             field.get("name"),
             field.get("type"),
@@ -106,7 +111,6 @@ def _login_flow_diagnostics() -> Iterator[None]:
         "check_for_cvf",
         "check_for_approval_alert",
     ]
-    originals = {name: getattr(_login_internals, name) for name in names}
 
     def _make_wrapper(name: str, original: Callable[..., bool]) -> Callable[..., bool]:
         def wrapper(soup: Any, *a: Any, **kw: Any) -> bool:
@@ -125,8 +129,25 @@ def _login_flow_diagnostics() -> Iterator[None]:
 
         return wrapper
 
-    for name, original in originals.items():
-        setattr(_login_internals, name, _make_wrapper(name, original))
+    try:
+        # Resolving these five names, and installing the wrappers, both
+        # happen inside this try -- a future rename in the audible
+        # package's internals (AttributeError) would otherwise escape
+        # uncaught, breaking login itself (not just diagnostics) and
+        # leaving _diagnostics_lock held forever, since the lock is only
+        # released in the finally below (L14).
+        originals = {name: getattr(_login_internals, name) for name in names}
+        for name, original in originals.items():
+            setattr(_login_internals, name, _make_wrapper(name, original))
+    except Exception:
+        logger.warning(
+            "login flow: diagnostics setup failed, continuing without them",
+            exc_info=True,
+        )
+        _diagnostics_lock.release()
+        yield
+        return
+
     try:
         yield
     finally:
@@ -190,6 +211,13 @@ def save(auth: audible.Authenticator, vault_password: str | None) -> None:
 
 
 def load(vault_password: str | None = None) -> audible.Authenticator:
+    """Load the saved authenticator after attempting to tighten the auth file permissions."""
+    # An auth file left at 0644 by a pre-hardening install was previously
+    # only ever tightened on the *next* fresh login (save()'s own chmod) --
+    # defense in depth only, since CONFIG_DIR is already 0700, but cheap to
+    # close (L12).
+    with contextlib.suppress(OSError):
+        config.AUTH_FILE.chmod(0o600)
     return audible.Authenticator.from_file(config.AUTH_FILE, password=vault_password)
 
 

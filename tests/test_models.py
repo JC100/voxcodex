@@ -41,9 +41,12 @@ def test_runtime_display_minutes_only():
     assert book.runtime_display == "45m"
 
 
-def test_runtime_display_zero():
+def test_runtime_display_blank_when_unknown():
+    # L24: runtime_min == 0 means "unknown", same as duration_ms == 0 does
+    # for progress_pct/time_left_display -- used to render "0m" here,
+    # inconsistent with those blank renders for the same "unknown" state.
     book = Book(asin="A1", title="T", runtime_min=0)
-    assert book.runtime_display == "0m"
+    assert book.runtime_display == ""
 
 
 def test_progress_pct_zero_duration_does_not_divide_by_zero():
@@ -96,6 +99,20 @@ def test_time_left_display_done_when_finished():
 
 def test_time_left_display_never_goes_negative_past_duration():
     book = Book(asin="A1", title="T", progress_ms=150_000, duration_ms=100_000)
+    assert book.time_left_display == "done"
+
+
+def test_time_left_display_sub_minute_remainder_is_not_done():
+    # L24: a never-started 20s title has remaining_ms == 20_000, which used
+    # to round to 0 minutes and get reported as "done" -- indistinguishable
+    # from an actually-finished book -- even though it hasn't been played
+    # at all.
+    book = Book(asin="A1", title="T", progress_ms=0, duration_ms=20_000)
+    assert book.time_left_display == "<1m left"
+
+
+def test_time_left_display_done_only_when_truly_zero_remaining():
+    book = Book(asin="A1", title="T", progress_ms=20_000, duration_ms=20_000)
     assert book.time_left_display == "done"
 
 

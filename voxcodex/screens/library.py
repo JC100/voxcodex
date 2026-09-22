@@ -26,7 +26,14 @@ from voxcodex.models import Book
 from voxcodex.screens.modals import ConfirmModal
 from voxcodex.screens.player_screen import PlayerScreen
 from voxcodex.services import chapter_cache, download, library_cache, progress
-from voxcodex.services.api import AudibleAPI, Chapter, LicenseDenied, NoDownloadUrl
+from voxcodex.services.api import (
+    AudibleAPI,
+    Chapter,
+    InvalidAsin,
+    InvalidResponse,
+    LicenseDenied,
+    NoDownloadUrl,
+)
 from voxcodex.services.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -36,16 +43,20 @@ COLUMNS = (
 )
 
 # Failures a chapter-metadata fetch can actually raise: a network/API
-# problem. Anything else (a real bug -- bad response shape, etc.) should
-# propagate to the worker's error handler instead of quietly leaving the
-# Chapter column blank forever.
-_CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError)
+# problem, or a 200 response that wasn't the JSON object expected (a
+# captive portal, a proxy error page, an Amazon maintenance page -- see
+# InvalidResponse). Anything else (a real bug -- bad response shape, etc.)
+# should propagate to the worker's error handler instead of quietly
+# leaving the Chapter column blank forever.
+_CHAPTER_FETCH_ERRORS = (httpx.HTTPError, AudibleError, InvalidResponse)
 
 # Failures opening a title for playback can legitimately raise: a missing/
 # malformed local voucher, a denied license or a license response with no
-# download URL, or a network/API problem reaching Audible.
+# download URL, a non-JSON 200 response, or a network/API problem reaching
+# Audible.
 _PLAYER_OPEN_ERRORS = (
-    RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, httpx.HTTPError, AudibleError,
+    RuntimeError, KeyError, LicenseDenied, NoDownloadUrl, InvalidResponse,
+    InvalidAsin, httpx.HTTPError, AudibleError,
 )
 
 
@@ -214,6 +225,21 @@ class LibraryScreen(Screen[None]):
             if self.settings.progress_display_mode in _PROGRESS_DISPLAY_OPTIONS
             else _PROGRESS_DISPLAY_OPTIONS[0]
         )
+        # A same-book double-press races two download_book() calls against
+        # each other (M7) -- exclusive=True on _do_download's @work only
+        # flags the older worker cancelled, it doesn't stop its thread
+        # synchronously, so both can be mid-flight at once. Reject a
+        # repeat press instead.
+        self._in_flight_downloads: set[str] = set()
+        # Which book's download currently owns the shared progress bar/
+        # status line -- exclusive=True lets switching to a different
+        # download cancel the old worker's *flag* without stopping its
+        # thread synchronously, so the old download's own completion
+        # callbacks can still fire after a new one has taken over the UI.
+        # Guarded against in _update_download_bar/_download_succeeded/
+        # _download_failed so a superseded download can't clobber the new
+        # one's progress bar or post a stale status for itself (L20).
+        self._active_download_asin: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -251,6 +277,7 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="library", exit_on_error=False)
     def _fetch_library(self) -> None:
+        """Load live books and positions, falling back to the last library cache on failure."""
         worker = get_current_worker()
         try:
             books = self.api.get_library()
@@ -271,15 +298,14 @@ class LibraryScreen(Screen[None]):
         if worker.is_cancelled:
             return
 
-        library_cache.save(books)
+        if books:
+            # A successful-but-empty fetch (e.g. a transient backend quirk
+            # returning an empty first page, not "this library is empty")
+            # must not destroy a good offline cache with nothing (L22).
+            library_cache.save(books)
 
         annotations = progress.fetch_remote_annotations(self.api, [b.asin for b in books])
         remote_positions = progress.positions_with_updated_at_from_annotations(annotations)
-
-        most_recent = progress.most_recent_external_play(annotations)
-        if most_recent is not None:
-            asin, updated_at = most_recent
-            self.settings.set_last_played_externally(asin, updated_at)
 
         self._apply_local_state(books, remote_positions)
         if worker.is_cancelled:
@@ -446,7 +472,9 @@ class LibraryScreen(Screen[None]):
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         except CellDoesNotExist:
             return None
-        asin = row_key.value
+        return self._book_by_asin(row_key.value)
+
+    def _book_by_asin(self, asin: str | None) -> Book | None:
         for book in self._books:
             if book.asin == asin:
                 return book
@@ -543,7 +571,13 @@ class LibraryScreen(Screen[None]):
         )
         total_size = self._total_downloaded_size()
         size_suffix = f"   {_format_size(total_size)} downloaded" if total_size else ""
-        self.query_one("#sort-filter", Static).update(
+        # Reached from the background library-load worker too, which may
+        # outlive the screen -- same reasoning as _refresh_table (L23).
+        try:
+            label = self.query_one("#sort-filter", Static)
+        except NoMatches:
+            return
+        label.update(
             f"Sort: {_SORT_LABELS[self._sort_key]}   Filter: {_FILTER_LABELS[self._filter_key]}"
             f"   ({count} shown){size_suffix}"
         )
@@ -580,7 +614,15 @@ class LibraryScreen(Screen[None]):
         return self._sort_key in ("recent", "progress")
 
     def _apply_filters_and_sort(self) -> None:
-        query = self.query_one("#search", Input).value.strip().lower()
+        # Reached from the background library-load worker too (_populate /
+        # _populate_offline via call_from_thread), which may land after the
+        # screen's been popped -- same pattern _refresh_table already uses
+        # for the same reason. Harmless today under exit_on_error=False,
+        # but worth being consistent with the rest of the file (L23).
+        try:
+            query = self.query_one("#search", Input).value.strip().lower()
+        except NoMatches:
+            return
         books = self._books
         if query:
             books = [
@@ -604,6 +646,11 @@ class LibraryScreen(Screen[None]):
         if book.is_downloaded:
             self._set_status(f"Already downloaded: {book.title}")
             return
+        if book.asin in self._in_flight_downloads:
+            self._set_status(f"Already downloading: {book.title}")
+            return
+        self._in_flight_downloads.add(book.asin)
+        self._active_download_asin = book.asin
         self._set_status(f"Downloading: {book.title}")
         bar = self.query_one("#download-progress", ProgressBar)
         bar.display = True
@@ -612,6 +659,7 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="download", exit_on_error=False)
     def _do_download(self, book: Book) -> None:
+        """Download a book and marshal progress and completion updates to the UI thread."""
         worker = get_current_worker()
         last_bar_update = 0.0
 
@@ -626,7 +674,7 @@ class LibraryScreen(Screen[None]):
             if done < total and now - last_bar_update < 0.25:
                 return
             last_bar_update = now
-            self.app.call_from_thread(self._update_download_bar, done, total)
+            self.app.call_from_thread(self._update_download_bar, book.asin, done, total)
 
         try:
             download.download_book(
@@ -636,32 +684,59 @@ class LibraryScreen(Screen[None]):
                 cancel_check=lambda: worker.is_cancelled,
             )
         except download.DownloadCancelled:
+            self.app.call_from_thread(self._in_flight_downloads.discard, book.asin)
             return
         except Exception as exc:  # noqa: BLE001
             self.app.call_from_thread(self._download_failed, book, str(exc))
             return
         self.app.call_from_thread(self._download_succeeded, book)
 
-    def _update_download_bar(self, done: int, total: int) -> None:
+    def _update_download_bar(self, asin: str, done: int, total: int) -> None:
+        if asin != self._active_download_asin:
+            # Superseded by switching to a different download mid-flight
+            # (L20) -- exclusive=True only flagged this one's worker
+            # cancelled, it didn't stop the thread synchronously, so its
+            # progress callbacks can still land after a new download has
+            # taken over the shared bar.
+            return
         with contextlib.suppress(NoMatches):
             self.query_one("#download-progress", ProgressBar).update(
                 total=total, progress=done
             )
 
     def _download_failed(self, book: Book, message: str) -> None:
+        self._in_flight_downloads.discard(book.asin)
         try:
-            self.query_one("#download-progress", ProgressBar).display = False
+            bar = self.query_one("#download-progress", ProgressBar)
         except NoMatches:
             return
+        if book.asin != self._active_download_asin:
+            return
+        bar.display = False
         self._set_status(f"[red]Download failed for {book.title}: {message}[/red]")
 
     def _download_succeeded(self, book: Book) -> None:
+        self._in_flight_downloads.discard(book.asin)
         try:
-            self.query_one("#download-progress", ProgressBar).display = False
+            bar = self.query_one("#download-progress", ProgressBar)
         except NoMatches:
             return
-        book.is_downloaded = True
-        self._refresh_table()
+        # Re-resolve by ASIN against the current book list rather than
+        # mutating the closure-captured object directly -- a library
+        # refresh completing mid-download replaces self._books wholesale
+        # with fresh Book objects, orphaning this one (L21): mutating it
+        # would have no effect on what's displayed until the next manual
+        # refresh. Falls back to the captured object if the title
+        # genuinely isn't in the library anymore (e.g. returned).
+        current = self._book_by_asin(book.asin) or book
+        current.is_downloaded = True
+        self._apply_filters_and_sort()
+        if book.asin != self._active_download_asin:
+            # Superseded (L20) -- the state update above is real and must
+            # still happen, but the shared bar/status now belong to
+            # whichever download replaced this one.
+            return
+        bar.display = False
         self._set_status(f"Downloaded: {book.title}")
 
     def action_delete_selected(self) -> None:
@@ -674,7 +749,7 @@ class LibraryScreen(Screen[None]):
                 return
             download.delete_download(book.asin)
             book.is_downloaded = False
-            self._refresh_table()
+            self._apply_filters_and_sort()
             self._set_status(f"Removed local copy of {book.title}")
 
         self.app.push_screen(
@@ -700,14 +775,29 @@ class LibraryScreen(Screen[None]):
         def _confirmed(confirmed: bool | None) -> None:
             if not confirmed:
                 return
+            failed = 0
             for book in targets:
-                download.delete_download(book.asin)
+                # One book's delete failing (a permissions error, a TOCTOU
+                # race with another instance or action_delete_selected)
+                # must not abort the rest of the batch (L6).
+                try:
+                    download.delete_download(book.asin)
+                except OSError:
+                    logger.debug(
+                        "failed to delete download for %s", book.asin, exc_info=True
+                    )
+                    failed += 1
+                    continue
                 book.is_downloaded = False
-            self._refresh_table()
-            self._set_status(
-                f"Removed {len(targets)} finished download"
-                f"{'s' if len(targets) != 1 else ''} ({_format_size(total_size)})"
+            self._apply_filters_and_sort()
+            removed = len(targets) - failed
+            status = (
+                f"Removed {removed} finished download"
+                f"{'s' if removed != 1 else ''} ({_format_size(total_size)})"
             )
+            if failed:
+                status += f" -- [red]{failed} failed[/red]"
+            self._set_status(status)
 
         self.app.push_screen(
             ConfirmModal(
@@ -728,7 +818,23 @@ class LibraryScreen(Screen[None]):
         if book is None or not book.is_finished:
             return
         book.is_finished = False
-        self._refresh_table()
+        if book.progress_pct >= _FINISHED_PCT:
+            # Clearing the flag alone leaves the book unreachable by any
+            # filter: "Finished" matches on is_finished OR pct >=
+            # _FINISHED_PCT, so a book still at ~100% keeps matching
+            # "Finished" and only "Finished" -- not "In progress", not "Not
+            # started" -- and a second `u` press is a no-op since the flag
+            # is already clear. Pull the tracked position back just under
+            # the threshold so the book actually lands in "In progress".
+            book.progress_ms = round(book.duration_ms * (_FINISHED_FRACTION - 0.01))
+            # Persist it too: _apply_local_state re-resolves progress_ms from
+            # the store on the next load (by recency, not by magnitude -- see
+            # _resolve_progress_ms), so an in-memory-only change here would
+            # get silently overwritten by the old near-finished position.
+            self.progress_store.set_position_ms(
+                book.asin, book.progress_ms, book.duration_ms
+            )
+        self._apply_filters_and_sort()
         self._set_status(f"Unmarked as finished: {book.title}")
         self._push_finished(book.asin, False)
 
@@ -743,12 +849,15 @@ class LibraryScreen(Screen[None]):
 
     @work(thread=True, exclusive=True, group="player", exit_on_error=False)
     def _open_player(self, book: Book) -> None:
+        """Resolve playback, resume and chapter data before launching the player screen."""
         worker = get_current_worker()
         try:
             if book.is_downloaded:
                 voucher = download.load_voucher(book.asin)
                 if voucher is None:
-                    raise RuntimeError("Downloaded file is missing its decryption voucher")
+                    raise RuntimeError(
+                        "Downloaded file's decryption voucher is missing or unreadable"
+                    )
                 source = str(download.audio_path_for(book.asin))
                 key, iv = voucher["key"], voucher["iv"]
                 acr = voucher.get("acr", "")
@@ -813,12 +922,15 @@ class LibraryScreen(Screen[None]):
         acr: str,
         license_id: str,
     ) -> None:
+        """Open playback and persist its checkpoints, restarting finished books from zero."""
         self._set_status("")
 
-        # Matches what PlayerScreen.on_mount actually starts mpv from --
-        # a finished book restarts at 0 rather than resuming, so the
-        # listening session reported below must start from the same point,
-        # not from the (stale/irrelevant) prior progress_ms.
+        # Computed before is_finished is mutated below, and passed to
+        # PlayerScreen explicitly (start_position_ms=) rather than letting
+        # it re-derive the same expression from book.is_finished -- by the
+        # time PlayerScreen.on_mount would run, that flag is already False,
+        # which silently turned "restart a finished book at 0" into "resume
+        # from progress_ms" (see docs/code-review-2026-09-21.html H1).
         session_start_position_ms = 0 if book.is_finished else book.progress_ms
         session_start_time = datetime.now(UTC)
         delivery_type = "Download" if book.is_downloaded else "Streaming"
@@ -856,10 +968,25 @@ class LibraryScreen(Screen[None]):
             if newly_finished:
                 book.is_finished = True
             if final:
+                # The Chapter column otherwise stays at whatever it was when
+                # the library was last loaded/refreshed -- a session that
+                # crosses chapter boundaries would return to a stale number
+                # until the next full refresh, even though Progress and the
+                # Finished checkmark both update fine. Re-read from
+                # _chapter_cache (not the local `chapters`) so a transient
+                # fetch failure this session -- deliberately never cached,
+                # see _open_player -- doesn't regress an already-known
+                # count to 0/None.
+                cached_chapters = self._chapter_cache.get(book.asin)
+                if cached_chapters is not None:
+                    book.chapter_total = len(cached_chapters)
+                    book.chapter_current = _current_chapter_number(
+                        cached_chapters, position_ms
+                    )
                 # The library table is behind the player during a periodic
                 # checkpoint -- only worth rebuilding when we're heading back
                 # to it. The push to Audible is also close-only.
-                self._refresh_table()
+                self._apply_filters_and_sort()
                 # On a hard app quit the screen may already be tearing down,
                 # in which case spawning a push worker can fail -- the local
                 # save above is what actually matters, so don't let this
@@ -888,6 +1015,7 @@ class LibraryScreen(Screen[None]):
                 chapters=chapters,
                 settings=self.settings,
                 on_progress=_on_progress,
+                start_position_ms=session_start_position_ms,
             )
         )
 

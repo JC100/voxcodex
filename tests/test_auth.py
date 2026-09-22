@@ -62,6 +62,24 @@ def test_diagnostics_context_restores_even_if_the_body_raises():
     assert _current_targets() == before
 
 
+def test_diagnostics_degrades_instead_of_failing_closed_on_a_missing_name(
+    monkeypatch, caplog,
+):
+    """L14: resolving the five check_for_* names happened outside the
+    try/finally that releases _diagnostics_lock -- a future rename in the
+    audible package (AttributeError) would escape uncaught, breaking
+    login itself, and leave the lock held forever (every later login
+    silently skipping diagnostics, with no way to recover short of
+    restarting the process)."""
+    monkeypatch.delattr(login_internals, "check_for_cvf")
+
+    with caplog.at_level(logging.WARNING, logger="voxcodex.auth"), auth._login_flow_diagnostics():
+        pass  # must not raise
+
+    assert "diagnostics setup failed" in caplog.text
+    assert not auth._diagnostics_lock.locked()
+
+
 def test_nested_diagnostics_does_not_capture_wrappers_as_originals():
     """The bug the reentrancy guard prevents: an inner enter that patched
     again would, on exit, 'restore' the outer entry's wrappers -- leaving
@@ -86,13 +104,31 @@ def test_log_cvf_page_records_field_length_not_value(caplog):
         "html.parser",
     )
 
-    with caplog.at_level(logging.INFO, logger="voxcodex.auth"):
+    with caplog.at_level(logging.DEBUG, logger="voxcodex.auth"):
         auth._log_cvf_page(soup)
 
     logged = "\n".join(r.message for r in caplog.records)
     assert "super-secret-token" not in logged
     assert "value_len=18" in logged  # len("super-secret-token")
     assert "value_len=0" in logged
+
+
+def test_log_cvf_page_logs_at_debug_not_info(caplog):
+    """L13: the page text typically includes a masked delivery destination
+    (partial email/phone) -- mild PII that shouldn't land in the log file
+    by default (voxcodex's own logger is INFO unless VOXCODEX_DEBUG is
+    set -- see app.py's _setup_logging)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(
+        '<div id="cvf-page-content">We sent a code to j***@e***.com</div>',
+        "html.parser",
+    )
+
+    with caplog.at_level(logging.INFO, logger="voxcodex.auth"):
+        auth._log_cvf_page(soup)
+
+    assert caplog.records == []
 
 
 # -- save() file permissions (M2) -----------------------------------------
@@ -156,6 +192,23 @@ def test_load_passes_the_auth_file_path_and_vault_password(tmp_path, monkeypatch
 
     assert calls == [(config.AUTH_FILE, "hunter2")]
     assert result == "AUTHENTICATOR"
+
+
+def test_load_tightens_an_auth_file_left_at_0644(tmp_path, monkeypatch):
+    """L12: an auth file left at 0644 by a pre-hardening install was
+    previously only ever tightened on the *next* fresh login (save()'s own
+    chmod) -- load() now re-chmods it too, rather than leaving it world/
+    group-readable for the whole session in between."""
+    _patch_dirs(monkeypatch, tmp_path)
+    config.AUTH_FILE.write_text("{}")
+    config.AUTH_FILE.chmod(0o644)
+    monkeypatch.setattr(
+        audible.Authenticator, "from_file", lambda filename, password=None: "AUTHENTICATOR"
+    )
+
+    auth.load()
+
+    assert _mode(config.AUTH_FILE) == 0o600
 
 
 def test_is_registered_false_when_no_auth_file_exists(tmp_path, monkeypatch):

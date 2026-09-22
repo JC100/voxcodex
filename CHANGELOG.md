@@ -1,6 +1,183 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
+
+Closes out the second full code review pass (0 Critical, 6 High, 16
+Medium, 27 Low -- see `docs/code-review-2026-09-21.html`), plus three
+carryover documentation findings from PR #2's external review. No known
+correctness, security, or consistency issues remain open.
+
+### Fixed
+- **Resuming a "Finished" book now actually restarts at 0 instead of
+  seeking to the end.** `PlayerScreen` was re-deriving its mpv start
+  position from `book.is_finished` after `LibraryScreen._launch_player`
+  had already cleared that flag (to un-finish the book on resume), so it
+  always took the "resume from saved progress" branch -- for a finished
+  book, that's ~100% through, so mpv hit EOF immediately and nothing
+  played. The start position is now computed once by the caller and
+  passed in explicitly.
+- **A transient mpv read failure could silently erase the saved listening
+  position, locally and on every other device.** A failed IPC read of
+  mpv's playback position was indistinguishable from "genuinely at
+  position 0", so a single dropped read could zero out and push a bogus
+  position to Audible. Reads that fail now raise instead of silently
+  defaulting, and are skipped rather than treated as real progress.
+- **A duplicate ASIN in the library could silently truncate the table and
+  then crash the app on the next keypress.** The library load now dedupes
+  by ASIN (keeping the first occurrence), the same way it already handled
+  a missing ASIN.
+- **The library table's active filter and its downloaded-size label could
+  go stale after a download, delete, unmark, or a playback session** --
+  e.g. downloading a book while filtered to "Downloaded" left it invisible,
+  and deleting a download left the size label reading the pre-deletion
+  total. All five affected actions now recompute the filter instead of
+  just re-rendering the previous (now stale) result.
+- **"Unmark finished" could leave a book unreachable by any library
+  filter.** Clearing the flag alone left a book still at ~100% progress
+  matching only the "Finished" filter -- not "In progress", not "Not
+  started" -- so the state was stuck and a second press was a no-op.
+  Unmarking now also pulls the tracked position back under the threshold.
+- **"Unmark finished" could silently undo itself on the next library
+  load.** The pulled-back position above was only ever changed in memory;
+  since progress is re-resolved from local/remote records by recency (not
+  magnitude) on every load, the old near-finished position could win again
+  and put the book straight back in "Finished". It's now persisted
+  alongside the flag change.
+- **A malformed library item or license response could abort the whole
+  library load, or fail silently, instead of showing an error.** Neither
+  the library-item parser nor `get_license`'s nested-field parsing
+  validated that a field was the type it assumed, so an unexpected shape
+  (a non-object item, a non-string ASIN, a non-numeric progress field, a
+  license response missing an expected nested object) could raise an
+  untyped error that either killed the whole parse or escaped the app's
+  own error handling. Malformed library items are now skipped and logged
+  individually; malformed license-response fields now raise the same typed
+  error the rest of that error handling already expects.
+- **The Chapter column stopped advancing after a listening session.** It
+  stayed at whatever chapter the book was on when the library was last
+  loaded, even after playing well past it, until the next full refresh.
+- **`get_license` could trust an unconfirmed remote position.** It parsed
+  `last_position_heard` without checking its status the way the equivalent
+  parser elsewhere already does, so a "DoesNotExist" record (a title never
+  played anywhere) could in principle feed in a bogus position and reset a
+  real resume point.
+- **Remote-position sync could silently stop working for a large library.**
+  It sent every ASIN as one unchunked query string, plausibly past a
+  gateway's request-line limit on a several-hundred-title library -- the
+  request is now chunked (100 ASINs at a time) and results merged.
+- **A non-JSON 200 response (a captive portal, a proxy error page, an
+  Amazon maintenance page) could crash playback or chapter fetching with
+  no message shown.** Both now raise a typed error the existing failure
+  handling already catches, so the user gets "Could not start
+  playback..." instead of nothing.
+- **A malformed entry in the local progress cache could crash the whole
+  library load.** Reading or writing a position now tolerates a
+  wrong-shape cache entry instead of raising.
+- **A failure starting mpv itself (not just a bad response from it) could
+  wedge the player screen on "Starting player..." forever with no error,
+  and leak a temp directory holding the plaintext DRM key.** Both paths
+  are now cleaned up and surfaced properly.
+- **Downloading the same book twice in quick succession could race,
+  losing the download and leaving an orphaned voucher.** Each download
+  attempt now gets its own temp file, a failed rename cleans up the
+  voucher it was paired with, and a same-book double-press is rejected
+  outright with an "Already downloading" status instead of racing.
+- **A wedged or slow-to-respond mpv could freeze the whole player screen**
+  -- every transport key (play/pause/seek/speed/volume) and closing the
+  player each did at least one blocking round trip on the UI thread. Both
+  now run off the event loop.
+- **The log file lost its 0600 (owner-only) permissions the first time it
+  rotated**, coming back at the process's default umask instead -- easily
+  reached under `VOXCODEX_DEBUG`, and the log can contain the account
+  email and (in debug mode) raw API response bodies. The file is now
+  re-secured on every open, not just its initial creation.
+- **A damaged chapter cache file could crash the app immediately after
+  login.** A cache file whose top-level JSON was valid but not an object
+  (truncation, a sync-tool mishap, a future schema change) raised instead
+  of being treated as unreadable.
+- **A corrupted playback speed or volume setting could crash the app the
+  moment a book was opened.** Both are now guarded and clamped to their
+  valid range instead of crashing or silently going out of range.
+- **A corrupt or unreadable download voucher could hang the play flow
+  forever, with no error shown and no way to retry.** It's now treated
+  the same as a missing voucher, with a clear error message.
+- Closed a rare race where stopping playback while a transport command
+  was in flight could let its socket file descriptor be reused before
+  that command's read finished.
+- A stalled or misbehaving mpv could hold every transport key hostage far
+  longer than the intended timeout, by trickling bytes with no newline
+  fast enough to keep resetting an internal read timer.
+- Local writes (settings, progress, caches, and a completed download) are
+  now `fsync`'d before their atomic rename, so a power loss shortly after
+  a write can no longer land the rename durable while the data behind it
+  isn't.
+- **Bulk-deleting finished downloads could abort partway through** if a
+  single book's delete failed, leaving the rest untouched with no
+  indication of what happened. One failure no longer stops the batch, and
+  the status now reports how many failed.
+- **A failed periodic progress checkpoint could silently give up
+  retrying** if the position didn't move again before the next tick --
+  it's no longer marked as saved unless the save actually succeeded.
+- **The sleep timer and the periodic progress checkpoint could both drift
+  long under load**, since a poll cycle taking over a second was skipped
+  entirely rather than counted. Both now track real elapsed time instead
+  of assuming exactly one tick per second.
+- The chapter row could show a stale chapter after seeking to before the
+  first chapter's start -- it now clears instead.
+- A download from a CDN that compresses its response could have been
+  incorrectly flagged and rejected as truncated, even though nothing was
+  actually lost.
+- A library item with an explicit null title, or a runtime/progress value
+  sent as a string, is now parsed correctly instead of producing a blank
+  title or corrupted duration.
+- A book title or other interpolated text containing certain bracketed
+  text could crash a confirmation or prompt dialog outright.
+- Closed a rare race where the chapter cache could silently fail to save
+  if a background chapter fetch happened to be updating it at the same
+  moment.
+- Switching to a different download mid-flight could hide the new
+  download's progress and show a stale "Downloaded" status for the one
+  it replaced.
+- A library refresh completing while a download was in flight could
+  leave that download not showing as downloaded until the next manual
+  refresh.
+- A successful library fetch that happened to return zero items (a
+  transient backend quirk, not an actually-empty library) could destroy
+  the offline cache used when a later fetch fails.
+- A book with well under a minute genuinely remaining, that had never been
+  started, could show as "done" in the library table instead of the
+  correct time left. An unknown runtime now shows blank, matching how an
+  unknown remaining time already did, instead of "0m".
+
+### Added
+- Escape now dismisses a CAPTCHA/OTP prompt or a delete-confirmation
+  dialog, instead of requiring a tab-to-button.
+
+### Security
+- **The Amazon account password and vault password could leak into
+  Textual's worker logging** (devtools console, or a crash traceback
+  rendered with local variables) via the default worker description for
+  the three login/unlock workers. They now carry an explicit,
+  non-sensitive description instead.
+- **Closed two code-execution primitives in how mpv is invoked.** The DRM
+  key/iv from a license response were written unvalidated into mpv's
+  config-file include, and the stream URL was passed as a bare positional
+  argument -- both server-controlled values, and either could (under a
+  hostile or compromised license response) get mpv to load and execute an
+  attacker-controlled script. ASINs are now also validated before being
+  used to build a download/voucher filename (a hostile library response
+  with a path-traversal ASIN could otherwise write outside the downloads
+  directory). The key/iv are now rejected unless they're
+  plain hex, and the stream URL is now passed after a `--` terminator.
+- An auth file left at looser permissions by a pre-hardening install is
+  now tightened as soon as it's loaded, not just on the next fresh login.
+- A CAPTCHA/OTP verification page's text -- which typically includes a
+  masked delivery destination (partial email/phone) -- no longer lands in
+  the log file by default; it's only captured under `VOXCODEX_DEBUG`.
+- ASINs are now also validated before being used to build any API request
+  path, not just a download/voucher filename -- a hostile library
+  response with a path-injection-shaped ASIN could otherwise smuggle a
+  query string or fragment into a request.
 
 ## 0.5.0
 

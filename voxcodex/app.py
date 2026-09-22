@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from io import TextIOWrapper
 from logging.handlers import RotatingFileHandler
 
 from textual import on
@@ -60,13 +62,19 @@ class VoxCodexApp(App[None]):
 
     @on(LoginScreen.Authenticated)
     def _authenticated(self, message: LoginScreen.Authenticated) -> None:
+        """Replace any existing API session and show the authenticated library."""
         if self.api is not None:
             # A second successful login (e.g. re-auth) would otherwise leak
             # the first Client's httpx connection pool.
             self.api.close()
         self.api = AudibleAPI(message.authenticator)
-        self.pop_screen()
-        self.push_screen(LibraryScreen(self.api, self.settings))
+        # switch_screen swaps the top of the stack in one atomic step -- a
+        # pop followed by a push (the old code here) nets out to the same
+        # depth too, but leaves a frame where the stack is briefly empty (or,
+        # from another thread, could be acted on mid-swap). login.py's own
+        # _reset already made this switch for the same reason (L8); this
+        # call site was the one place that pattern was left unfixed (L27).
+        self.switch_screen(LibraryScreen(self.api, self.settings))
 
     def on_unmount(self) -> None:
         if self.api is not None:
@@ -76,7 +84,22 @@ class VoxCodexApp(App[None]):
 _DEBUG_ENV_VAR = "VOXCODEX_DEBUG"
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler.doRollover renames the current file away and
+    reopens the base name via FileHandler._open, which calls plain open()
+    -- umask defaults apply, silently undoing the 0600 this module creates
+    the file at the moment it first crosses maxBytes (M10). Re-chmod on
+    every open, not just the first."""
+
+    def _open(self) -> TextIOWrapper:
+        stream = super()._open()
+        with contextlib.suppress(OSError):
+            os.chmod(self.baseFilename, 0o600)
+        return stream
+
+
 def _setup_logging() -> None:
+    """Configure rotating logs with best-effort private permissions and opt-in debug output."""
     config.ensure_dirs()
 
     # Create the file ourselves at 0600 before the handler opens it -- it can
@@ -89,7 +112,7 @@ def _setup_logging() -> None:
     except OSError:
         pass
 
-    handler = RotatingFileHandler(
+    handler = _PrivateRotatingFileHandler(
         config.LOG_FILE, maxBytes=1_000_000, backupCount=2, delay=True
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))

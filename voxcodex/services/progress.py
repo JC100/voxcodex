@@ -24,7 +24,7 @@ The read response shape below (`asin_last_position_heard_annots`, a list of
 per-asin records each with a nested `last_position_heard` dict) is confirmed
 directly against a live account, not guessed -- an earlier version of this
 module guessed at several plausible-looking shapes none of which were the
-real one, so `fetch_remote_positions` silently returned {} for every real
+real one, so the remote-read path silently returned nothing for every real
 response since this app's first commit. The bulk-loaded library table still
 looked reasonable throughout because it separately falls back to the
 library API's own `percent_complete` field, which masked the bug -- but the
@@ -69,23 +69,43 @@ class ProgressStore:
         return data if isinstance(data, dict) else {}
 
     def get_position_ms(self, asin: str) -> int:
-        return int(self._data.get(asin, {}).get("position_ms", 0))
+        """Return the cached position, or zero when the entry is absent or malformed."""
+        entry = self._data.get(asin)
+        if not isinstance(entry, dict):
+            # A valid-JSON, wrong-shape entry (e.g. {"B001": 5000}) --
+            # called once per book on every library load, so one bad entry
+            # must not take down the whole load (M5).
+            return 0
+        try:
+            return int(entry.get("position_ms", 0))
+        except (TypeError, ValueError):
+            return 0
 
     def get_updated_at(self, asin: str) -> float | None:
         """Unix timestamp of the last local write for `asin`, or None if
         there isn't one -- lets a caller compare recency against Audible's
         own `last_updated` for the same title (see
         `positions_with_updated_at_from_annotations`)."""
-        value = self._data.get(asin, {}).get("updated_at")
+        entry = self._data.get(asin)
+        if not isinstance(entry, dict):
+            return None
+        value = entry.get("updated_at")
         return float(value) if isinstance(value, (int, float)) else None
 
     def set_position_ms(self, asin: str, position_ms: int, duration_ms: int = 0) -> None:
+        """Atomically store a position and timestamp, retaining a known non-zero duration."""
         # Reload-modify-write atomically: the player screen checkpoints
         # position on a timer as well as on close, so writes land often and
         # must not truncate the file or drop another title's entry.
         with _FILE_LOCK:
             data = self._read_file()
-            entry = data.setdefault(asin, {})
+            entry = data.get(asin)
+            if not isinstance(entry, dict):
+                # Replace rather than mutate -- setdefault would return the
+                # existing non-dict value as-is, and item assignment on it
+                # (below) would raise TypeError.
+                entry = {}
+                data[asin] = entry
             entry["position_ms"] = int(position_ms)
             if duration_ms:
                 entry["duration_ms"] = int(duration_ms)
@@ -94,42 +114,43 @@ class ProgressStore:
             self._data = data
 
 
+# asins=... is one query-string parameter -- at ~11 bytes/ASIN, an
+# unchunked request for a several-hundred-title library is plausibly past a
+# gateway's request-line limit (M2). 100 per request keeps that comfortably
+# small while still batching most libraries into one or two round trips.
+_ANNOTATIONS_CHUNK_SIZE = 100
+
+
 def fetch_remote_annotations(api: AudibleAPI, asins: list[str]) -> list[dict[str, Any]]:
     """Best-effort raw fetch of Audible's own last-heard annotations.
 
     Returns the list of per-asin records (never raises, never None) --
-    empty if there are no asins to ask about, the call fails, or the
-    response doesn't match the confirmed shape. Kept separate from parsing
-    so a single fetch can feed more than one derived view (positions,
-    most-recently-played) without a second round trip.
+    empty if there are no asins to ask about, every chunked request fails,
+    or none of the responses match the confirmed shape. Kept separate from
+    parsing so a single fetch can feed more than one derived view
+    (positions, most-recently-played) without a second round trip.
     """
-    if not asins:
-        return []
-    try:
-        # See api.py's get_library for why this goes through a dict[str, Any]
-        # rather than a plain kwarg -- audible.Client.get's **kwargs stub.
-        params: dict[str, Any] = {"asins": ",".join(asins)}
-        resp = api.client.get("annotations/lastpositions", **params)
-        records = resp.get("asin_last_position_heard_annots") if isinstance(resp, dict) else None
-        return records if isinstance(records, list) else []
-    except Exception:
-        logger.debug("lastpositions fetch failed", exc_info=True)
-        return []
-
-
-def positions_from_annotations(records: list[dict[str, Any]]) -> dict[str, int]:
-    """asin -> position_ms for every record with an actual recorded position."""
-    positions: dict[str, int] = {}
-    for record in records:
-        existing = _existing_last_position_heard(record)
-        if existing is None:
-            continue
-        asin, lph = existing
+    records: list[dict[str, Any]] = []
+    for i in range(0, len(asins), _ANNOTATIONS_CHUNK_SIZE):
+        chunk = asins[i : i + _ANNOTATIONS_CHUNK_SIZE]
         try:
-            positions[asin] = int(lph.get("position_ms", 0))
-        except (TypeError, ValueError):
-            continue
-    return positions
+            # See api.py's get_library for why this goes through a
+            # dict[str, Any] rather than a plain kwarg -- audible.Client.
+            # get's **kwargs stub.
+            params: dict[str, Any] = {"asins": ",".join(chunk)}
+            resp = api.client.get("annotations/lastpositions", **params)
+            chunk_records = (
+                resp.get("asin_last_position_heard_annots")
+                if isinstance(resp, dict) else None
+            )
+            if isinstance(chunk_records, list):
+                records.extend(chunk_records)
+        except Exception:
+            logger.warning(
+                "lastpositions fetch failed for a chunk of %d asins", len(chunk),
+                exc_info=True,
+            )
+    return records
 
 
 def positions_with_updated_at_from_annotations(
@@ -160,29 +181,6 @@ def positions_with_updated_at_from_annotations(
     return result
 
 
-def most_recent_external_play(
-    records: list[dict[str, Any]],
-) -> tuple[str, datetime] | None:
-    """Of these records, the asin Audible most recently recorded a position
-    for -- i.e. the book you most recently played somewhere other than this
-    app (this app's own plays don't reach this endpoint; see the module
-    docstring). Returns (asin, updated_at) for the newest one, or None if no
-    record has both an existing position and a parseable timestamp.
-    """
-    best: tuple[str, datetime] | None = None
-    for record in records:
-        existing = _existing_last_position_heard(record)
-        if existing is None:
-            continue
-        asin, lph = existing
-        updated_at = parse_audible_timestamp(lph.get("last_updated"))
-        if updated_at is None:
-            continue
-        if best is None or updated_at > best[1]:
-            best = (asin, updated_at)
-    return best
-
-
 def _existing_last_position_heard(
     record: Any,
 ) -> tuple[str, dict[str, Any]] | None:
@@ -203,16 +201,6 @@ def _existing_last_position_heard(
     if not asin or not isinstance(lph, dict) or lph.get("status") != "Exists":
         return None
     return asin, lph
-
-
-def fetch_remote_positions(api: AudibleAPI, asins: list[str]) -> dict[str, int]:
-    """Best-effort bulk read of Audible's own last-heard positions.
-
-    Returns an asin -> position_ms map, or an empty map if the call fails or
-    no title has a recorded position -- callers should treat this purely as
-    an enhancement over the local cache, not a dependency.
-    """
-    return positions_from_annotations(fetch_remote_annotations(api, asins))
 
 
 def push_position(api: AudibleAPI, asin: str, acr: str, position_ms: int) -> bool:

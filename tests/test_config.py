@@ -105,6 +105,32 @@ def test_atomic_write_text_replaces_existing_content(tmp_path):
     assert target.read_text() == "new"
 
 
+def test_atomic_write_text_fsyncs_before_the_rename(tmp_path, monkeypatch):
+    """L5: without an fsync, power loss shortly after a write can land the
+    rename durable but the data behind it not -- a crash-safety guarantee
+    the docstring already claimed but didn't actually provide."""
+    target = tmp_path / "state.json"
+    calls = []
+
+    original_fsync = config.os.fsync
+    original_replace = config.os.replace
+
+    def recording_fsync(fd):
+        calls.append("fsync")
+        return original_fsync(fd)
+
+    def recording_replace(src, dst):
+        calls.append("replace")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(config.os, "fsync", recording_fsync)
+    monkeypatch.setattr(config.os, "replace", recording_replace)
+
+    config.atomic_write_text(target, '{"a": 1}')
+
+    assert calls == ["fsync", "replace"]
+
+
 def test_atomic_write_text_leaves_old_file_intact_and_no_tmp_on_failure(tmp_path, monkeypatch):
     target = tmp_path / "state.json"
     target.write_text("good")

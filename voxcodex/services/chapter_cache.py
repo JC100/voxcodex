@@ -22,9 +22,15 @@ logger = logging.getLogger(__name__)
 def save(chapters_by_asin: dict[str, list[Chapter]]) -> None:
     """Best-effort write; a failure here shouldn't interrupt playback or
     browsing, so it's logged rather than raised."""
+    # dict(...) snapshots in one atomic step before iterating -- the caller
+    # (LibraryScreen) passes its own live self._chapter_cache, which a
+    # background worker (_fetch_chapter_counts) can be extending on another
+    # thread at the same moment this iterates it, raising "dictionary
+    # changed size during iteration" -- not an OSError, so save()'s own
+    # except wouldn't have caught it (L19).
     data = {
         asin: [asdict(chapter) for chapter in chapters]
-        for asin, chapters in chapters_by_asin.items()
+        for asin, chapters in dict(chapters_by_asin).items()
     }
     try:
         config.atomic_write_text(config.CHAPTER_CACHE_FILE, json.dumps(data))
@@ -40,10 +46,12 @@ def load() -> dict[str, list[Chapter]]:
         return {}
     try:
         data = json.loads(config.CHAPTER_CACHE_FILE.read_text())
+        if not isinstance(data, dict):
+            return {}
         return {
             asin: [Chapter(**item) for item in chapters]
             for asin, chapters in data.items()
         }
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, OSError, AttributeError, KeyError, TypeError, ValueError):
         logger.debug("failed to read chapter cache", exc_info=True)
         return {}

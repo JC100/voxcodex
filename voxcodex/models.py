@@ -15,11 +15,8 @@ class Book:
     series: str = ""
     series_sequence: str = ""
     runtime_min: int = 0
-    cover_url: str = ""
     purchase_date: str = ""
     is_downloaded: bool = False
-    local_audio_path: str = ""
-    local_voucher_path: str = ""
     progress_ms: int = 0
     duration_ms: int = 0
     is_finished: bool = False
@@ -44,6 +41,12 @@ class Book:
 
     @property
     def runtime_display(self) -> str:
+        """Format the runtime for display, or return blank when it is unknown."""
+        # runtime_min == 0 means "unknown" (never a genuine runtime), same
+        # as duration_ms == 0 in progress_pct/time_left_display below --
+        # used to render "0m" here while those rendered blank (L24).
+        if not self.runtime_min:
+            return ""
         h, m = divmod(self.runtime_min, 60)
         if h and m:
             return f"{h}h {m}m"
@@ -59,11 +62,21 @@ class Book:
 
     @property
     def time_left_display(self) -> str:
+        """Format the remaining duration, distinguishing unknown, short and finished titles."""
         if not self.duration_ms:
             return ""
-        remaining_min = round(max(0, self.duration_ms - self.progress_ms) / 60_000)
-        if remaining_min <= 0:
+        remaining_ms = max(0, self.duration_ms - self.progress_ms)
+        if remaining_ms == 0:
             return "done"
+        # Rounding remaining_ms straight to minutes before checking for
+        # "done" used to report a well-under-a-minute-but-genuinely-not-
+        # finished book (e.g. a 20s sample never started) as "done" --
+        # round(20_000 / 60_000) == 0, indistinguishable from the real
+        # remaining_ms == 0 case above. Checking the unrounded ms for
+        # "finished" fixes that; this rounds only for display (L24).
+        remaining_min = round(remaining_ms / 60_000)
+        if remaining_min <= 0:
+            return "<1m left"
         h, m = divmod(remaining_min, 60)
         if h and m:
             return f"{h}h {m}m left"

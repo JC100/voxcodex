@@ -65,7 +65,7 @@ finding, doesn't matter which:
   every 3.10 CI run (and the real app under 3.10) for 18 consecutive
   commits before anyone checked CI. Python 3.10 support was dropped as the
   fix (see git log around that date) rather than pinning to the older
-  dependency surface forever. Lesson: check CI (step 7 of Definition of
+  dependency surface forever. Lesson: check CI (step 8 of Definition of
   done above), don't just trust a green local run.
 
 ## Project structure

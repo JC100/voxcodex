@@ -2,6 +2,8 @@ import pytest
 
 from voxcodex.services.api import (
     AudibleAPI,
+    InvalidAsin,
+    InvalidResponse,
     LicenseDenied,
     NoDownloadUrl,
     _book_from_item,
@@ -50,6 +52,28 @@ def test_book_from_item_defaults_when_fields_missing():
     assert book.is_finished is False
 
 
+def test_book_from_item_title_falls_back_to_untitled_on_explicit_null():
+    # L16: title defaulted via .get(..., "Untitled"), which only fires
+    # when the key is missing entirely -- an explicit "title": null (key
+    # present, value None) fell through as book.title = None, unlike the
+    # `or ""` pattern used for subtitle/purchase_date a few lines away.
+    book = _book_from_item({"title": None})
+    assert book.title == "Untitled"
+
+
+def test_book_from_item_coerces_string_runtime_and_percent_complete():
+    # L16: runtime_min/percent_complete were used arithmetically
+    # (runtime_min * 60_000, percent_complete / 100) with no numeric
+    # coercion, unlike the equivalent chapter-parsing code -- a string
+    # value wouldn't error so much as silently produce nonsense
+    # ("45" * 60_000 is a valid Python expression, just not a duration).
+    item = {"runtime_length_min": "100", "percent_complete": "50"}
+    book = _book_from_item(item)
+    assert book.runtime_min == 100
+    assert book.duration_ms == 100 * 60_000
+    assert book.progress_ms == 50 * 60_000
+
+
 def test_book_from_item_multiple_authors():
     item = {"authors": [{"name": "A"}, {"name": "B"}, {"name": None}]}
     book = _book_from_item(item)
@@ -69,18 +93,6 @@ def test_book_from_item_no_series():
     book = _book_from_item(item)
     assert book.series == ""
     assert book.series_sequence == ""
-
-
-def test_book_from_item_cover_prefers_500_over_300():
-    item = {"product_images": {"300": "small.jpg", "500": "big.jpg"}}
-    book = _book_from_item(item)
-    assert book.cover_url == "big.jpg"
-
-
-def test_book_from_item_cover_falls_back_to_300():
-    item = {"product_images": {"300": "small.jpg"}}
-    book = _book_from_item(item)
-    assert book.cover_url == "small.jpg"
 
 
 def test_book_from_item_computes_progress_ms_from_percent_complete():
@@ -193,7 +205,7 @@ def test_get_library_stops_at_the_page_safety_limit_if_pages_never_go_empty():
     # Every page comes back "full" (a misbehaving server that never signals
     # the end) -- the hard page cap is what stops this from looping forever.
     pages = [
-        FakeJsonResponse({"items": [{"asin": f"P{page}-{i}"} for i in range(1000)]})
+        FakeJsonResponse({"items": [{"asin": f"P{page}X{i}"} for i in range(1000)]})
         for page in range(api_module._MAX_LIBRARY_PAGES + 5)
     ]
     client = FakeAudibleClient(get_pages=pages)
@@ -241,12 +253,148 @@ def test_get_library_skips_items_with_no_asin(caplog):
     assert "No asin key at all" in caplog.text
 
 
+def test_get_library_skips_items_with_a_malformed_asin(caplog):
+    # L15: every method that later builds a request path from an asin
+    # (get_license, push_last_position, get_chapters) does so with no
+    # percent-encoding -- a value containing "?" or "#" would inject a
+    # query string/fragment. Cheap to validate shape here too, at the
+    # point ASINs first enter the app, alongside the existing presence
+    # check.
+    items = [
+        {"asin": "B001", "title": "Well-formed"},
+        {"asin": "B002?evil=1", "title": "Path-injection shaped"},
+        {"asin": "B003#frag", "title": "Also path-injection shaped"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed asin" in caplog.text
+
+
+def test_get_library_skips_items_with_a_non_string_asin(caplog):
+    # A non-string asin (e.g. a nested object the server sent by mistake)
+    # would otherwise raise TypeError out of _VALID_ASIN_RE.fullmatch,
+    # aborting the whole library load instead of just dropping the item.
+    items = [
+        {"asin": "B001", "title": "Well-formed"},
+        {"asin": {"unexpected": "shape"}, "title": "Non-string asin"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed asin" in caplog.text
+
+
+def test_get_library_skips_non_object_items(caplog):
+    items = ["not an object", {"asin": "B001", "title": "Well-formed"}]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "not an object" in caplog.text
+
+
+def test_get_library_skips_items_with_malformed_numeric_fields(caplog):
+    # int(item.get("runtime_length_min") or 0) / float(percent_complete)
+    # would otherwise raise ValueError and abort parsing of the whole page
+    # to one bad item's arithmetic.
+    items = [
+        {"asin": "B001", "title": "Well-formed", "runtime_length_min": 60},
+        {"asin": "B002", "title": "Bad runtime", "runtime_length_min": "not a number"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed numeric fields" in caplog.text
+
+
+def test_get_library_dedupes_repeated_asins_within_a_page(caplog):
+    # H2: table.add_row(..., key=book.asin) raises Textual's DuplicateKey
+    # on a repeated key -- keep the first occurrence and drop the rest
+    # rather than crashing the library render.
+    items = [
+        {"asin": "B001", "title": "First copy"},
+        {"asin": "B001", "title": "Second copy, same ASIN"},
+        {"asin": "B002", "title": "Different book"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001", "B002"]
+    assert [b.title for b in books] == ["First copy", "Different book"]
+    assert "B001" in caplog.text
+
+
+def test_get_library_dedupes_an_asin_repeated_across_pages(caplog):
+    # A purchase landing mid-pagination shifts the page window, so the
+    # same ASIN can legitimately reappear on a later page, not just within
+    # one -- the dedupe set must persist across the pagination loop.
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": [{"asin": "B001", "title": "Page 1 copy"}] * 1000}),
+            FakeJsonResponse(
+                {"items": [{"asin": "B001", "title": "Page 2 copy"}, {"asin": "B002"}]}
+            ),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001", "B002"]
+
+
 # -- get_license -------------------------------------------------------
 
 
 def _license_response(
     status_code="Granted", content_url="https://cdn/x.aaxc", position_ms=None,
-    last_updated=None,
+    last_updated=None, position_status="Exists",
 ):
     content_license = {
         "status_code": status_code,
@@ -256,7 +404,7 @@ def _license_response(
         },
     }
     if position_ms is not None:
-        lph = {"position_ms": position_ms}
+        lph = {"status": position_status, "position_ms": position_ms}
         if last_updated is not None:
             lph["last_updated"] = last_updated
         content_license["last_position_heard"] = lph
@@ -273,7 +421,6 @@ def test_get_license_happy_path_without_drm_voucher():
 
     assert license_.asin == "B001"
     assert license_.content_url == "https://cdn/x.aaxc"
-    assert license_.codec == "AAXC"
     assert license_.key == ""
     assert license_.iv == ""
     assert license_.last_position_ms == 42_000
@@ -307,24 +454,29 @@ def test_get_license_posts_to_the_asin_specific_endpoint():
     assert path == "content/B12345/licenserequest"
 
 
-def test_get_license_accepts_normal_quality():
+def test_get_license_requests_high_quality():
+    # L26: quality was a caller-supplied parameter nothing ever overrode
+    # (no settings UI exists to choose otherwise) -- now hardcoded.
     client = FakeAudibleClient(post_response=_license_response())
     api = _api_with_fake_client(client)
 
-    api.get_license("B001", quality="normal")
+    api.get_license("B001")
 
     (_path, kwargs), = client.post_calls
-    assert kwargs["body"]["quality"] == "Normal"
+    assert kwargs["body"]["quality"] == "High"
 
 
-def test_get_license_rejects_an_unrecognized_quality():
-    # L12: this used to silently coerce any non-"normal" value (a typo
-    # included) to "High" instead of rejecting it.
+def test_get_license_rejects_a_malformed_asin():
+    # L15: asin is interpolated straight into the request path with no
+    # percent-encoding -- a value containing "?" or "#" would inject a
+    # query string/fragment.
     client = FakeAudibleClient(post_response=_license_response())
     api = _api_with_fake_client(client)
 
-    with pytest.raises(ValueError, match="quality"):
-        api.get_license("B001", quality="hihg")
+    with pytest.raises(InvalidAsin):
+        api.get_license("B001?evil=1")
+
+    assert client.post_calls == []  # rejected before any request was made
 
 
 def test_get_license_defaults_to_zero_position_when_absent():
@@ -335,6 +487,60 @@ def test_get_license_defaults_to_zero_position_when_absent():
 
     assert license_.last_position_ms == 0
     assert license_.last_position_updated_at is None
+
+
+def test_get_license_raises_invalid_response_on_a_non_json_200():
+    # M3: same hazard as get_chapters -- indexing a non-dict 200 body like
+    # the expected dict used to raise an untyped TypeError, escaping
+    # _PLAYER_OPEN_ERRORS entirely and leaving the user with no message.
+    client = FakeAudibleClient(post_response="<html>Service Unavailable</html>")
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_license_missing():
+    client = FakeAudibleClient(post_response={"not_content_license": {}})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_license_not_an_object():
+    client = FakeAudibleClient(post_response={"content_license": "not an object"})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_metadata_malformed():
+    # content_metadata.get(...) would otherwise raise AttributeError, escaping
+    # _PLAYER_OPEN_ERRORS entirely and leaving the user with no message.
+    client = FakeAudibleClient(
+        post_response={
+            "content_license": {
+                "status_code": "Granted",
+                "content_metadata": "not an object",
+            }
+        }
+    )
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_position_ms_is_malformed():
+    client = FakeAudibleClient(
+        post_response=_license_response(position_ms="not a number")
+    )
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
 
 
 def test_get_license_extracts_last_position_updated_at():
@@ -361,6 +567,28 @@ def test_get_license_position_updated_at_none_without_a_timestamp():
 
     license_ = api.get_license("B001")
 
+    assert license_.last_position_updated_at is None
+
+
+def test_get_license_ignores_a_does_not_exist_position(monkeypatch):
+    # M1: progress._existing_last_position_heard rejects any
+    # last_position_heard record whose status isn't "Exists" (Audible
+    # returns "DoesNotExist" -- no real position -- for a never-played
+    # title). get_license parses the same field shape and used to have no
+    # such guard, so a DoesNotExist record with a fresh timestamp could
+    # feed a bogus 0 in as the "most recent" position, silently resetting
+    # a real resume point.
+    client = FakeAudibleClient(
+        post_response=_license_response(
+            position_ms=999_000, last_updated="2026-08-30 10:54:00.671",
+            position_status="DoesNotExist",
+        )
+    )
+    api = _api_with_fake_client(client)
+
+    license_ = api.get_license("B001")
+
+    assert license_.last_position_ms == 0
     assert license_.last_position_updated_at is None
 
 
@@ -496,22 +724,39 @@ def test_get_chapters_requests_the_metadata_endpoint_for_the_asin():
     assert kwargs["response_groups"] == "chapter_info"
 
 
-def test_get_chapters_accepts_normal_quality():
+def test_get_chapters_requests_high_quality():
+    # L26: quality was a caller-supplied parameter nothing ever overrode
+    # (no settings UI exists to choose otherwise) -- now hardcoded.
     client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
     api = _api_with_fake_client(client)
 
-    api.get_chapters("B001", quality="normal")
+    api.get_chapters("B001")
 
     (_path, kwargs), = client.calls
-    assert kwargs["quality"] == "Normal"
+    assert kwargs["quality"] == "High"
 
 
-def test_get_chapters_rejects_an_unrecognized_quality():
+def test_get_chapters_rejects_a_malformed_asin():
     client = FakeMetadataClient({"content_metadata": {"chapter_info": {"chapters": []}}})
     api = _api_with_fake_client(client)
 
-    with pytest.raises(ValueError, match="quality"):
-        api.get_chapters("B001", quality="hihg")
+    with pytest.raises(InvalidAsin):
+        api.get_chapters("B001#frag")
+
+    assert client.calls == []  # rejected before any request was made
+
+
+def test_get_chapters_raises_invalid_response_on_a_non_json_200():
+    # M3: audible.client.convert_response_content falls back to returning
+    # raw text when a 200 body isn't valid JSON (a captive portal, a proxy
+    # error page, an Amazon maintenance page). Indexing that as a dict used
+    # to raise an untyped AttributeError that escaped the caller's error
+    # handling entirely, leaving the user with no message at all.
+    client = FakeMetadataClient("<html>Service Unavailable</html>")
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_chapters("B001")
 
 
 # -- push_last_position + set_finished ------------------------------------
@@ -537,6 +782,16 @@ def test_push_last_position_raises_without_acr():
     with pytest.raises(ValueError):
         api.push_last_position("B001", "", 1000)
     assert client.put_calls == []
+
+
+def test_push_last_position_rejects_a_malformed_asin():
+    client = FakePutClient()
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidAsin):
+        api.push_last_position("B001?evil=1", "CR!ABC", 1000)
+
+    assert client.put_calls == []  # rejected before any request was made
 
 
 def test_push_last_position_puts_json_to_the_lastpositions_endpoint():

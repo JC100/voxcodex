@@ -20,6 +20,7 @@ import contextlib
 import itertools
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -36,6 +37,14 @@ class MpvNotFoundError(Exception):
 
 class MpvError(Exception):
     pass
+
+
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def _require_hex(value: str, name: str) -> None:
+    if not value or len(value) % 2 != 0 or not _HEX_RE.fullmatch(value):
+        raise MpvError(f"{name} is not a valid hex string")
 
 
 def _write_private_file(path: Path, text: str) -> None:
@@ -75,6 +84,22 @@ class MpvPlayer:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self, source: str, key: str, iv: str, start_seconds: float = 0.0) -> None:
+        """Start mpv for a stream or local file and connect its control socket.
+
+        ``key`` and ``iv`` must be non-empty, even-length hexadecimal strings.
+        Process-launch and IPC-connection failures clean up the child process and
+        private temporary files.
+        """
+        # key/iv are server-controlled plaintext (from a licenserequest
+        # response) written verbatim into mpv's line-oriented config-file
+        # parser -- an embedded newline plus a follow-on option line (e.g.
+        # `script=...`) is otherwise arbitrary code execution the moment
+        # mpv loads the include file. Reject anything that isn't plain hex
+        # before it ever reaches the options file (docs/code-review-
+        # 2026-09-21.html H5).
+        _require_hex(key, "key")
+        _require_hex(iv, "iv")
+
         self.stop()
         self._stopping.clear()
 
@@ -97,19 +122,28 @@ class MpvPlayer:
             "--force-seekable=yes",
             f"--input-ipc-server={self._socket_path}",
             f"--include={options_path}",
-            source,
         ]
         if start_seconds > 0:
-            cmd.insert(-1, f"--start={start_seconds:.2f}")
+            cmd.append(f"--start={start_seconds:.2f}")
+        # `--` terminates option parsing: source is server-controlled
+        # (license.content_url for a stream) and mpv treats any positional
+        # argument starting with "-" as an option rather than a filename
+        # without it (docs/code-review-2026-09-21.html H6).
+        cmd.append("--")
+        cmd.append(source)
 
-        self._proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
         try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
             self._connect()
         except Exception:
-            # Don't leave the mpv process we just spawned running headless
-            # with no IPC channel to control or stop it.
+            # Covers both a Popen failure (e.g. mpv removed/renamed between
+            # the shutil.which check in __init__ and here, or a resource
+            # limit) and a failed _connect -- either way, don't leave the
+            # temp dir (holding the plaintext DRM key) on disk, or an mpv
+            # process running headless with no IPC channel to control it.
             self.stop()
             raise
 
@@ -135,13 +169,21 @@ class MpvPlayer:
             time.sleep(0.05)
         raise MpvError(f"Could not connect to mpv IPC socket: {last_err}")
 
-    def _read_line(self, sock: socket.socket, timeout: float) -> bytes | None:
-        """Read one newline-terminated IPC message off `sock`. Returns None if
-        the peer closed the connection. Buffers manually rather than via
-        socket.makefile(), whose internal state is left inconsistent by a
-        timeout on the underlying socket."""
+    def _read_line(self, sock: socket.socket, deadline: float) -> bytes | None:
+        """Read one newline-terminated IPC message off `sock`, honoring an
+        absolute deadline across the whole read. Re-arming a fixed per-recv
+        timeout on every iteration (rather than shrinking it against this
+        deadline) would let a peer trickling bytes with no newline reset
+        the clock on every recv() and hold this -- and the _io_lock a
+        caller holds around it -- indefinitely (L4, compounds M8). Returns
+        None if the peer closed the connection. Buffers manually rather
+        than via socket.makefile(), whose internal state is left
+        inconsistent by a timeout on the underlying socket."""
         while b"\n" not in self._recv_buf:
-            sock.settimeout(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for mpv IPC response")
+            sock.settimeout(remaining)
             chunk = sock.recv(65536)
             if not chunk:
                 return None
@@ -150,6 +192,7 @@ class MpvPlayer:
         return line
 
     def _command(self, *args: object, timeout: float = 1.5) -> Any:
+        """Send one serialised IPC command and return its data or raise ``MpvError``."""
         with self._io_lock:
             sock = self._sock
             if sock is None:
@@ -161,10 +204,7 @@ class MpvPlayer:
                 sock.settimeout(timeout)
                 sock.sendall(payload.encode())
                 while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise MpvError(f"timed out waiting for mpv response to {args[0]!r}")
-                    line = self._read_line(sock, remaining)
+                    line = self._read_line(sock, deadline)
                     if line is None:
                         raise MpvError("mpv IPC connection closed")
                     try:
@@ -175,10 +215,12 @@ class MpvPlayer:
                         if msg.get("error") not in (None, "success"):
                             raise MpvError(str(msg.get("error")))
                         return msg.get("data")
+            except TimeoutError as exc:
+                raise MpvError(f"timed out waiting for mpv response to {args[0]!r}") from exc
             except OSError as exc:
-                # Socket I/O fails as BrokenPipeError / ConnectionResetError /
-                # socket.timeout -- all OSError, none MpvError. Funnel them into
-                # the one exception type callers actually catch.
+                # Socket I/O fails as BrokenPipeError / ConnectionResetError --
+                # all OSError, none MpvError. Funnel them into the one
+                # exception type callers actually catch.
                 raise MpvError(f"mpv IPC error: {exc}") from exc
 
     def get_property(self, name: str, default: object = None) -> Any:
@@ -192,7 +234,17 @@ class MpvPlayer:
 
     @property
     def position_seconds(self) -> float:
-        return float(self.get_property("time-pos", 0.0) or 0.0)
+        """Return the current position, raising ``MpvError`` when it cannot be read."""
+        # No default here, unlike the other properties below: a failed IPC
+        # read (timeout, a stall mid-seek, mpv exiting between the caller's
+        # is_running check and this call) must not be indistinguishable
+        # from "genuinely at position 0" -- callers persist this value and
+        # push it to Audible, so a swallowed failure silently erases the
+        # real resume point (see docs/code-review-2026-09-21.html H3).
+        value = self.get_property("time-pos")
+        if value is None:
+            raise MpvError("time-pos unavailable")
+        return float(value)
 
     @property
     def duration_seconds(self) -> float:
@@ -229,6 +281,7 @@ class MpvPlayer:
         self.set_property("volume", max(0.0, min(100.0, volume)))
 
     def stop(self) -> None:
+        """Stop playback and remove private IPC files; repeated calls are safe."""
         # Called from the event loop (on_unmount / action_close) as well as
         # the player-screen worker, so it stays deliberately quick: a best-
         # effort quit with a short timeout, then SIGTERM, then SIGKILL.
@@ -243,6 +296,15 @@ class MpvPlayer:
                     sock.sendall(b'{"command": ["quit"]}\n')
                 except OSError:
                     pass
+                # stop() doesn't take _io_lock, so a concurrent _command on
+                # another thread (the poll or control worker) may still be
+                # blocked in recv() on this same socket. A bare close() can
+                # race that: the fd could be reused by an unrelated new
+                # socket before the blocked recv() wakes up. shutdown()
+                # first forces that recv() to return immediately (as EOF)
+                # without invalidating the fd, closing the window (L2).
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
                 with contextlib.suppress(OSError):
                     sock.close()
 
@@ -253,6 +315,12 @@ class MpvPlayer:
                     proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    # SIGKILL doesn't reap the process itself -- without
+                    # this wait() it stays a zombie until this MpvPlayer
+                    # (and its self._proc reference) is garbage collected,
+                    # rather than being reaped promptly (L3).
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=1.0)
 
             tmp_dir, self._dir = self._dir, None
             self._socket_path = None

@@ -35,13 +35,23 @@ def test_get_property_returns_default_when_not_connected(monkeypatch):
     assert p.get_property("time-pos", 1.23) == 1.23
 
 
-def test_position_and_duration_default_to_zero_when_not_connected(monkeypatch):
+def test_duration_paused_eof_default_when_not_connected(monkeypatch):
     monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
     p = MpvPlayer()
-    assert p.position_seconds == 0.0
     assert p.duration_seconds == 0.0
     assert p.paused is False
     assert p.eof_reached is False
+
+
+def test_position_seconds_raises_instead_of_defaulting_when_not_connected(monkeypatch):
+    """Unlike the other properties above, a failed read of time-pos must not
+    silently default to 0.0 -- callers persist this value and push it to
+    Audible, so a swallowed failure would erase a real resume point
+    (see docs/code-review-2026-09-21.html H3)."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    with pytest.raises(MpvError):
+        _ = p.position_seconds
 
 
 def test_volume_defaults_to_100_when_not_connected(monkeypatch):
@@ -242,7 +252,7 @@ def fake_mpv(monkeypatch):
 
 def test_start_uses_a_private_0700_temp_dir_and_removes_it_on_stop(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     tmp_dir = p._dir
     assert tmp_dir is not None and tmp_dir.is_dir()
@@ -261,36 +271,105 @@ def test_start_uses_a_private_0700_temp_dir_and_removes_it_on_stop(fake_mpv):
 
 def test_start_never_puts_the_key_or_iv_on_the_command_line(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "top-secret-key", "top-secret-iv")
+    p.start("src", "deadbeef", "cafebabe")
 
     cmd_str = " ".join(fake_mpv[-1].cmd)
-    assert "top-secret-key" not in cmd_str
-    assert "top-secret-iv" not in cmd_str
+    assert "deadbeef" not in cmd_str
+    assert "cafebabe" not in cmd_str
 
     p.stop()
 
 
 def test_start_passes_the_key_and_iv_via_a_private_include_file(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "thekey", "theiv")
+    p.start("src", "abc123", "def456")
 
     include_arg = next(arg for arg in fake_mpv[-1].cmd if arg.startswith("--include="))
     options_path = include_arg.split("=", 1)[1]
     assert stat.S_IMODE(os.stat(options_path).st_mode) == 0o600
     with open(options_path) as f:
         contents = f.read()
-    assert "audible_key=thekey" in contents
-    assert "audible_iv=theiv" in contents
+    assert "audible_key=abc123" in contents
+    assert "audible_iv=def456" in contents
 
     p.stop()
     assert not os.path.exists(options_path)  # cleaned up with the rest of _dir
 
 
+# -- H5: key/iv are rejected unless they're plain hex ----------------------
+
+
+@pytest.mark.parametrize(
+    "key,iv",
+    [
+        ("not-hex!", "ad"),
+        ("de", "not-hex!"),
+        ("odd", "ad"),  # odd length -- can't be a whole number of bytes
+        ("", "ad"),
+        ("de", ""),
+        # The actual exploit: an embedded newline followed by a second mpv
+        # config-file line (mpv's config parser is line-oriented and a
+        # malformed line doesn't abort parsing) -- confirmed against real
+        # mpv to load and execute an attacker-supplied script.
+        ("de\nscript=/tmp/evil.lua", "ad"),
+    ],
+)
+def test_start_rejects_non_hex_key_or_iv(monkeypatch, key, iv):
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    with pytest.raises(MpvError):
+        p.start("src", key, iv)
+
+
+def test_start_accepts_plain_hex_key_and_iv(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "deadbeef", "cafebabe")  # must not raise
+    p.stop()
+
+
+# -- H6: the stream URL is passed after a `--` terminator -------------------
+
+
+def test_start_puts_a_double_dash_terminator_before_the_source(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "src"]
+
+    p.stop()
+
+
+def test_start_with_a_leading_dash_source_is_not_treated_as_an_option(fake_mpv):
+    """A stream URL beginning with '-' (server-controlled: license.content_url)
+    would otherwise be parsed by mpv as an option rather than a filename."""
+    p = MpvPlayer()
+    p.start("--script=/tmp/evil.lua", "de", "ad")
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "--script=/tmp/evil.lua"]
+
+    p.stop()
+
+
+def test_start_with_a_start_seconds_puts_it_before_the_dash_terminator(fake_mpv):
+    p = MpvPlayer()
+    p.start("src", "de", "ad", start_seconds=12.5)
+
+    cmd = fake_mpv[-1].cmd
+    assert cmd[-2:] == ["--", "src"]
+    assert "--start=12.50" in cmd
+    assert cmd.index("--start=12.50") < cmd.index("--")
+
+    p.stop()
+
+
 def test_commands_round_trip_over_the_real_socket(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     assert p.get_property("time-pos") == 42  # FakeMpv answers every read with 42
+    assert p.position_seconds == 42.0
     p.set_property("pause", True)
     p.seek_relative(-30)
 
@@ -301,7 +380,7 @@ def test_commands_round_trip_over_the_real_socket(fake_mpv):
 
 def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
 
     fake_mpv[0].terminate()  # kill the server out from under the client
     time.sleep(0.05)
@@ -310,12 +389,60 @@ def test_command_wraps_a_dropped_connection_as_mpv_error(fake_mpv):
         p.set_property("pause", True)
     # get_property swallows it and returns the default
     assert p.get_property("time-pos", 1.5) == 1.5
+    # position_seconds must not swallow the same failure into a phantom 0
+    # (see docs/code-review-2026-09-21.html H3) -- it has to raise so the
+    # caller's poll loop skips the tick instead of committing a lost read
+    # as the real position.
+    with pytest.raises(MpvError):
+        _ = p.position_seconds
     p.stop()
+
+
+def test_command_honors_an_absolute_deadline_against_a_trickling_peer(monkeypatch):
+    """L4: _read_line used to re-arm a fixed per-recv timeout on every
+    iteration instead of shrinking it against the overall deadline -- a
+    peer sending a byte just before each recv's timeout fired could keep
+    resetting the clock and hold _io_lock (and every transport key,
+    compounding M8) far past the requested timeout."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+    p = MpvPlayer()
+    server_sock, client_sock = socket.socketpair()
+    p._sock = client_sock
+
+    stop_trickling = threading.Event()
+
+    def trickle():
+        # One byte well inside the command timeout, forever -- never a
+        # newline, so _read_line's inner loop never completes a message.
+        while not stop_trickling.wait(0.05):
+            try:
+                server_sock.sendall(b"x")
+            except OSError:
+                return
+
+    thread = threading.Thread(target=trickle, daemon=True)
+    thread.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(MpvError, match="timed out"):
+            p._command("get_property", "time-pos", timeout=0.3)
+        elapsed = time.monotonic() - started
+
+        # Bounded by the deadline (with slack for scheduling), not reset on
+        # every trickled byte -- the trickle interval (0.05s) is well under
+        # the 0.3s command timeout, so the bug this guards against would
+        # keep this blocked for several seconds at least.
+        assert elapsed < 1.0
+    finally:
+        stop_trickling.set()
+        thread.join(timeout=2)
+        server_sock.close()
+        client_sock.close()
 
 
 def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     p = MpvPlayer()
-    p.start("src", "key", "iv")
+    p.start("src", "de", "ad")
     tmp_dir = p._dir
 
     threads = [threading.Thread(target=p.stop) for _ in range(5)]
@@ -328,12 +455,84 @@ def test_stop_is_idempotent_and_safe_from_several_threads(fake_mpv):
     assert not tmp_dir.exists()
 
 
+def test_stop_shuts_down_the_socket_before_closing_it(fake_mpv, monkeypatch):
+    """L2: stop() doesn't take _io_lock, so a concurrent _command on
+    another thread (the poll or control worker) may still be blocked in
+    recv() on this same socket. A bare close() can race that -- the fd
+    could be reused by an unrelated new socket before the blocked recv()
+    wakes up. shutdown() first forces that recv() to return immediately
+    (as EOF) without invalidating the fd, closing the window."""
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+    client_sock = p._sock
+
+    calls = []
+    original_shutdown = socket.socket.shutdown
+    original_close = socket.socket.close
+
+    def recording_shutdown(self, *args, **kwargs):
+        if self is client_sock:
+            calls.append("shutdown")
+        return original_shutdown(self, *args, **kwargs)
+
+    def recording_close(self, *args, **kwargs):
+        if self is client_sock:
+            calls.append("close")
+        return original_close(self, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "shutdown", recording_shutdown)
+    monkeypatch.setattr(socket.socket, "close", recording_close)
+
+    p.stop()
+
+    assert calls == ["shutdown", "close"]
+
+
+def test_stop_reaps_the_process_after_a_sigkill(fake_mpv):
+    """L3: proc.kill() alone doesn't reap the process -- nothing calls
+    wait() on it afterwards, so it lingers as a zombie until this
+    MpvPlayer (and its self._proc reference) is garbage collected, rather
+    than until the next book is played."""
+    p = MpvPlayer()
+    p.start("src", "de", "ad")
+
+    class NeverTerminates:
+        def __init__(self):
+            self.kill_called = False
+            self.wait_calls = 0
+            self._killed = False
+
+        def poll(self):
+            return 0 if self._killed else None
+
+        def terminate(self):
+            pass  # ignored -- the process doesn't actually die
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if not self._killed:
+                raise player_module.subprocess.TimeoutExpired(cmd="mpv", timeout=timeout)
+            return 0
+
+        def kill(self):
+            self.kill_called = True
+            self._killed = True
+
+    fake_proc = NeverTerminates()
+    p._proc = fake_proc
+
+    p.stop()
+
+    assert fake_proc.kill_called is True
+    assert fake_proc.wait_calls == 2  # once after terminate() times out, once after kill()
+
+
 def test_command_is_serialised_across_threads(fake_mpv):
     """The player screen polls position from a background worker while
     transport actions run on theirs -- interleaved sendall/recv on one
     socket would scramble request/response framing. _io_lock prevents it."""
     p = MpvPlayer()
-    p.start("s", "k", "iv")
+    p.start("s", "0a", "ad")
 
     results = []
     errors = []
@@ -385,5 +584,36 @@ def test_stop_during_startup_breaks_connect_out_of_its_retry_loop(monkeypatch):
 
     started = time.monotonic()
     with pytest.raises(MpvError):
-        p.start("src", "key", "iv")
+        p.start("src", "de", "ad")
     assert time.monotonic() - started < 3.0  # nowhere near the 8s ceiling
+
+
+def test_start_cleans_up_the_temp_dir_when_popen_itself_fails(monkeypatch):
+    """M6: Popen used to run outside the surrounding cleanup try -- a
+    FileNotFoundError (mpv removed/renamed between the shutil.which check
+    in __init__ and here) left the 0700 temp dir, with the plaintext DRM
+    key inside it, on disk until the next reboot."""
+    monkeypatch.setattr(player_module.shutil, "which", lambda name: "/usr/bin/mpv")
+
+    created_dirs = []
+    real_mkdtemp = player_module.tempfile.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created_dirs.append(path)
+        return path
+
+    monkeypatch.setattr(player_module.tempfile, "mkdtemp", recording_mkdtemp)
+
+    def fake_popen(cmd, **kwargs):
+        raise FileNotFoundError("mpv: No such file or directory")
+
+    monkeypatch.setattr(player_module.subprocess, "Popen", fake_popen)
+
+    p = MpvPlayer()
+    with pytest.raises(FileNotFoundError):
+        p.start("src", "de", "ad")
+
+    assert p._dir is None
+    (created_dir,) = created_dirs
+    assert not os.path.exists(created_dir)

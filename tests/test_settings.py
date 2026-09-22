@@ -1,6 +1,3 @@
-import time
-from datetime import datetime, UTC
-
 import pytest
 
 from voxcodex.services import settings
@@ -28,6 +25,45 @@ def test_playback_volume_round_trips(tmp_path):
     assert s.playback_volume == 65.0
 
 
+# -- M12: a corrupted-but-parseable value must not crash the app ------------
+
+
+def test_playback_speed_falls_back_to_default_on_a_non_numeric_value(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_speed": "1.5x"}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_speed == settings.DEFAULT_PLAYBACK_SPEED  # must not raise
+
+
+def test_playback_volume_falls_back_to_default_on_null(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_volume": null}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_volume == settings.DEFAULT_PLAYBACK_VOLUME  # must not raise
+
+
+def test_playback_speed_is_clamped_to_its_valid_range(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_speed": 999}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_speed == 3.0
+
+
+def test_playback_volume_is_clamped_to_its_valid_range(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"playback_volume": -50}')
+
+    s = settings.Settings(path=path)
+
+    assert s.playback_volume == 0.0
+
+
 def test_settings_persist_across_instances(tmp_path):
     path = tmp_path / "settings.json"
     settings.Settings(path=path).set_playback_speed(2.0)
@@ -43,56 +79,6 @@ def test_settings_survive_corrupted_json_file(tmp_path):
     s = settings.Settings(path=path)  # must not raise
 
     assert s.playback_speed == 1.0
-
-
-def test_last_played_in_app_defaults_to_none(tmp_path):
-    s = settings.Settings(path=tmp_path / "settings.json")
-    assert s.last_played_in_app is None
-
-
-def test_last_played_in_app_round_trips_with_a_recent_timestamp(tmp_path):
-    s = settings.Settings(path=tmp_path / "settings.json")
-    before = time.time()
-
-    s.set_last_played_in_app("B001")
-
-    asin, updated_at = s.last_played_in_app
-    assert asin == "B001"
-    assert updated_at >= before
-
-
-def test_last_played_externally_defaults_to_none(tmp_path):
-    s = settings.Settings(path=tmp_path / "settings.json")
-    assert s.last_played_externally is None
-
-
-def test_last_played_externally_round_trips_with_the_given_timestamp(tmp_path):
-    s = settings.Settings(path=tmp_path / "settings.json")
-    when = datetime(2026, 8, 27, 8, 56, 11, tzinfo=UTC)
-
-    s.set_last_played_externally("B002", when)
-
-    asin, updated_at = s.last_played_externally
-    assert asin == "B002"
-    assert updated_at == when.timestamp()
-
-
-def test_last_played_in_app_and_externally_are_independent(tmp_path):
-    s = settings.Settings(path=tmp_path / "settings.json")
-    s.set_last_played_in_app("B001")
-    s.set_last_played_externally("B002", datetime(2026, 1, 1, tzinfo=UTC))
-
-    assert s.last_played_in_app[0] == "B001"
-    assert s.last_played_externally[0] == "B002"
-
-
-def test_malformed_last_played_entry_is_ignored_not_raised(tmp_path):
-    path = tmp_path / "settings.json"
-    path.write_text('{"last_played_in_app": {"asin": "B001"}}')  # missing updated_at
-
-    s = settings.Settings(path=path)
-
-    assert s.last_played_in_app is None
 
 
 def test_library_sort_key_defaults_to_recent(tmp_path):

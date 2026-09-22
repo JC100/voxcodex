@@ -311,3 +311,65 @@ async def test_blocking_prompt_gives_up_when_the_screen_shuts_down(monkeypatch):
 
         await _wait_until(lambda: "value" in otp_result)
         assert otp_result["value"] == ""
+
+
+# -- worker descriptions don't leak credentials (H4) -------------------------
+
+
+async def test_do_login_worker_description_does_not_contain_credentials(monkeypatch):
+    """Without an explicit description=, Textual builds a worker's debug
+    description by repr()-ing its positional args -- both the account
+    password and the vault password would otherwise sit in plaintext on a
+    long-lived Worker attribute, reachable via Textual devtools and via a
+    crash traceback rendered with show_locals=True."""
+    monkeypatch.setattr(login_module.auth, "login", lambda *a, **k: FakeAuthenticator())
+    monkeypatch.setattr(login_module.auth, "save", lambda auth, pw: None)
+
+    screen = LoginScreen(unlock_only=False)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        worker = screen._do_login("me@example.com", "SuperSecret123", "us", "VaultPw456")
+
+        assert worker.description == "signing in"
+        assert "SuperSecret123" not in worker.description
+        assert "VaultPw456" not in worker.description
+
+        await _wait_until(lambda: worker.is_finished)
+
+
+async def test_do_unlock_worker_description_does_not_contain_the_vault_password(
+    monkeypatch,
+):
+    monkeypatch.setattr(login_module.auth, "load", lambda pw: FakeAuthenticator())
+
+    screen = LoginScreen(unlock_only=True)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        worker = screen._do_unlock("VaultPw456")
+
+        assert worker.description == "unlocking vault"
+        assert "VaultPw456" not in worker.description
+
+        await _wait_until(lambda: worker.is_finished)
+
+
+async def test_do_external_login_worker_description_does_not_contain_the_vault_password(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        login_module.auth, "login_external", lambda *a, **k: FakeAuthenticator()
+    )
+    monkeypatch.setattr(login_module.auth, "save", lambda auth, pw: None)
+
+    screen = LoginScreen(unlock_only=False)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        worker = screen._do_external_login("us", "VaultPw456")
+
+        assert worker.description == "signing in via browser"
+        assert "VaultPw456" not in worker.description
+
+        await _wait_until(lambda: worker.is_finished)

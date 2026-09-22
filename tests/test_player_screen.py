@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from textual.app import App
@@ -12,7 +13,7 @@ from textual.widgets import Static
 
 from voxcodex.models import Book
 from voxcodex.screens import player_screen as player_screen_module
-from voxcodex.screens.player_screen import PlayerScreen
+from voxcodex.screens.player_screen import PlayerScreen, _Playback
 from voxcodex.services.api import Chapter
 from voxcodex.services.player import MpvError, MpvNotFoundError
 
@@ -32,6 +33,7 @@ class FakePlayer:
         self.volume_calls = []
         self.set_paused_calls = []
         self.toggle_pause_calls = 0
+        self.fail_position_reads = False
 
     def start(self, source, key, iv, start_seconds=0.0):
         self.started_with = (source, key, iv, start_seconds)
@@ -64,6 +66,10 @@ class FakePlayer:
 
     @property
     def position_seconds(self):
+        if self.fail_position_reads:
+            # Mirrors MpvPlayer.position_seconds raising on a failed IPC
+            # read (H3) -- rather than silently returning 0.
+            raise MpvError("simulated transient IPC failure")
         return self.position
 
     @property
@@ -107,7 +113,6 @@ class FakeSettings:
         self.playback_volume = playback_volume
         self.speed_calls = []
         self.volume_calls = []
-        self.last_played_in_app_calls = []
 
     def set_playback_speed(self, speed):
         self.speed_calls.append(speed)
@@ -116,9 +121,6 @@ class FakeSettings:
     def set_playback_volume(self, volume):
         self.volume_calls.append(volume)
         self.playback_volume = volume
-
-    def set_last_played_in_app(self, asin):
-        self.last_played_in_app_calls.append(asin)
 
 
 class HostApp(App):
@@ -160,6 +162,27 @@ def fake_settings(monkeypatch):
     instance = FakeSettings()
     monkeypatch.setattr(player_screen_module, "Settings", lambda: instance)
     return instance
+
+
+class FakeClock:
+    """L9: _tick now measures real elapsed time via time.monotonic() rather
+    than assuming a fixed 1s/call, so a test driving _tick in a tight
+    synchronous loop needs to advance a fake clock between calls to
+    simulate the nominal ~1 Hz polling cadence -- real wall-clock time
+    between such calls is a fraction of a millisecond."""
+
+    def __init__(self):
+        self.now = 1_000_000.0
+
+    def advance(self, seconds: float = 1.0) -> None:
+        self.now += seconds
+
+
+@pytest.fixture()
+def fake_clock(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(player_screen_module.time, "monotonic", lambda: clock.now)
+    return clock
 
 
 # -- startup --------------------------------------------------------------
@@ -229,6 +252,27 @@ async def test_start_failure_from_mpv_error_also_shown(monkeypatch):
         )
 
 
+async def test_start_failure_from_os_error_also_shown(monkeypatch):
+    """M6: a real-world start() failure that isn't (Mpv)NotFoundError/
+    MpvError -- mpv removed/renamed between the constructor's shutil.which
+    check and the actual start() call, or a resource limit -- used to
+    escape as an unhandled OSError, get swallowed by the worker's
+    exit_on_error=False, and leave the screen reading "Starting player..."
+    forever with no error and no retry."""
+    monkeypatch.setattr(
+        player_screen_module, "MpvPlayer",
+        lambda: FailingPlayer(FileNotFoundError("mpv: No such file or directory")),
+    )
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(
+            lambda: "No such file or directory" in str(screen.query_one("#state", Static).content)
+        )
+        assert screen._player is None
+
+
 # -- transport controls, via real keybindings ------------------------------
 
 
@@ -242,6 +286,42 @@ async def test_space_toggles_pause(fake_player):
         await pilot.pause()
 
         assert fake_player.toggle_pause_calls == 1
+
+
+async def test_transport_command_does_not_block_the_event_loop(fake_player):
+    """M8: every transport action was at least one blocking IPC round trip
+    run inline on the event loop -- a wedged mpv would freeze the whole
+    TUI. _control now dispatches to a background thread, so a blocked mpv
+    command must not delay an unrelated, purely local action (no IPC
+    involved) from responding."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_toggle_pause = fake_player.toggle_pause
+
+    def blocking_toggle_pause():
+        entered.set()
+        release.wait(timeout=5)
+        original_toggle_pause()
+
+    fake_player.toggle_pause = blocking_toggle_pause
+
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: screen._player is not None)
+
+            await pilot.press("space")  # toggle_pause blocks in a worker thread
+            await _wait_until(lambda: entered.is_set())
+
+            # cycle_sleep_timer touches no mpv IPC at all -- it must
+            # respond immediately, not wait behind the blocked command.
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._sleep_preset_index == 1
+    finally:
+        release.set()  # let the blocked worker thread finish promptly
 
 
 async def test_left_seeks_back_30s(fake_player):
@@ -356,19 +436,8 @@ async def test_starts_at_persisted_speed_and_volume(fake_player, fake_settings):
 
         assert screen._speed == 1.3
         assert screen._volume == 82.0
-        assert fake_player.speed_calls == [1.3]
-        assert fake_player.volume_calls == [82.0]
-
-
-async def test_starting_playback_records_last_played_in_app(fake_player, fake_settings):
-    book = _book()
-    book.asin = "B42"
-    screen = PlayerScreen(book, "source-url", "key", "iv")
-    app = HostApp(screen)
-
-    async with app.run_test():
-        await _wait_until(lambda: screen._player is not None)
-        assert fake_settings.last_played_in_app_calls == ["B42"]
+        await _wait_until(lambda: fake_player.speed_calls == [1.3])
+        await _wait_until(lambda: fake_player.volume_calls == [82.0])
 
 
 async def test_bracket_right_increases_volume(fake_player, fake_settings):
@@ -464,9 +533,30 @@ async def test_tick_counts_down_sleep_timer_while_playing(fake_player):
         screen._sleep_remaining_seconds = 20.0
         fake_player.paused_ = False
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert screen._sleep_remaining_seconds == 19.0
+
+
+async def test_sleep_timer_counts_down_by_real_elapsed_time_not_a_fixed_decrement(
+    fake_player, fake_clock,
+):
+    """L9: a fixed -1.0 per _tick call drifts long once a poll cycle takes
+    over a second (the tick it would have driven is skipped entirely, not
+    queued) -- the countdown must track real elapsed time instead."""
+    screen = PlayerScreen(_book(duration_ms=1_000_000), "source-url", "key", "iv")
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        screen._sleep_remaining_seconds = 20.0
+        fake_player.paused_ = False
+
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))  # seeds the clock
+        fake_clock.advance(5.0)  # a slow poll cycle, not the nominal 1s
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert screen._sleep_remaining_seconds == 14.0  # 20 - 1 (first tick) - 5
 
 
 async def test_tick_does_not_count_down_sleep_timer_while_paused(fake_player):
@@ -478,7 +568,7 @@ async def test_tick_does_not_count_down_sleep_timer_while_paused(fake_player):
         screen._sleep_remaining_seconds = 20.0
         fake_player.paused_ = True
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert screen._sleep_remaining_seconds == 20.0
 
@@ -492,9 +582,9 @@ async def test_sleep_timer_auto_pauses_playback_on_expiry(fake_player):
         screen._sleep_remaining_seconds = 1.0
         fake_player.paused_ = False
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
-        assert fake_player.set_paused_calls == [True]
+        await _wait_until(lambda: fake_player.set_paused_calls == [True])
         assert screen._sleep_remaining_seconds is None
         assert screen._sleep_preset_index == 0
         assert "paused" in str(screen.query_one("#time-row").content)
@@ -510,7 +600,7 @@ async def test_time_row_shows_volume_and_sleep_countdown(fake_player):
         screen._sleep_remaining_seconds = 90.0  # 1:30
         fake_player.paused_ = True  # avoid the countdown ticking down mid-assertion
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         text = str(screen.query_one("#time-row").content)
         assert "vol 65%" in text
@@ -534,7 +624,7 @@ async def test_chapter_row_blank_when_no_chapters(fake_player):
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 10.0
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert str(screen.query_one("#chapter-row").content) == ""
 
@@ -546,12 +636,35 @@ async def test_chapter_row_shows_current_chapter(fake_player):
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 10.0  # inside "Chapter 1" (starts at 5s, len 60s)
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert (
             str(screen.query_one("#chapter-row").content)
             == "Chapter 2/3: Chapter 1   (0:05 / 1:00)"
         )
+
+
+async def test_chapter_row_clears_when_position_is_before_the_first_chapter(
+    fake_player,
+):
+    """L10: _current_chapter_index returns None when the position is
+    before the first chapter's start (chapter data with a nonzero first
+    start_ms, or seeking back past 0) -- the chapter row used to be left
+    showing the previous chapter's text instead of reflecting that."""
+    chapters_with_a_gap = [Chapter(title="Chapter 1", start_ms=5_000, length_ms=60_000)]
+    screen = PlayerScreen(_book(), "source-url", "key", "iv", chapters=chapters_with_a_gap)
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 10.0  # inside "Chapter 1"
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+        assert "Chapter 1" in str(screen.query_one("#chapter-row").content)
+
+        fake_player.position = 2.0  # before the first chapter's 5s start
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert str(screen.query_one("#chapter-row").content) == ""
 
 
 async def test_next_chapter_seeks_to_next_chapters_start(fake_player):
@@ -561,7 +674,7 @@ async def test_next_chapter_seeks_to_next_chapters_start(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 10.0  # in "Chapter 1"
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("n")
         await pilot.pause()
@@ -576,7 +689,7 @@ async def test_next_chapter_is_a_no_op_on_the_last_chapter(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 70.0  # in "Chapter 2", the last one
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("n")
         await pilot.pause()
@@ -591,7 +704,7 @@ async def test_previous_chapter_restarts_current_chapter_when_well_into_it(fake_
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 30.0  # well into "Chapter 1" (starts at 5s)
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("p")
         await pilot.pause()
@@ -606,7 +719,7 @@ async def test_previous_chapter_goes_back_a_chapter_when_near_the_start(fake_pla
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 66.0  # 1s into "Chapter 2" (starts at 65s)
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("p")
         await pilot.pause()
@@ -621,7 +734,7 @@ async def test_previous_chapter_on_first_chapter_just_restarts_it(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 1.0  # in the very first chapter
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("p")
         await pilot.pause()
@@ -694,7 +807,7 @@ async def test_tick_updates_last_position_and_time_row(fake_player):
         fake_player.position = 30.0
         fake_player.duration = 100.0
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert screen._last_position_ms == 30_000
         assert "playing" in str(screen.query_one("#time-row", Static).content)
@@ -709,7 +822,7 @@ async def test_tick_falls_back_to_book_duration_when_mpv_reports_zero(fake_playe
         fake_player.position = 50.0
         fake_player.duration = 0.0  # mpv hasn't reported a duration yet
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         bar = screen.query_one("#bar")
         # 50s of a 200s (book-reported) duration -> 25%
@@ -724,14 +837,16 @@ async def test_tick_shows_finished_state_on_eof(fake_player):
         await _wait_until(lambda: screen._player is not None)
         fake_player.eof = True
 
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert screen.query_one("#state", Static).content == "Finished"
 
 
-async def test_tick_shows_finished_when_mpv_has_exited(fake_player):
-    """With --idle=once mpv quits at end-of-file, so a tick that finds the
-    process gone should land on 'Finished' rather than stay on 'Playing'."""
+async def test_poll_shows_finished_when_mpv_has_exited(fake_player):
+    """With --idle=once mpv quits at end-of-file, so a poll that finds the
+    process gone should land on 'Finished' rather than stay on 'Playing'.
+    Goes through the real _poll -> _poll_player path (not a direct _tick
+    call) since the is_running check lives in _poll_player, not _tick."""
     screen = PlayerScreen(_book(duration_ms=100_000), "source-url", "key", "iv")
     app = HostApp(screen)
 
@@ -741,9 +856,11 @@ async def test_tick_shows_finished_when_mpv_has_exited(fake_player):
         )
         fake_player.stopped = True  # is_running -> False
 
-        screen._tick()
+        screen._poll()
 
-        assert screen.query_one("#state", Static).content == "Finished"
+        await _wait_until(
+            lambda: screen.query_one("#state", Static).content == "Finished"
+        )
 
 
 # -- close / dismiss ------------------------------------------------------
@@ -757,13 +874,40 @@ async def test_close_stops_player_and_dismisses_with_last_position(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 77.0
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         await pilot.press("q")
-        await pilot.pause()
+        await _wait_until(lambda: results != [])
 
         assert fake_player.stopped is True
         assert results == [77_000]
+
+
+async def test_hard_quit_before_the_first_poll_flushes_the_real_start_position(
+    fake_player,
+):
+    """L7: _last_position_ms used to be seeded from book.progress_ms even
+    when playback was about to start somewhere else entirely (a
+    finished-book restart at 0, once H1 is fixed). action_close's own
+    live position read masks this (it overwrites _last_position_ms before
+    dismissing) -- but a hard quit (ctrl+q) never runs action_close at
+    all, going straight to on_unmount's backstop flush with whatever
+    _last_position_ms was last set to. Quitting before the first poll
+    tick would then flush the stale progress_ms instead of 0."""
+    saved = []
+    book = _book(progress_ms=999_000)  # stale -- restart is at 0, not this
+    screen = PlayerScreen(
+        book, "s", "k", "iv", start_position_ms=0,
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        # No _tick has run yet, and no action_close -- app teardown below
+        # drives on_unmount directly, the same as a hard ctrl+q would.
+
+    assert saved[-1] == (0, True)
 
 
 async def test_escape_also_closes(fake_player):
@@ -774,16 +918,57 @@ async def test_escape_also_closes(fake_player):
     async with app.run_test() as pilot:
         await _wait_until(lambda: screen._player is not None)
         await pilot.press("escape")
-        await pilot.pause()
+        await _wait_until(lambda: results != [])
 
         assert fake_player.stopped is True
         assert len(results) == 1
 
 
+async def test_action_close_does_not_block_the_event_loop(fake_player):
+    """M8: the position read plus stop()'s socket write and process wait
+    used to run inline on the event loop -- pressing q against a wedged
+    mpv could freeze the whole TUI for several seconds. Both now run in a
+    background worker, and the screen only dismisses once stop() actually
+    finishes (ordering preserved, just off the event loop)."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_stop = fake_player.stop
+
+    def blocking_stop():
+        entered.set()
+        release.wait(timeout=5)
+        original_stop()
+
+    fake_player.stop = blocking_stop
+
+    results = []
+    screen = PlayerScreen(_book(), "source-url", "key", "iv")
+    app = HostApp(screen, results.append)
+
+    try:
+        async with app.run_test() as pilot:
+            await _wait_until(lambda: screen._player is not None)
+
+            await pilot.press("q")
+            await _wait_until(lambda: entered.is_set())
+
+            # The event loop itself must still be responsive while stop()
+            # is blocked -- and the screen must not have dismissed yet,
+            # since that only happens after stop() actually returns.
+            await pilot.pause()
+            assert results == []
+            assert isinstance(app.screen, PlayerScreen)
+
+            release.set()
+            await _wait_until(lambda: results != [])
+    finally:
+        release.set()
+
+
 # -- progress checkpointing (H3) ----------------------------------------------
 
 
-async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
+async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player, fake_clock):
     saved = []
     screen = PlayerScreen(
         _book(duration_ms=1_000_000), "s", "k", "iv",
@@ -795,13 +980,43 @@ async def test_progress_is_checkpointed_on_a_timer_during_playback(fake_player):
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 123.0
 
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
-            screen._tick()
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
+            screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert saved == [(123_000, False)]  # exactly one, and not "final"
 
 
-async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_player):
+async def test_checkpoint_fires_from_real_elapsed_time_not_a_tick_count(
+    fake_player, fake_clock,
+):
+    """L9: a poll that takes longer than a second (four IPC round trips
+    under load) is skipped entirely by _poll's own inflight guard, not
+    queued -- a fixed per-call decrement would then drift the checkpoint
+    interval long. Two _tick calls spanning the interval in real elapsed
+    time must trigger it, without needing _CHECKPOINT_EVERY_SECONDS
+    separate calls."""
+    saved = []
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 50.0
+
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))  # seeds the clock
+        fake_clock.advance(20.0)  # one slow poll cycle standing in for many skipped ones
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
+
+        assert saved == [(50_000, False)]
+
+
+async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(
+    fake_player, fake_clock,
+):
     saved = []
     screen = PlayerScreen(
         _book(progress_ms=10_000, duration_ms=1_000_000), "s", "k", "iv",
@@ -813,8 +1028,9 @@ async def test_periodic_checkpoint_is_skipped_when_position_has_not_moved(fake_p
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 10.0  # right where the book was already left
 
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS * 2):
-            screen._tick()
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS) * 2):
+            fake_clock.advance(1.0)
+            screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
         assert saved == []
 
@@ -832,7 +1048,7 @@ async def test_final_progress_is_flushed_on_unmount_even_without_an_explicit_clo
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 42.0
-        screen._tick()
+        screen._tick(_Playback.read(fake_player, screen.book.duration_ms))
 
     assert saved[-1] == (42_000, True)
 
@@ -869,7 +1085,43 @@ async def test_poll_worker_reads_mpv_off_the_event_loop_and_renders(fake_player)
             lambda: "1:01" in str(screen.query_one("#time-row", Static).content)
         )
         assert screen._last_position_ms == 61_000
-        assert screen._poll_inflight is False  # reset so the next tick can run
+        # _poll_player's finally clears this just after call_from_thread(_tick)
+        # returns -- i.e. on the worker thread, a moment after the UI update
+        # above is already visible on this (the main) thread. Poll for it
+        # rather than asserting immediately, to avoid a race against that
+        # small window.
+        await _wait_until(lambda: screen._poll_inflight is False)
+
+
+async def test_poll_skips_a_tick_instead_of_committing_a_failed_read_as_zero(
+    fake_player,
+):
+    """Regression test for H3 (docs/code-review-2026-09-21.html): a transient
+    mpv IPC read failure must not overwrite the last known-good position
+    with 0. Goes through the real _poll -> _poll_player -> _tick pipeline
+    (not a hand-built snapshot), since that's the path H3 actually shipped
+    on -- M9 notes that no prior test exercised a failing read through it."""
+    saved = []
+    screen = PlayerScreen(
+        _book(duration_ms=200_000), "s", "k", "iv",
+        on_progress=lambda pos, *, final: saved.append((pos, final)),
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 61.0
+
+        screen._poll()
+        await _wait_until(lambda: screen._last_position_ms == 61_000)
+
+        fake_player.fail_position_reads = True
+        for _ in range(15):  # not tied to the checkpoint interval, just "several"
+            screen._poll()
+            await _wait_until(lambda: screen._poll_inflight is False)
+
+        assert screen._last_position_ms == 61_000  # not clobbered with 0
+        assert saved == []  # no checkpoint fired a phantom 0 either
 
 
 async def test_poll_does_not_stack_reads_while_one_is_in_flight(fake_player):
@@ -884,7 +1136,7 @@ async def test_poll_does_not_stack_reads_while_one_is_in_flight(fake_player):
         assert screen._poll_inflight is True
 
 
-async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
+async def test_checkpoint_failure_does_not_crash_the_player(fake_player, fake_clock):
     def boom(pos, *, final):
         raise RuntimeError("owner blew up")
 
@@ -896,5 +1148,45 @@ async def test_checkpoint_failure_does_not_crash_the_player(fake_player):
     async with app.run_test():
         await _wait_until(lambda: screen._player is not None)
         fake_player.position = 30.0
-        for _ in range(screen._CHECKPOINT_EVERY_TICKS):
-            screen._tick()  # must not raise despite the callback raising
+        snap = _Playback.read(fake_player, screen.book.duration_ms)
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
+            screen._tick(snap)  # must not raise despite the callback raising
+
+
+async def test_periodic_checkpoint_retries_after_a_failure_at_the_same_position(
+    fake_player, fake_clock,
+):
+    """L8: a failed save must not be marked as saved -- _flush_progress's
+    own "nothing moved since last save" guard would otherwise skip the
+    next periodic retry at that same (unmoved) position, silently giving
+    up on ever persisting it."""
+    calls = []
+    should_fail = True
+
+    def flaky_on_progress(pos, *, final):
+        calls.append(pos)
+        if should_fail:
+            raise RuntimeError("owner blew up")
+
+    screen = PlayerScreen(
+        _book(duration_ms=1_000_000), "s", "k", "iv", on_progress=flaky_on_progress,
+    )
+    app = HostApp(screen)
+
+    async with app.run_test():
+        await _wait_until(lambda: screen._player is not None)
+        fake_player.position = 30.0
+        snap = _Playback.read(fake_player, screen.book.duration_ms)
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
+            screen._tick(snap)  # first periodic checkpoint fails
+
+        assert calls == [30_000]  # attempted once, failed
+
+        should_fail = False
+        for _ in range(int(screen._CHECKPOINT_EVERY_SECONDS)):
+            fake_clock.advance(1.0)
+            screen._tick(snap)  # position unchanged -- must still retry
+
+        assert calls == [30_000, 30_000]  # retried, not silently skipped

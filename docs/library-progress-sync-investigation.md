@@ -20,14 +20,19 @@ position.
   now fires this when a playback session ends at ≥98 % of runtime. New:
   `AudibleAPI.set_finished` / `services.progress.push_finished`, wired in
   `screens/library.py` `_on_close`. Live-tested both directions.
-- **Still open: the mid-book `percent_complete` / "time left" number.** No
-  client-submittable call was found that moves it *to a correct value*.
-  `stats/events` activity *does* perturb it (it recomputed on a ~30-min+ delay
-  in testing) but synthetic `Listening` events drove it to **0 %**, not to the
-  real position — the exact `Listening` payload the app sends still needs a
-  capture. Until then VoxCodex does **not** send `Listening` events (they make
-  it worse). For a *finished* book this doesn't matter — the "Finished" badge
-  wins over the percent. It only shows for books left partway through.
+- **[As of this investigation's start] Still open: the mid-book
+  `percent_complete` / "time left" number.** No client-submittable call was
+  found that moves it *to a correct value*. `stats/events` activity *does*
+  perturb it (it recomputed on a ~30-min+ delay in testing) but synthetic
+  `Listening` events drove it to **0 %**, not to the real position — the
+  exact `Listening` payload the app sends still needed a capture. At this
+  point VoxCodex did **not** send `Listening` events (they made it worse).
+  For a *finished* book this didn't matter — the "Finished" badge wins over
+  the percent. It only showed for books left partway through.
+  **Superseded by the 2026-09-21 entry below:** the real payload was
+  captured, implemented, and confirmed live the same day — VoxCodex now
+  does send `Listening` events (via `push_listening_session`) on player
+  close.
 - **2026-09-21: captured, implemented, and confirmed live — all the same
   day, see that dated section below.** Real `Listening` / `StartListening` /
   `MarkAsUnfinished` payloads recovered via a network-level MITM (mitmproxy

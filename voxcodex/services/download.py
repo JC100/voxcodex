@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
 from voxcodex import config
 from voxcodex.models import Book
-from voxcodex.services.api import AudibleAPI, License
+from voxcodex.services.api import AudibleAPI, InvalidAsin, License, require_valid_asin
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], None]
 CancelCheck = Callable[[], bool]
+
+# InvalidAsin/require_valid_asin live in api.py (asin's the ASIN's real
+# home -- it's where every asin first enters the app, and api.py itself
+# needs the same validation for the request paths it builds, L15) and are
+# re-exported here rather than duplicated: used below wherever an asin is
+# turned into a filename with no other validation -- a value like
+# "../../../../etc/cron.d/x" would otherwise write outside DOWNLOADS_DIR
+# (L1).
 
 
 class DownloadCancelled(Exception):
@@ -23,15 +33,24 @@ class DownloadCancelled(Exception):
 
 
 def voucher_path_for(asin: str) -> Path:
-    return config.DOWNLOADS_DIR / f"{asin}.voucher.json"
+    """Return the voucher path, raising ``InvalidAsin`` for a malformed identifier."""
+    return config.DOWNLOADS_DIR / f"{require_valid_asin(asin)}.voucher.json"
 
 
 def audio_path_for(asin: str) -> Path:
-    return config.DOWNLOADS_DIR / f"{asin}.aaxc"
+    """Return the audio path, raising ``InvalidAsin`` for a malformed identifier."""
+    return config.DOWNLOADS_DIR / f"{require_valid_asin(asin)}.aaxc"
 
 
 def is_downloaded(asin: str) -> bool:
-    return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
+    """Return whether both local files exist, treating a malformed ASIN as not downloaded."""
+    # Read-only and called unconditionally for every book on every library
+    # load -- an invalid ASIN should make this title report "not
+    # downloaded" rather than take the whole load down.
+    try:
+        return audio_path_for(asin).exists() and voucher_path_for(asin).exists()
+    except InvalidAsin:
+        return False
 
 
 def downloaded_size(asin: str) -> int | None:
@@ -40,7 +59,7 @@ def downloaded_size(asin: str) -> int | None:
     this call -- e.g. deleted from another VoxCodex instance)."""
     try:
         return audio_path_for(asin).stat().st_size
-    except OSError:
+    except (OSError, InvalidAsin):
         return None
 
 
@@ -65,28 +84,44 @@ def download_book(
     book: Book,
     api: AudibleAPI,
     on_progress: ProgressCallback | None = None,
-    quality: str = "high",
     cancel_check: CancelCheck | None = None,
 ) -> Path:
+    """Download a book and its decryption voucher, returning the final audio path.
+
+    Progress is reported as downloaded and total bytes. If ``cancel_check``
+    becomes true, ``DownloadCancelled`` is raised. Any failure removes this
+    attempt's temporary audio and voucher before being re-raised.
+    """
     config.ensure_dirs()
-    license_ = api.get_license(book.asin, quality=quality)
+    license_ = api.get_license(book.asin)
 
     audio_path = audio_path_for(book.asin)
-    tmp_path = audio_path.with_suffix(".part")
+    # A unique name per attempt, not the deterministic {asin}.part: two
+    # downloads racing on the same book (a same-book double-press, or a
+    # second VoxCodex instance) would otherwise collide on one temp file --
+    # one attempt's cleanup (or the startup sweep) unlinking the file out
+    # from under the other, which is still writing to the now-unlinked
+    # inode. sweep_stale_downloads's `*.part` glob still matches this (M7).
+    fd, tmp_name = tempfile.mkstemp(
+        dir=config.DOWNLOADS_DIR, prefix=f"{book.asin}-", suffix=".part"
+    )
+    tmp_path = Path(tmp_name)
 
-    # Fetched through the same authenticated session used for API calls (matching
-    # audible-cli's own downloader), not a bare unauthenticated client -- Audible's
-    # CDN has rejected the plain-httpx version of this request with a WAF "Request
-    # blocked" 403 even though the signed URL itself was valid, while this same
-    # signed-session request and mpv's own fetch (used for streaming) both work.
     try:
+        # Fetched through the same authenticated session used for API calls
+        # (matching audible-cli's own downloader), not a bare
+        # unauthenticated client -- Audible's CDN has rejected the plain-
+        # httpx version of this request with a WAF "Request blocked" 403
+        # even though the signed URL itself was valid, while this same
+        # signed-session request and mpv's own fetch (used for streaming)
+        # both work.
         with api.client.session.stream(
             "GET", license_.content_url, follow_redirects=True, timeout=60
         ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
-            with open(tmp_path, "wb") as f:
+            with os.fdopen(fd, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=1024 * 256):
                     if cancel_check is not None and cancel_check():
                         raise DownloadCancelled(book.asin)
@@ -94,24 +129,38 @@ def download_book(
                     downloaded += len(chunk)
                     if on_progress:
                         on_progress(downloaded, total)
+                # Without this, power loss shortly after a completed
+                # download can land the rename below durable while the
+                # audio data behind it isn't (L5).
+                f.flush()
+                os.fsync(f.fileno())
 
         # A connection dropped mid-stream leaves a short file that would
         # otherwise be renamed into place and look downloaded until it fails
-        # to play. Only accept it when the server told us a size and we got it.
-        if total and downloaded != total:
+        # to play. Only accept it when the server told us a size and we got
+        # it -- compared against resp.num_bytes_downloaded (the raw,
+        # possibly-still-compressed transfer size, tracked from iter_raw
+        # underneath iter_bytes), not the local `downloaded` counter of
+        # decoded bytes actually written to disk: httpx negotiates gzip by
+        # default, so a CDN that ever compresses would otherwise make every
+        # download fail as "truncated" (L11).
+        if total and resp.num_bytes_downloaded != total:
             raise OSError(
-                f"download truncated: got {downloaded} of {total} bytes"
+                f"download truncated: got {resp.num_bytes_downloaded} of {total} bytes"
             )
+
+        # Voucher before rename: is_downloaded() requires both files, so a
+        # crash in between leaves `.part` (swept at next startup) and a
+        # voucher with no audio yet -- never an audio file reported as
+        # downloaded with no voucher to decrypt it. Both now inside this
+        # same try: a failure in either must also clean up the other,
+        # rather than leaving an orphaned voucher with no audio to match it.
+        _write_voucher(book.asin, license_)
+        tmp_path.replace(audio_path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
+        voucher_path_for(book.asin).unlink(missing_ok=True)
         raise
-
-    # Voucher before rename: is_downloaded() requires both files, so a crash
-    # in between leaves `.part` (swept at next startup) and a voucher with
-    # no audio yet -- never an audio file reported as downloaded with no
-    # voucher to decrypt it.
-    _write_voucher(book.asin, license_)
-    tmp_path.replace(audio_path)
     return audio_path
 
 
@@ -125,7 +174,6 @@ def _write_voucher(asin: str, license_: License) -> None:
                 "asin": asin,
                 "key": license_.key,
                 "iv": license_.iv,
-                "codec": license_.codec,
                 # Needed to push a position back for a downloaded/offline play
                 # (see services.progress.push_position) -- not for decryption.
                 # A voucher saved before this field existed loads fine via
@@ -142,13 +190,28 @@ def _write_voucher(asin: str, license_: License) -> None:
 
 
 def load_voucher(asin: str) -> dict[str, str] | None:
+    """The saved voucher for `asin`, or None if it's missing, corrupted
+    (a partial disk, a bad sync -- atomic_write_text only protects the
+    write itself, not later corruption), or unreadable. The caller's
+    existing "no voucher" handling (a clean, user-visible error) already
+    covers all three the same way -- a JSONDecodeError/OSError here
+    otherwise escaped unhandled and hung the play flow forever with no
+    message shown (M14)."""
     path = voucher_path_for(asin)
     if not path.exists():
         return None
-    return cast("dict[str, str]", json.loads(path.read_text()))
+    try:
+        return cast("dict[str, str]", json.loads(path.read_text()))
+    except (json.JSONDecodeError, OSError):
+        logger.debug("failed to read voucher for %s", asin, exc_info=True)
+        return None
 
 
 def delete_download(asin: str) -> None:
+    """Remove both local files for ``asin``; missing files are ignored."""
+    # unlink(missing_ok=True) rather than a separate exists() check -- a
+    # second instance, or the bulk-delete loop below racing this same
+    # title, can otherwise remove the file in the gap between the two,
+    # tripping a FileNotFoundError here (L6).
     for path in (audio_path_for(asin), voucher_path_for(asin)):
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)

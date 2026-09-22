@@ -7,6 +7,7 @@ anywhere here.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -29,8 +30,7 @@ logger = logging.getLogger(__name__)
 _MAX_LIBRARY_PAGES = 100
 
 LIBRARY_RESPONSE_GROUPS = (
-    "contributors, customer_rights, media, product_attrs, product_desc, "
-    "product_extended_attrs, series, is_finished, is_downloaded, "
+    "contributors, media, product_attrs, series, is_finished, is_downloaded, "
     "listening_status, percent_complete, product_details"
 )
 
@@ -81,11 +81,39 @@ class NoDownloadUrl(Exception):
     pass
 
 
+class InvalidResponse(Exception):
+    """Raised when a 200 response isn't the JSON object it's expected to be
+    -- audible.client.convert_response_content falls back to returning raw
+    text when the body isn't valid JSON (a captive portal, a proxy error
+    page, an Amazon maintenance page), which would otherwise raise an
+    unguarded TypeError/AttributeError indexing it like the expected dict,
+    escaping the caller's typed error handling entirely (M3)."""
+
+
+class InvalidAsin(ValueError):
+    pass
+
+
+# Real ASINs are always alphanumeric. Values originate from Amazon over TLS
+# (not directly attacker-controlled), so this is theoretical -- but every
+# method below that interpolates an asin straight into a request *path*
+# (get_license, push_last_position, get_chapters) does so with no percent-
+# encoding, and the underlying client builds the URL via a raw-path copy:
+# a value containing "?" or "#" would inject a query string/fragment (L15).
+_VALID_ASIN_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def require_valid_asin(asin: str) -> str:
+    """Return an alphanumeric ASIN unchanged, or raise ``InvalidAsin``."""
+    if not _VALID_ASIN_RE.fullmatch(asin):
+        raise InvalidAsin(f"invalid asin: {asin!r}")
+    return asin
+
+
 @dataclass
 class License:
     asin: str
     content_url: str
-    codec: str
     key: str
     iv: str
     last_position_ms: int = 0
@@ -116,6 +144,20 @@ def _full_response(resp: httpx.Response) -> httpx.Response:
     return resp
 
 
+def _optional_dict(value: Any, context: str) -> dict[str, Any]:
+    """A present-but-non-dict value for an optional field in a 200 response
+    is a malformed body worth failing loudly on (InvalidResponse), the same
+    as a non-JSON body already is -- rather than letting an unguarded
+    `.get()` raise a raw AttributeError deeper in parsing, past the caller's
+    typed error handling. Absent/None is fine; that's just an omitted
+    optional field."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidResponse(f"{context} is not an object: {value!r}")
+    return value
+
+
 def parse_audible_timestamp(raw: Any) -> datetime | None:
     """Parses the timestamp format Audible uses for `last_updated` fields
     (e.g. on a `last_position_heard` record), or None if `raw` is missing
@@ -130,17 +172,26 @@ def parse_audible_timestamp(raw: Any) -> datetime | None:
         return None
 
 
-_VALID_QUALITIES = ("high", "normal")
-
-
-def _api_quality(quality: str) -> str:
-    """Maps our lowercase `quality` argument to the API's capitalized
-    value, raising on anything else -- `"High" if quality != "normal"
-    else "Normal"` silently mapped a typo (or any other unrecognized
-    value) to "High" instead."""
-    if quality not in _VALID_QUALITIES:
-        raise ValueError(f"quality must be one of {_VALID_QUALITIES!r}, got {quality!r}")
-    return "High" if quality == "high" else "Normal"
+def parse_last_position_heard(lph: Any) -> tuple[int, float | None] | None:
+    """Pulls (position_ms, updated_at) out of a `last_position_heard` dict,
+    or None if it doesn't have one -- Audible returns a record with status
+    "DoesNotExist" (no real position_ms/last_updated) for a title that's
+    never been played anywhere, which is not an error, just nothing to
+    report. Mirrors services.progress._existing_last_position_heard's guard
+    on the same field shape, so get_license doesn't trust an
+    unconfirmed-status record the way that sibling parser already refuses to."""
+    if not isinstance(lph, dict) or lph.get("status") != "Exists":
+        return None
+    if "position_ms" not in lph:
+        return None
+    updated = parse_audible_timestamp(lph.get("last_updated"))
+    try:
+        position_ms = int(lph["position_ms"])
+    except (TypeError, ValueError) as exc:
+        raise InvalidResponse(
+            f"last_position_heard has a malformed position_ms: {lph['position_ms']!r}"
+        ) from exc
+    return position_ms, (updated.timestamp() if updated is not None else None)
 
 
 def _stats_timestamp(dt: datetime) -> str:
@@ -166,7 +217,9 @@ class AudibleAPI:
     # -- library -----------------------------------------------------
 
     def get_library(self) -> list[Book]:
+        """Fetch library pages to a safety limit, omitting invalid or duplicate entries."""
         books: list[Book] = []
+        seen_asins: set[str] = set()
         page = 1
         num_results = 1000
         while True:
@@ -195,7 +248,16 @@ class AudibleAPI:
                     page, len(items), num_results,
                 )
             for item in items:
-                if not item.get("asin"):
+                if not isinstance(item, dict):
+                    # A non-object entry would blow up every .get() below
+                    # with an AttributeError, escaping the caller's typed
+                    # error handling -- drop it the same way a missing/
+                    # malformed asin is dropped, rather than losing the
+                    # whole page to one bad entry.
+                    logger.warning("library item is not an object, skipping: %r", item)
+                    continue
+                asin = item.get("asin")
+                if not asin:
                     # DataTable rows are keyed by asin (see LibraryScreen.
                     # _refresh_table); a missing one would default to "" and
                     # crash add_row with DuplicateKey the moment a second
@@ -205,7 +267,39 @@ class AudibleAPI:
                         "library item missing asin, skipping: %r", item.get("title")
                     )
                     continue
-                books.append(_book_from_item(item))
+                if not isinstance(asin, str) or not _VALID_ASIN_RE.fullmatch(asin):
+                    # Same DuplicateKey-render hazard doesn't apply here,
+                    # but every method that later builds a request path
+                    # from this asin (get_license, get_chapters, ...)
+                    # would (L15) -- cheap to validate shape here, once,
+                    # at the point ASINs first enter the app. The isinstance
+                    # check also keeps a non-string asin (fullmatch would
+                    # otherwise raise TypeError on it) on this same
+                    # skip-and-log path instead of aborting the whole load.
+                    logger.warning(
+                        "library item has a malformed asin, skipping: %r", asin
+                    )
+                    continue
+                if asin in seen_asins:
+                    # Same DuplicateKey hazard as above, but with a real
+                    # ASIN repeated -- a purchase landing mid-pagination
+                    # shifts the page window, and a library can legitimately
+                    # list one ASIN twice (owned + Plus catalog). Keep the
+                    # first occurrence, drop the rest.
+                    logger.warning("duplicate asin in library, skipping: %r", asin)
+                    continue
+                try:
+                    book = _book_from_item(item)
+                except (TypeError, ValueError):
+                    # Non-numeric runtime_length_min/percent_complete would
+                    # otherwise abort parsing of the whole library to one
+                    # bad item's arithmetic -- same drop-and-log treatment.
+                    logger.warning(
+                        "library item %r has malformed numeric fields, skipping", asin
+                    )
+                    continue
+                seen_asins.add(asin)
+                books.append(book)
             if page >= _MAX_LIBRARY_PAGES:
                 logger.warning(
                     "library pagination hit the %d-page safety limit "
@@ -219,11 +313,18 @@ class AudibleAPI:
 
     # -- licensing / download -----------------------------------------
 
-    def get_license(self, asin: str, quality: str = "high") -> License:
-        api_quality = _api_quality(quality)
+    def get_license(self, asin: str) -> License:
+        """Fetch the high-quality playback licence, decrypting its voucher when present.
+
+        Raises ``InvalidAsin``, ``InvalidResponse``, ``LicenseDenied`` or
+        ``NoDownloadUrl`` when the corresponding validation or response check fails.
+        """
+        require_valid_asin(asin)
         body = {
             "supported_drm_types": ["Mpeg", "Adrm"],
-            "quality": api_quality,
+            # No caller has ever needed anything but the best available
+            # quality -- there's no settings UI to choose otherwise (L26).
+            "quality": "High",
             "consumption_type": "Download",
             "response_groups": LICENSE_RESPONSE_GROUPS,
         }
@@ -234,18 +335,30 @@ class AudibleAPI:
         lr = self.client.post(
             f"content/{asin}/licenserequest", body=body, headers=headers
         )
-        content_license = lr["content_license"]
+        if not isinstance(lr, dict):
+            raise InvalidResponse(f"licenserequest for {asin} returned a non-JSON body")
+        content_license = lr.get("content_license")
+        if not isinstance(content_license, dict):
+            raise InvalidResponse(f"licenserequest for {asin} is missing content_license")
 
         if content_license.get("status_code") == "Denied":
             msg = content_license.get("message", "License denied")
             raise LicenseDenied(msg)
 
-        content_metadata = content_license.get("content_metadata") or {}
-        content_url = (content_metadata.get("content_url") or {}).get("offline_url")
+        content_metadata = _optional_dict(
+            content_license.get("content_metadata"),
+            f"licenserequest for {asin} content_metadata",
+        )
+        content_url_obj = _optional_dict(
+            content_metadata.get("content_url"), f"licenserequest for {asin} content_url"
+        )
+        content_url = content_url_obj.get("offline_url")
         if not content_url:
             raise NoDownloadUrl(asin)
-        content_reference = content_metadata.get("content_reference") or {}
-        codec = content_reference.get("content_format", "AAXC")
+        content_reference = _optional_dict(
+            content_metadata.get("content_reference"),
+            f"licenserequest for {asin} content_reference",
+        )
         acr = content_reference.get("acr", "")
         license_id = content_license.get("license_id", "")
 
@@ -257,16 +370,13 @@ class AudibleAPI:
 
         last_position_ms = 0
         last_position_updated_at = None
-        lph = content_license.get("last_position_heard") or {}
-        if isinstance(lph, dict) and "position_ms" in lph:
-            last_position_ms = int(lph["position_ms"])
-            parsed = parse_audible_timestamp(lph.get("last_updated"))
-            last_position_updated_at = parsed.timestamp() if parsed is not None else None
+        parsed_lph = parse_last_position_heard(content_license.get("last_position_heard"))
+        if parsed_lph is not None:
+            last_position_ms, last_position_updated_at = parsed_lph
 
         return License(
             asin=asin,
             content_url=content_url,
-            codec=codec,
             key=key,
             iv=iv,
             last_position_ms=last_position_ms,
@@ -292,6 +402,7 @@ class AudibleAPI:
         """
         if not acr:
             raise ValueError("push_last_position needs a real acr from get_license()")
+        require_valid_asin(asin)
         self.client.put(
             f"lastpositions/{asin}",
             body={"acr": acr, "asin": asin, "position_ms": position_ms},
@@ -432,20 +543,26 @@ class AudibleAPI:
 
     # -- chapters -----------------------------------------------------
 
-    def get_chapters(self, asin: str, quality: str = "high") -> list[Chapter]:
+    def get_chapters(self, asin: str) -> list[Chapter]:
         """Fetches this title's chapter list (title + timing).
 
         Podcasts/samples and the odd older title may simply have none -- an
         empty result here isn't an error, just "nothing to navigate by".
+        Raises ``InvalidAsin`` for a malformed identifier and ``InvalidResponse``
+        when a successful response is not a JSON object.
         """
-        api_quality = _api_quality(quality)
+        require_valid_asin(asin)
         params: dict[str, Any] = {
             "response_groups": "chapter_info",
-            "quality": api_quality,
+            # No caller has ever needed anything but the best available
+            # quality -- there's no settings UI to choose otherwise (L26).
+            "quality": "High",
             "drm_type": "Adrm",
             "chapter_titles_type": "Flat",
         }
         resp = self.client.get(f"content/{asin}/metadata", **params)
+        if not isinstance(resp, dict):
+            raise InvalidResponse(f"metadata for {asin} returned a non-JSON body")
         content_metadata = resp.get("content_metadata") or {}
         chapter_info = content_metadata.get("chapter_info") or {}
         raw_chapters = chapter_info.get("chapters") or []
@@ -460,6 +577,7 @@ class AudibleAPI:
 
 
 def _book_from_item(item: dict[str, Any]) -> Book:
+    """Normalise a library API item and derive its duration and progress fields."""
     authors = [a.get("name", "") for a in (item.get("authors") or []) if a.get("name")]
     narrators = [
         n.get("name", "") for n in (item.get("narrators") or []) if n.get("name")
@@ -467,24 +585,30 @@ def _book_from_item(item: dict[str, Any]) -> Book:
     series_list = item.get("series") or []
     series = series_list[0].get("title", "") if series_list else ""
     series_sequence = series_list[0].get("sequence", "") if series_list else ""
-    images = item.get("product_images") or {}
-    cover_url = images.get("500") or images.get("300") or ""
-    runtime_min = item.get("runtime_length_min") or 0
-    percent_complete = item.get("percent_complete") or 0
+    # Coerced with int()/float(), matching the equivalent chapter-parsing
+    # code below -- used arithmetically a few lines down, and (unlike a
+    # plain `or 0`) this also catches the API ever sending these as
+    # strings, which int/float multiplication wouldn't error on so much as
+    # silently produce nonsense (L16).
+    runtime_min = int(item.get("runtime_length_min") or 0)
+    percent_complete = float(item.get("percent_complete") or 0)
     duration_ms = runtime_min * 60_000
     progress_ms = round(duration_ms * (percent_complete / 100)) if duration_ms else 0
     is_finished = bool(item.get("is_finished"))
 
     return Book(
         asin=item.get("asin", ""),
-        title=item.get("title", "Untitled"),
+        # `or "Untitled"`, not `.get(..., "Untitled")`, so an explicit
+        # `"title": null` (key present, value None) falls back too --
+        # `.get()`'s own default only ever fires when the key is missing
+        # entirely (L16).
+        title=item.get("title") or "Untitled",
         subtitle=item.get("subtitle", "") or "",
         authors=authors,
         narrators=narrators,
         series=series,
         series_sequence=str(series_sequence) if series_sequence else "",
         runtime_min=runtime_min,
-        cover_url=cover_url,
         purchase_date=item.get("purchase_date", "") or "",
         progress_ms=progress_ms,
         duration_ms=duration_ms,

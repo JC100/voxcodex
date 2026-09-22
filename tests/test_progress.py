@@ -75,6 +75,42 @@ def test_progress_store_write_does_not_drop_another_titles_entry(tmp_path):
     assert reloaded.get_position_ms("B002") == 2_000
 
 
+# -- M5: malformed cache entries must not take down the whole load ---------
+
+
+def test_get_position_ms_ignores_a_non_dict_entry(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_position_ms("B001") == 0
+
+
+def test_get_position_ms_ignores_a_non_numeric_position(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": {"position_ms": "abc"}}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_position_ms("B001") == 0
+
+
+def test_get_updated_at_ignores_a_non_dict_entry(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+    assert store.get_updated_at("B001") is None
+
+
+def test_set_position_ms_replaces_a_non_dict_entry_instead_of_crashing(tmp_path):
+    path = tmp_path / "progress.json"
+    path.write_text('{"B001": 5000}')
+    store = progress.ProgressStore(path=path)
+
+    store.set_position_ms("B001", 1_234)  # must not raise
+
+    assert store.get_position_ms("B001") == 1_234
+    reloaded = progress.ProgressStore(path=path)
+    assert reloaded.get_position_ms("B001") == 1_234
+
+
 # -- fetch_remote_annotations / positions_from_annotations --------------
 #
 # Response shape confirmed directly against a live account (see
@@ -134,19 +170,70 @@ def test_fetch_remote_annotations_passes_comma_joined_asins():
     assert kwargs["asins"] == "B001,B002"
 
 
-def test_positions_from_annotations_includes_only_existing_positions():
-    records = [_existing("B001", 1000), _does_not_exist("B002")]
-    assert progress.positions_from_annotations(records) == {"B001": 1000}
+class _ChunkedFakeClient:
+    """Each .get() call answers from the next queued response, in order --
+    lets a test assert on the args of (and merge across) several chunked
+    requests, unlike FakeClient's single fixed response."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def get(self, path, **kwargs):
+        self.calls.append((path, kwargs))
+        return self._responses[len(self.calls) - 1]
 
 
-def test_positions_from_annotations_empty_when_nothing_exists():
-    assert progress.positions_from_annotations([_does_not_exist("B001")]) == {}
+class _ChunkedFakeAPI:
+    def __init__(self, responses):
+        self.client = _ChunkedFakeClient(responses)
 
 
-def test_fetch_remote_positions_end_to_end():
-    records = [_existing("B001", 4242), _does_not_exist("B002")]
-    api = FakeAPI(response=_annotations_response(records))
-    assert progress.fetch_remote_positions(api, ["B001", "B002"]) == {"B001": 4242}
+def test_fetch_remote_annotations_chunks_a_large_asin_list():
+    # M2: asins=... is one query-string parameter -- at ~11 bytes/ASIN, an
+    # unchunked request for a several-hundred-title library is plausibly
+    # past a gateway's request-line limit, silently breaking the whole
+    # feature with no indication to the user.
+    asins = [f"B{i:09d}" for i in range(250)]
+    responses = [
+        _annotations_response([_existing(asins[0], 1000)]),
+        _annotations_response([_existing(asins[100], 2000)]),
+        _annotations_response([_existing(asins[200], 3000)]),
+    ]
+    api = _ChunkedFakeAPI(responses)
+
+    records = progress.fetch_remote_annotations(api, asins)
+
+    assert len(api.client.calls) == 3
+    sent_asins = [kwargs["asins"].split(",") for _path, kwargs in api.client.calls]
+    assert sent_asins == [asins[:100], asins[100:200], asins[200:250]]
+    assert [r["asin"] for r in records] == [asins[0], asins[100], asins[200]]
+
+
+def test_fetch_remote_annotations_merges_across_a_failed_chunk(caplog):
+    asins = [f"B{i:09d}" for i in range(150)]
+    responses = [
+        RuntimeError("network exploded"),
+        _annotations_response([_existing(asins[100], 2000)]),
+    ]
+
+    class _MixedFakeClient(_ChunkedFakeClient):
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            response = self._responses[len(self.calls) - 1]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    api = _ChunkedFakeAPI([])
+    api.client = _MixedFakeClient(responses)
+
+    with caplog.at_level("WARNING"):
+        records = progress.fetch_remote_annotations(api, asins)
+
+    assert len(api.client.calls) == 2
+    assert [r["asin"] for r in records] == [asins[100]]
+    assert "lastpositions fetch failed" in caplog.text
 
 
 # -- positions_with_updated_at_from_annotations (M5) ----------------------
@@ -186,38 +273,6 @@ def test_get_updated_at_reflects_the_last_set_position_ms_call(tmp_path):
     store.set_position_ms("B001", 1_000)
     after = time.time()
     assert before <= store.get_updated_at("B001") <= after
-
-
-# -- most_recent_external_play -------------------------------------------
-
-
-def test_most_recent_external_play_picks_the_newest_timestamp():
-    records = [
-        _existing("B001", 100, last_updated="2019-01-24 09:21:16.892"),
-        _existing("B002", 200, last_updated="2026-08-27 08:56:11.849"),
-        _existing("B003", 300, last_updated="2026-08-10 22:17:44.988"),
-    ]
-    result = progress.most_recent_external_play(records)
-    assert result is not None
-    asin, updated_at = result
-    assert asin == "B002"
-    assert updated_at.year == 2026
-    assert updated_at.month == 8
-    assert updated_at.day == 27
-
-
-def test_most_recent_external_play_ignores_titles_never_played():
-    records = [_does_not_exist("B001")]
-    assert progress.most_recent_external_play(records) is None
-
-
-def test_most_recent_external_play_none_when_no_records():
-    assert progress.most_recent_external_play([]) is None
-
-
-def test_most_recent_external_play_skips_unparseable_timestamps():
-    records = [_existing("B001", 100, last_updated="not-a-real-timestamp")]
-    assert progress.most_recent_external_play(records) is None
 
 
 # -- push_position -------------------------------------------------------
