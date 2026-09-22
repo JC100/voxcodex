@@ -548,6 +548,31 @@ findings -- the full 2026-09-21 code review is closed out.
         persisted via `progress_store.set_position_ms` in the same branch.
         Added `test_unmark_finished_persists_the_lowered_position` in
         `tests/test_library_screen.py`.
+  - [x] `AudibleAPI.get_library`'s item loop and `_book_from_item` trusted
+        each item to be a dict with well-typed `asin`/numeric fields
+        (Major). **Fixed** 2026-09-22: a malformed entry (non-dict item,
+        non-string asin, non-numeric `runtime_length_min`/
+        `percent_complete`) raised `AttributeError`/`TypeError`/
+        `ValueError` that aborted the whole library parse instead of just
+        that item; now validated and skip-and-logged the same way the
+        existing missing/malformed-asin cases already were. Added
+        `test_get_library_skips_non_object_items`,
+        `test_get_library_skips_items_with_a_non_string_asin`, and
+        `test_get_library_skips_items_with_malformed_numeric_fields` in
+        `tests/test_api.py`.
+  - [x] `AudibleAPI.get_license` trusted `content_license`/
+        `content_metadata`/`content_reference` to be dicts once present,
+        and `parse_last_position_heard` trusted `position_ms` to be
+        numeric (Major). **Fixed** 2026-09-22: each could raise an untyped
+        `AttributeError`/`TypeError`/`ValueError` escaping
+        `_PLAYER_OPEN_ERRORS` entirely and leaving the user with no
+        message; now validated (new `_optional_dict` helper) and routed
+        through `InvalidResponse`, which that error tuple already handles.
+        Added `test_get_license_raises_invalid_response_when_content_license_missing`,
+        `test_get_license_raises_invalid_response_when_content_license_not_an_object`,
+        `test_get_license_raises_invalid_response_when_content_metadata_malformed`,
+        and `test_get_license_raises_invalid_response_when_position_ms_is_malformed`
+        in `tests/test_api.py`.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 

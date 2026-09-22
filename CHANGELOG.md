@@ -43,6 +43,16 @@ correctness, security, or consistency issues remain open.
   magnitude) on every load, the old near-finished position could win again
   and put the book straight back in "Finished". It's now persisted
   alongside the flag change.
+- **A malformed library item or license response could abort the whole
+  library load, or fail silently, instead of showing an error.** Neither
+  the library-item parser nor `get_license`'s nested-field parsing
+  validated that a field was the type it assumed, so an unexpected shape
+  (a non-object item, a non-string ASIN, a non-numeric progress field, a
+  license response missing an expected nested object) could raise an
+  untyped error that either killed the whole parse or escaped the app's
+  own error handling. Malformed library items are now skipped and logged
+  individually; malformed license-response fields now raise the same typed
+  error the rest of that error handling already expects.
 - **The Chapter column stopped advancing after a listening session.** It
   stayed at whatever chapter the book was on when the library was last
   loaded, even after playing well past it, until the next full refresh.

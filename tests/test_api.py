@@ -280,6 +280,69 @@ def test_get_library_skips_items_with_a_malformed_asin(caplog):
     assert "malformed asin" in caplog.text
 
 
+def test_get_library_skips_items_with_a_non_string_asin(caplog):
+    # A non-string asin (e.g. a nested object the server sent by mistake)
+    # would otherwise raise TypeError out of _VALID_ASIN_RE.fullmatch,
+    # aborting the whole library load instead of just dropping the item.
+    items = [
+        {"asin": "B001", "title": "Well-formed"},
+        {"asin": {"unexpected": "shape"}, "title": "Non-string asin"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed asin" in caplog.text
+
+
+def test_get_library_skips_non_object_items(caplog):
+    items = ["not an object", {"asin": "B001", "title": "Well-formed"}]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "not an object" in caplog.text
+
+
+def test_get_library_skips_items_with_malformed_numeric_fields(caplog):
+    # int(item.get("runtime_length_min") or 0) / float(percent_complete)
+    # would otherwise raise ValueError and abort parsing of the whole page
+    # to one bad item's arithmetic.
+    items = [
+        {"asin": "B001", "title": "Well-formed", "runtime_length_min": 60},
+        {"asin": "B002", "title": "Bad runtime", "runtime_length_min": "not a number"},
+    ]
+    client = FakeAudibleClient(
+        get_pages=[
+            FakeJsonResponse({"items": items}),
+            FakeJsonResponse({"items": []}),
+        ]
+    )
+    api = _api_with_fake_client(client)
+
+    with caplog.at_level("WARNING"):
+        books = api.get_library()
+
+    assert [b.asin for b in books] == ["B001"]
+    assert "malformed numeric fields" in caplog.text
+
+
 def test_get_library_dedupes_repeated_asins_within_a_page(caplog):
     # H2: table.add_row(..., key=book.asin) raises Textual's DuplicateKey
     # on a repeated key -- keep the first occurrence and drop the rest
@@ -431,6 +494,49 @@ def test_get_license_raises_invalid_response_on_a_non_json_200():
     # the expected dict used to raise an untyped TypeError, escaping
     # _PLAYER_OPEN_ERRORS entirely and leaving the user with no message.
     client = FakeAudibleClient(post_response="<html>Service Unavailable</html>")
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_license_missing():
+    client = FakeAudibleClient(post_response={"not_content_license": {}})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_license_not_an_object():
+    client = FakeAudibleClient(post_response={"content_license": "not an object"})
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_content_metadata_malformed():
+    # content_metadata.get(...) would otherwise raise AttributeError, escaping
+    # _PLAYER_OPEN_ERRORS entirely and leaving the user with no message.
+    client = FakeAudibleClient(
+        post_response={
+            "content_license": {
+                "status_code": "Granted",
+                "content_metadata": "not an object",
+            }
+        }
+    )
+    api = _api_with_fake_client(client)
+
+    with pytest.raises(InvalidResponse):
+        api.get_license("B001")
+
+
+def test_get_license_raises_invalid_response_when_position_ms_is_malformed():
+    client = FakeAudibleClient(
+        post_response=_license_response(position_ms="not a number")
+    )
     api = _api_with_fake_client(client)
 
     with pytest.raises(InvalidResponse):

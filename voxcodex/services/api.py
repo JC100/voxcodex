@@ -144,6 +144,20 @@ def _full_response(resp: httpx.Response) -> httpx.Response:
     return resp
 
 
+def _optional_dict(value: Any, context: str) -> dict[str, Any]:
+    """A present-but-non-dict value for an optional field in a 200 response
+    is a malformed body worth failing loudly on (InvalidResponse), the same
+    as a non-JSON body already is -- rather than letting an unguarded
+    `.get()` raise a raw AttributeError deeper in parsing, past the caller's
+    typed error handling. Absent/None is fine; that's just an omitted
+    optional field."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidResponse(f"{context} is not an object: {value!r}")
+    return value
+
+
 def parse_audible_timestamp(raw: Any) -> datetime | None:
     """Parses the timestamp format Audible uses for `last_updated` fields
     (e.g. on a `last_position_heard` record), or None if `raw` is missing
@@ -171,7 +185,13 @@ def parse_last_position_heard(lph: Any) -> tuple[int, float | None] | None:
     if "position_ms" not in lph:
         return None
     updated = parse_audible_timestamp(lph.get("last_updated"))
-    return int(lph["position_ms"]), (updated.timestamp() if updated is not None else None)
+    try:
+        position_ms = int(lph["position_ms"])
+    except (TypeError, ValueError) as exc:
+        raise InvalidResponse(
+            f"last_position_heard has a malformed position_ms: {lph['position_ms']!r}"
+        ) from exc
+    return position_ms, (updated.timestamp() if updated is not None else None)
 
 
 def _stats_timestamp(dt: datetime) -> str:
@@ -228,6 +248,14 @@ class AudibleAPI:
                     page, len(items), num_results,
                 )
             for item in items:
+                if not isinstance(item, dict):
+                    # A non-object entry would blow up every .get() below
+                    # with an AttributeError, escaping the caller's typed
+                    # error handling -- drop it the same way a missing/
+                    # malformed asin is dropped, rather than losing the
+                    # whole page to one bad entry.
+                    logger.warning("library item is not an object, skipping: %r", item)
+                    continue
                 asin = item.get("asin")
                 if not asin:
                     # DataTable rows are keyed by asin (see LibraryScreen.
@@ -239,12 +267,15 @@ class AudibleAPI:
                         "library item missing asin, skipping: %r", item.get("title")
                     )
                     continue
-                if not _VALID_ASIN_RE.fullmatch(asin):
+                if not isinstance(asin, str) or not _VALID_ASIN_RE.fullmatch(asin):
                     # Same DuplicateKey-render hazard doesn't apply here,
                     # but every method that later builds a request path
                     # from this asin (get_license, get_chapters, ...)
                     # would (L15) -- cheap to validate shape here, once,
-                    # at the point ASINs first enter the app.
+                    # at the point ASINs first enter the app. The isinstance
+                    # check also keeps a non-string asin (fullmatch would
+                    # otherwise raise TypeError on it) on this same
+                    # skip-and-log path instead of aborting the whole load.
                     logger.warning(
                         "library item has a malformed asin, skipping: %r", asin
                     )
@@ -257,8 +288,18 @@ class AudibleAPI:
                     # first occurrence, drop the rest.
                     logger.warning("duplicate asin in library, skipping: %r", asin)
                     continue
+                try:
+                    book = _book_from_item(item)
+                except (TypeError, ValueError):
+                    # Non-numeric runtime_length_min/percent_complete would
+                    # otherwise abort parsing of the whole library to one
+                    # bad item's arithmetic -- same drop-and-log treatment.
+                    logger.warning(
+                        "library item %r has malformed numeric fields, skipping", asin
+                    )
+                    continue
                 seen_asins.add(asin)
-                books.append(_book_from_item(item))
+                books.append(book)
             if page >= _MAX_LIBRARY_PAGES:
                 logger.warning(
                     "library pagination hit the %d-page safety limit "
@@ -296,17 +337,28 @@ class AudibleAPI:
         )
         if not isinstance(lr, dict):
             raise InvalidResponse(f"licenserequest for {asin} returned a non-JSON body")
-        content_license = lr["content_license"]
+        content_license = lr.get("content_license")
+        if not isinstance(content_license, dict):
+            raise InvalidResponse(f"licenserequest for {asin} is missing content_license")
 
         if content_license.get("status_code") == "Denied":
             msg = content_license.get("message", "License denied")
             raise LicenseDenied(msg)
 
-        content_metadata = content_license.get("content_metadata") or {}
-        content_url = (content_metadata.get("content_url") or {}).get("offline_url")
+        content_metadata = _optional_dict(
+            content_license.get("content_metadata"),
+            f"licenserequest for {asin} content_metadata",
+        )
+        content_url_obj = _optional_dict(
+            content_metadata.get("content_url"), f"licenserequest for {asin} content_url"
+        )
+        content_url = content_url_obj.get("offline_url")
         if not content_url:
             raise NoDownloadUrl(asin)
-        content_reference = content_metadata.get("content_reference") or {}
+        content_reference = _optional_dict(
+            content_metadata.get("content_reference"),
+            f"licenserequest for {asin} content_reference",
+        )
         acr = content_reference.get("acr", "")
         license_id = content_license.get("license_id", "")
 
