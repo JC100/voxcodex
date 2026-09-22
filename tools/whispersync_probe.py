@@ -70,6 +70,7 @@ def stats_status(**kw):
 
 
 def snapshot(tag=""):
+    """Print a timestamped progress snapshot for the configured example ASINs."""
     print(f"\n######## SNAPSHOT {tag} {datetime.now().isoformat()} ########")
     for a in (EXAMPLE_ASIN_1, EXAMPLE_ASIN_2):
         p(f"library/{a}", lib_progress(a))
