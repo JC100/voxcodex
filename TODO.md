@@ -536,6 +536,10 @@ findings -- the full 2026-09-21 code review is closed out.
       VoxCodex avoids auto-clearing `is_finished` on resume -- it now
       points at the Follow-up entry, which is where that (real, deliberate)
       behavior actually lives.
+- [x] CodeRabbit findings on PR #3 (v1.0.0 release PR):
+  - [x] `docs/code-review-2026-09-21.html` was missing its HTML5 doctype,
+        letting it render in quirks mode (Minor). **Fixed** 2026-09-22:
+        added `<!doctype html>` before the `<title>`.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 
