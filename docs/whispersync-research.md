@@ -301,11 +301,11 @@ writing* the exact same `FionaCDEServiceEngine/sidecar` endpoint documented
 above, on every meaningful position change:
 
 ```
-GET  https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar?type=AUDI&key=B01L790CUU&format=M4A_XHE&guid=CR%214MG9HYAN0H0CBESJ92WN51N83FEB%3A116727321&software_rev=...
+GET  https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar?type=AUDI&key=B01L790CUU&format=M4A_XHE&guid=CR%21REDACTED-ACR%3A116727321&software_rev=...
 POST https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar
      <?xml version="1.0" encoding="UTF-8"?>
      <annotations version="1.0" timestamp="2026-08-30T18:53:59+0800">
-       <book key="B01L790CUU" type="AUDI" version="116727321" guid="CR!4MG9HYAN0H0CBESJ92WN51N83FEB:116727321" format="M4A_XHE">
+       <book key="B01L790CUU" type="AUDI" version="116727321" guid="CR!REDACTED-ACR:116727321" format="M4A_XHE">
          <last_heard action="modify" begin="221643" timestamp="2026-08-30T18:53:58+0800"/>
        </book>
      </annotations>

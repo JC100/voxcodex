@@ -1,23 +1,23 @@
 """Black-box probe helpers for the library-progress sync investigation.
 
-Run pieces of this via `python -i probe.py` or by calling functions.
-Uses the already-registered VoxCodex auth (audible.com.au). Read-only unless
+Run pieces of this via `python -i tools/whispersync_probe.py` (from the repo
+root, with the dev venv active) or by importing and calling the functions.
+Uses whatever auth file VoxCodex has already saved for you. Read-only unless
 you call the push_* helpers explicitly.
+
+Substitute EXAMPLE_ASIN_1/EXAMPLE_ASIN_2 below with two ASINs from your own
+library before running -- these are just placeholders.
 """
 from __future__ import annotations
 
 import json
-import sys
-import time
-from datetime import datetime, timezone
-
-sys.path.insert(0, "/home/jake/Work/audible-tui/.claude/worktrees/audible-tui-build")
+from datetime import datetime
 
 import audible
 from voxcodex import config
 
-SUBTLE = "B01L790CUU"   # The Subtle Art of Not Giving a F*ck (Purchase rights, finished)
-ALGO = "B07DGFS4LM"     # Once Upon an Algorithm (finished)
+EXAMPLE_ASIN_1 = "B0XXXXXXXX"
+EXAMPLE_ASIN_2 = "B0YYYYYYYY"
 
 auth = audible.Authenticator.from_file(config.AUTH_FILE)
 client = audible.Client(auth=auth, timeout=30)
@@ -70,10 +70,11 @@ def stats_status(**kw):
 
 
 def snapshot(tag=""):
+    """Print a timestamped progress snapshot for the configured example ASINs."""
     print(f"\n######## SNAPSHOT {tag} {datetime.now().isoformat()} ########")
-    for a in (SUBTLE, ALGO):
+    for a in (EXAMPLE_ASIN_1, EXAMPLE_ASIN_2):
         p(f"library/{a}", lib_progress(a))
-    p("lastpositions", lastpositions(SUBTLE, ALGO))
+    p("lastpositions", lastpositions(EXAMPLE_ASIN_1, EXAMPLE_ASIN_2))
 
 
 if __name__ == "__main__":
