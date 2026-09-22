@@ -1504,6 +1504,30 @@ async def test_unmark_finished_makes_the_book_reachable_by_in_progress_filter():
         assert screen._filtered == []
 
 
+async def test_unmark_finished_persists_the_lowered_position():
+    """The lowered progress_ms above was in-memory only -- on the next
+    library load, _apply_local_state re-resolves progress_ms from
+    ProgressStore by recency (_resolve_progress_ms), not by magnitude, so an
+    unpersisted change here would get silently overwritten by the old
+    near-finished position and put the book straight back in "Finished"."""
+    book = _book("B1", "One")
+    book.is_finished = True
+    book.progress_ms = 1000
+    book.duration_ms = 1000
+    api = FakeAPI([book])
+    screen = LibraryScreen(api)
+    app = HostApp(screen)
+
+    async with app.run_test() as pilot:
+        await _wait_until(lambda: len(screen._books) == 1)
+        screen.query_one(DataTable).focus()
+        await pilot.press("u")
+        await _wait_until(lambda: api.set_finished_calls == [("B1", False)])
+
+        assert screen.progress_store.get_position_ms("B1") == book.progress_ms
+        assert screen.progress_store.get_updated_at("B1") is not None
+
+
 async def test_unmark_finished_is_a_no_op_when_not_finished():
     book = _book("B1", "One")
     api = FakeAPI([book])

@@ -37,6 +37,12 @@ correctness, security, or consistency issues remain open.
   matching only the "Finished" filter -- not "In progress", not "Not
   started" -- so the state was stuck and a second press was a no-op.
   Unmarking now also pulls the tracked position back under the threshold.
+- **"Unmark finished" could silently undo itself on the next library
+  load.** The pulled-back position above was only ever changed in memory;
+  since progress is re-resolved from local/remote records by recency (not
+  magnitude) on every load, the old near-finished position could win again
+  and put the book straight back in "Finished". It's now persisted
+  alongside the flag change.
 - **The Chapter column stopped advancing after a listening session.** It
   stayed at whatever chapter the book was on when the library was last
   loaded, even after playing well past it, until the next full refresh.

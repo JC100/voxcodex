@@ -540,6 +540,14 @@ findings -- the full 2026-09-21 code review is closed out.
   - [x] `docs/code-review-2026-09-21.html` was missing its HTML5 doctype,
         letting it render in quirks mode (Minor). **Fixed** 2026-09-22:
         added `<!doctype html>` before the `<title>`.
+  - [x] `LibraryScreen.action_unmark_finished` lowered `book.progress_ms`
+        in memory only (Minor). **Fixed** 2026-09-22: `_apply_local_state`
+        re-resolves `progress_ms` from `ProgressStore` by recency on the
+        next library load, so the unpersisted change was silently
+        overwritten and the book could land right back in "Finished". Now
+        persisted via `progress_store.set_position_ms` in the same branch.
+        Added `test_unmark_finished_persists_the_lowered_position` in
+        `tests/test_library_screen.py`.
 
 ## Closed: mid-book progress sync (was the last thing before 1.0)
 

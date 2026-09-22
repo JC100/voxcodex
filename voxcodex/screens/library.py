@@ -827,6 +827,13 @@ class LibraryScreen(Screen[None]):
             # is already clear. Pull the tracked position back just under
             # the threshold so the book actually lands in "In progress".
             book.progress_ms = round(book.duration_ms * (_FINISHED_FRACTION - 0.01))
+            # Persist it too: _apply_local_state re-resolves progress_ms from
+            # the store on the next load (by recency, not by magnitude -- see
+            # _resolve_progress_ms), so an in-memory-only change here would
+            # get silently overwritten by the old near-finished position.
+            self.progress_store.set_position_ms(
+                book.asin, book.progress_ms, book.duration_ms
+            )
         self._apply_filters_and_sort()
         self._set_status(f"Unmarked as finished: {book.title}")
         self._push_finished(book.asin, False)
